@@ -121,10 +121,49 @@ report it next to any theory-vs-sim gap.
 
 ## C. Deep linear: algebraic solve
 
-Build causal PT×PT operators C, D from current kernels/responses and solve the
-matrix fixed-point equations of `equations.md` §3 by iteration (still damped,
-but no sampling noise). The L=1 whitened case reduces to the scalar ODE
+No Monte Carlo at all, so **no sampling floor** — the natural place to certify
+response-sector code before adding noise on top. Implemented in
+`scripts/dmft_deep_linear.py`; derived in `derivations/02-deep-linear.md`,
+which supplies the operator definitions `equations.md` §3 omits.
+
+Index `(μ,t) → t·P + μ`. The operators carry the `dt` of the memory integral;
+the kernels do not:
+
+```
+C^ℓ = mask ⊙ (A^{ℓ-1}_op + dt · H^{ℓ-1} diag(Δ))      # from BELOW
+D^ℓ = mask ⊙ (B^ℓ_op     + dt · G^{ℓ+1} diag(Δ))      # from ABOVE
+M_ℓ = I - γ₀² C^ℓ D^ℓ ;   Ñ_ℓ = I - γ₀² D^ℓ C^ℓ
+A^ℓ_op = M_ℓ^{-1} C^ℓ ;   B^{ℓ-1}_op = Ñ_ℓ^{-1} D^ℓ    # deterministic: linear
+H^ℓ = M_ℓ^{-1}[H^{ℓ-1} + γ₀² C^ℓ G^{ℓ+1} C^{ℓT}]M_ℓ^{-T}
+G^ℓ = Ñ_ℓ^{-1}[G^{ℓ+1} + γ₀² D^ℓ H^{ℓ-1} D^{ℓT}]Ñ_ℓ^{-T}
+f    = diag[ Ñ_L^{-1}( G^{L+1}C^{LT} + D^L H^{L-1} )M_L^{-T} ]   # correlator rule
+```
+
+Because `C^ℓ` needs quantities from below and `D^ℓ` from above, while `A^ℓ` and
+`B^{ℓ-1}` need both, the upward and downward recursions cannot be sequenced —
+this is a damped global fixed point, not two sweeps. At L=1 the boundaries
+`A^0 = B^1 = 0` sever the coupling, which is why §B needs no iteration.
+
+Two things that are easy to get wrong and are worth checking first:
+- **the factor of dt.** `A_op = M^{-1}C_op` is an operator, so it re-enters as
+  `C_op^{ℓ+1} = mask(A_op^ℓ + dt·H^ℓ diag(Δ))` — no second `dt`. Getting this
+  wrong makes the solve diverge outright.
+- **the Neumann resummation is not optional.** Replacing `M^{-1}C` by `C`
+  shifts `f` by 0.6% at γ₀=1 and 1.7% at γ₀=3. Small enough to slip past a
+  loose bar, large enough to matter.
+
+Stiffness (F5) is real here: see the measured stability map in the registry.
+Use `solve_annealed()`, which anneals γ₀ upward with warm starts and drops
+damping on failure, and raises rather than returning a non-converged answer.
+
+The L=1 whitened case reduces to the scalar ODE
 ∂ₜΔ = −2√(1+γ₀²(y−Δ)²)Δ — integrate with RK4, use as ground truth.
+
+**Judging the simulation gap without a sampling floor.** The analogue of F8 is
+the O(dt) discretisation error: measure it by dt-halving and require the
+theory-vs-sim gap at the widest N to land within a small multiple of it. A fixed
+absolute bar is not enough — mutation testing found an M/Ñ transpose swap that
+produced a 4× worse gap and still passed one.
 
 ## D. Matching finite-width simulations (the sim side of validation)
 

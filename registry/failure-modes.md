@@ -25,6 +25,17 @@ field that makes an entry actionable, so supply it for anything new.
   set by computation order, not by nonlinearity alone — a field read BEFORE the
   backward pass has Ā(t,t) = 0; a drive that sees the SAME step's forward pass
   has B̄(t,t) ≠ 0. Determine both from the update graph rather than assuming.*
+  *Sharpening (derived in `derivations/01-deep-mlp.md` §7, round 002): the
+  equal-time response is a **delta function**, not merely a nonzero value. Since
+  h(t) = u(t) + γ₀·(memory over [0,t]), the source enters h directly, so
+  δh(t)/δu(s) ⊃ δ(t−s) and B̄ ⊃ γ₀⁻¹⟨φ̈(h(t))z(t)⟩δ_{μα}δ(t−s). **In discrete
+  time the delta becomes 1/dt**, so the kernel diagonal exceeds its neighbours
+  by that factor and looks like an outlier — "cleaning" it is the natural wrong
+  instinct. After the γ₀·dt·B̄ weighting it contributes at O(1), which is why
+  dropping it costs 20–50% rather than a small correction. Detection signature:
+  the measured diagonal should scale as 1/dt; if it does not, this analysis is
+  wrong. **Status: derived, NOT yet measured** — pending the nonlinear L=2
+  solver.*
 - **F2 — backward-transpose scale.** The transposed-matrix backward field
   carries its own scale; mis-bookkeeping shows up as a collapse of
   measured parameter movements under the appropriate rescaling (used to
@@ -41,7 +52,14 @@ field that makes an entry actionable, so supply it for anything new.
   variates.
 - **F5 — Δ-loop stiffness.** The residual map Δ ↦ y − f[Δ] has operator
   norm ~ dt·λ·T; naive fixed-point iteration diverges — needs inner
-  damping.
+  damping. *Measured (round 002, deep linear, L=3, dt=0.02): the damping β
+  needed falls as γ₀·(T·dt) grows, and the stable edge sits near
+  γ₀·horizon ≈ 6. γ₀=3,T=101 needs β=0.1; γ₀=6,T=51 diverges at every fixed β
+  in {0.3, 0.1, 0.03} but converges when annealed. Signature: the iteration
+  either overflows or produces a singular I − γ₀²CD.* Fix: anneal γ₀ upward
+  with warm starts AND drop damping on failure — `solve_annealed()` in
+  `dmft_deep_linear.py` does both adaptively. Guard: raise rather than return
+  a silently non-converged answer.
 - **F6 — response-noise rectification.** MC noise in response kernels
   rectifies into a positive kernel bias inside self-consistent loops; fix
   with slow damping on the response updates.
