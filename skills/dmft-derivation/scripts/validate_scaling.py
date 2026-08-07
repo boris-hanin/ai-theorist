@@ -81,10 +81,32 @@ def check_width_transfer(rep, cfg):
             "d log10(lr*) / d log10(N) = %.2f  (expect ~ -1)" % slope)
 
 
+def check_transfer_at_depth(rep, cfg):
+    """S7: width transfer must also hold for DEEPER MLPs, not just two layers.
+
+    S4/S5 run at L=1 for speed (no N x N matmuls). That is a genuine hole: a
+    parameterisation can transfer for a two-layer net and fail once hidden
+    matrices appear, since those are the reused edges. Narrower width range
+    here (64-512) to keep the N x N cost affordable, so lr* is noisier.
+    """
+    ws = [64, 128, 256, 512]
+    seeds = tuple(range(3))
+    for L in cfg["depths"]:
+        _, vm = transfer.width_transfer("mup", ws, np.logspace(-2, 0.4, 11),
+                                        L=L, steps=15, P=32, seeds=seeds)
+        _, vs = transfer.width_transfer("sp", ws, np.logspace(-4.5, -0.5, 11),
+                                        L=L, steps=15, P=32, seeds=seeds)
+        rep.add("S7 muP transfers at L=%d" % L, vm["status"].startswith("TRANSFERS"),
+                "drift %.3f dec  lr*: %s" % (vm["drift_log10"],
+                " ".join("%+.2f" % x for x in vm["refined_log10_lr"])))
+        rep.add("S7b SP fails at L=%d (control)" % L, vs["status"] == "FAILS",
+                "drift %.3f dec  lr*: %s" % (vs["drift_log10"],
+                " ".join("%+.2f" % x for x in vs["refined_log10_lr"])))
+
+
 NOT_COVERED = """
 NOT COVERED:
-  * Depth. This battery sweeps width only; the residual-branch exponent alpha
-    is the subject of the depth sweep, not tested here.
+  * The residual-branch exponent alpha (rounds/004 -- inconclusive there).
   * Any claim about the infinite-width LIMIT. Leg C tests that a finite-width
     ladder shares an optimum; it says nothing about the limiting equations.
     The muP residual drift (0.04 decades, converging as -0.93/-0.90/-0.89/-0.89)
@@ -92,6 +114,12 @@ NOT COVERED:
     cannot establish that -- only that it is small over the range tested.
   * gamma_0 transfer: only eta_0 is swept.
   * Real tasks. The target is a fixed random teacher on synthetic inputs.
+  * NONLINEAR DMFT beyond L=2. The solver side of the program covers deeper
+    MLPs only for LINEAR phi (dmft_deep_linear, certified to L=4); the
+    nonlinear solver is L=2 by construction. So "the theory matches sims at
+    depth" is established for linear activations only. Leg C (this battery)
+    is nonlinear at every depth it tests, but it tests the parameterisation,
+    not the limiting equations.
 """
 
 
@@ -99,8 +127,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
     args = ap.parse_args()
-    cfg = (dict(widths=[128, 512, 2048], seeds=3, steps=20, ngrid=9) if args.quick
-           else dict(widths=[128, 512, 2048, 8192], seeds=5, steps=20, ngrid=13))
+    cfg = (dict(widths=[128, 512, 2048], seeds=3, steps=20, ngrid=9, depths=[2])
+           if args.quick else
+           dict(widths=[128, 512, 2048, 8192], seeds=5, steps=20, ngrid=13,
+                depths=[2, 3, 4]))
     np.seterr(all="ignore")
 
     print("Scaling-audit and HP-transfer battery  (%s)"
@@ -108,7 +138,7 @@ def main():
     print("widths=%s  seeds=%d\n" % (cfg["widths"], cfg["seeds"]))
     rep = Report()
     t0 = time.time()
-    for fn in (check_audit, check_width_transfer):
+    for fn in (check_audit, check_width_transfer, check_transfer_at_depth):
         fn(rep, cfg)
     print("\n%d checks, %d failed, %.1fs"
           % (len(rep.rows), len(rep.failed), time.time() - t0))
