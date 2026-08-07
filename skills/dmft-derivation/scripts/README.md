@@ -1,8 +1,9 @@
 # Two-layer DMFT solver and Phase 5 battery
 
 ```
-python3 validate.py            # full battery, ~30 s, 20 checks
-python3 validate.py --quick    # ~5 s, smaller S and shorter horizons
+python3 validate.py                  # L=1 battery, ~30 s, 20 checks
+python3 validate_deep_linear.py      # deep linear battery, ~160 s, 14 checks
+#   --quick on either for a smaller/shorter run
 ```
 
 Exit code is nonzero if any check fails. Every check prints its measured number
@@ -11,10 +12,18 @@ next to its bar.
 | File | What it is |
 |---|---|
 | `dmft_two_layer.py` | L=1 solver: exact causal co-integration, correlator-rule predictions, antithetic readout pairs, optional joint-Sobol QMC |
-| `sim_two_layer.py` | Finite-width network in the matched parameterisation; updates `W0` explicitly rather than using the reduced `h`-recursion, so it is an independent implementation path |
+| `dmft_deep_linear.py` | Deep **linear** solver: algebraic closure, live response sector, damped fixed point with γ₀-annealing (F5). No sampling floor |
+| `sim_two_layer.py` | Finite-width L=1 net in the matched parameterisation; updates `W0` explicitly rather than using the reduced `h`-recursion, so it is an independent implementation path |
+| `sim_deep.py` | Finite-width depth-L net, same conventions, any activation |
 | `exact.py` | Closed forms and Gauss-Hermite quadrature — the independent ground truth. Uses nothing from the solver |
-| `validate.py` | The Phase 5 battery |
+| `validate.py`, `validate_deep_linear.py` | The Phase 5 batteries |
 | `activations.py` | `linear`, `tanh`, `relu`, `erf` with derivatives |
+
+**Two floors, one discipline.** Neither battery judges a theory-vs-simulation
+gap against a hand-picked number. Each measures its own floor and reports the
+gap relative to it: sampling error (by S-halving) for the Monte-Carlo solver,
+discretisation error (by dt-halving) for the algebraic one. Mutation testing
+forced both — a fixed absolute bar let real bugs through in each case.
 
 ## Provenance
 
@@ -106,13 +115,22 @@ C9 (kernel movement grows with `gamma0` in BOTH theory and simulation).
   seed. A single-seed `S`-scaling ratio reads `1.1` instead of `2.0`. C4c uses
   disjoint seed blocks and seed-averaged RMS.
 
-## Extending to L >= 2
+## Status of the response sector
 
-The response sector is entirely absent here and is where the expensive failure
-modes live (F1, F5, F6, F17). `numerics.md` §A and §E specify what is needed:
-exact forward-mode sensitivities, damped alternating fixed point, write-before-
-read ordering with a nonzero assertion at read time, and an ablation that must
-change the answer. None of it is implemented. When it is, the discriminators in
-this battery do not transfer — build new ones and mutation-test them, because
-this battery's own blind spots (printed at the end of every run) were only
-found that way.
+`dmft_deep_linear.py` covers it for linear `phi`, exactly and with no sampling
+floor. Measured: ablating the interior responses makes the simulation gap
+**24.6x** worse at L=2, **71.3x** at L=3, **44.4x** at L=4, and is exactly inert
+at L=1 where `A^0 = B^1 = 0`. F5 stiffness is mapped and handled by
+`solve_annealed()`.
+
+What remains is the **nonlinear** case, and specifically the equal-time Onsager
+term derived in `derivations/01-deep-mlp.md` §7. It carries `phi_ddot`, so it
+is identically absent from everything implemented so far — F1b exactly. It
+needs single-site Monte Carlo with exact forward-mode sensitivities, and the
+minimal architecture that can detect it is nonlinear `L = 2`.
+
+When building that: the discriminators in these batteries will not transfer.
+Build new ones and mutation-test them. Both existing batteries had blind spots
+that only mutation testing revealed (each prints its own at the end of a run),
+and in both cases the fix was to judge against a *measured* floor rather than a
+chosen constant.
