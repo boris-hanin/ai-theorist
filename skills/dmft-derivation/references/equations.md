@@ -2,8 +2,18 @@
 
 Complete systems from Bordelon–Pehlevan arXiv:2205.09653 (conventions of the
 NeurIPS 2022 / v3 paper), plus the depth-μP delta from arXiv:2309.16620.
-All formulas use LaTeX. Verify equation-by-equation against the source PDFs
-before high-stakes use; this file was compiled from a structured extraction.
+All formulas use LaTeX.
+
+**Verification status** (this file was originally compiled from a structured
+extraction, i.e. an F14 risk):
+
+| Section | Status |
+|---|---|
+| §1 general deep case | **VERIFIED** — re-derived independently by the cavity route in `derivations/01-deep-mlp.md`; every equation, every factor of γ₀/√N, and all four boundary conditions match. No discrepancies. |
+| §2 two-layer | **VERIFIED** — L=1 reduction of §1, plus a certified solver (`scripts/`, `rounds/001`) |
+| §3 deep linear | UNAUDITED. The causal operators **C**, **D** are named but never defined here; pin them down before use. |
+| §4 depth-μP residual | UNAUDITED, and **scope-limited**: written at branch scale 1/√(LN) (α=1/2), which later work argues is the wrong exponent for residual blocks of internal depth ≥ 2. See `parameterizations.md`. |
+| §5 finite-width | UNAUDITED (summary only) |
 
 ## 0. Setup and conventions
 
@@ -50,6 +60,18 @@ G^\ell_{\mu\alpha}(t,s)=\langle g^\ell_\mu(t)g^\ell_\alpha(s)\rangle$$
 Response functions (causal; zero for $s>t$):
 $$A^\ell_{\mu\alpha}(t,s)=\gamma_0^{-1}\Big\langle\frac{\delta\phi(h^\ell_\mu(t))}{\delta r^\ell_\alpha(s)}\Big\rangle,\qquad
 B^\ell_{\mu\alpha}(t,s)=\gamma_0^{-1}\Big\langle\frac{\delta g^{\ell+1}_\mu(t)}{\delta u^{\ell+1}_\alpha(s)}\Big\rangle$$
+
+**Equal-time structure (F1).** Since $h^\ell(t)=u^\ell(t)+\gamma_0(\text{memory})$,
+the source enters $h$ directly, so $\delta h(t)/\delta u(s)$ contains
+$\delta(t-s)$ and the response carries an instantaneous Onsager piece
+$$B^\ell_{\mu\alpha}(t,s)\ \supset\ \gamma_0^{-1}\big\langle\ddot\phi(h^{\ell+1}_\mu(t))\,z^{\ell+1}_\mu(t)\big\rangle\,\delta_{\mu\alpha}\,\delta(t-s).$$
+In discrete time the delta becomes $1/dt$: the kernel diagonal exceeds its
+neighbours by that factor and looks like an outlier, but after the
+$\gamma_0\,dt\,B$ weighting it contributes at $O(1)$. Masking it with a strict
+lower-triangular mask drops an $O(1)$ term. It carries $\ddot\phi$, so it
+vanishes for linear $\phi$ — no linear check can detect the bug (F1b); the
+minimal detector is nonlinear $L=2$. Derived in `derivations/01-deep-mlp.md` §7;
+**not yet measured**.
 
 Boundary conditions: $\Phi^0=K^x$, $G^{L+1}=\bm1\bm1^\top$, $A^0=0$, $B^L=0$.
 Readout identity: $r^L_\mu(t)=w(0)\sim\mathcal N(0,1)$ and $z^L_\mu(t)=w(t)$ with
