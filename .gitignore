@@ -1,0 +1,17 @@
+# Transport artifacts. Bundles are for moving history between machines —
+# never a storage location. If content only exists in a bundle, it is not
+# in the program record (this cost the program four archive losses).
+*.bundle
+
+# Local machine settings
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Solver outputs — regenerate with scripts/validate.py; commit numbers to
+# rounds/<round>/ instead of leaving them loose.
+*.npz
+scratch/

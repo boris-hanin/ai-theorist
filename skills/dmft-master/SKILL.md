@@ -6,10 +6,10 @@ description: The master DMFT algorithm — a single zero-shot procedure for deri
 > **PROVENANCE: RECONSTRUCTED.** Original validated skill tree (SKILL.md +
 > references/algorithm.md, instances.md, failure-modes.md,
 > solver-library.md) lost to workspace recycling; rewritten from the
-> program record — including all four reference files, restored under
-> `references/`. Faithful in substance, NOT verbatim; pending
-> re-validation as a package. `references/failure-modes.md` mirrors the
-> repo-level `registry/failure-modes.md` (F1–F17).
+> program record — including its reference files, under `references/`.
+> Faithful in substance, NOT verbatim; pending re-validation as a package.
+> Failure modes live ONCE, at the repo-level `registry/failure-modes.md`
+> (F1–F17, canonical); the index below is the loadable summary.
 
 # The master algorithm (9 steps)
 
@@ -98,9 +98,30 @@ synthesis): a NEW architecture is handled by running Steps 0–8 without
 consulting the per-instance skills, which serve as worked traces.
 
 
+## Failure-mode index (full entries: `registry/failure-modes.md`)
+
+One line each, so the trigger is always in context. F7, F9, F13 were lost with
+the session archives and are permanent holes.
+
+| # | Trigger |
+|---|---|
+| F1 | Equal-time response diagonals are generically nonzero; computation order sets Ā(t,t)=0 vs B̄(t,t)≠0. Strict-tril masks silently drop them. Linear checks are blind (F1b). |
+| F2 | Transposed-carrier backward field has its own scale; mis-bookkeeping shows up as movement collapse under the right rescaling. |
+| F3 | "Stops moving as N grows" = concentration OR freezing. Name which, and test the discriminating observable. |
+| F4 | Never Euler-march theory prediction curves. Correlator rule + control variates. |
+| F5 | Δ-residual map has operator norm ~ dt·λ·T; needs an inner damped loop. |
+| F6 | Response MC noise rectifies into positive kernel bias; damp response updates harder. |
+| F8 | MC floor ~ S^(-1/2); certify by sample-halving and report beside every gap. |
+| F10 | Seed-average before comparing; design parameterizations with exactly known limit init. |
+| F11 | Condition on realized disorder identically in theory and simulation. |
+| F12 | Rate-amplified metrics inflate variance and can invert trends; robust aggregation. |
+| F14 | Transcribed formulas can be wrong (3.3× seen). Two independent routes; sims are ground truth. |
+| F15 | Readout carries γ₀⁻¹ ⇒ MC floor O(1/(γ₀√S)), GROWS as γ₀ shrinks. Antithetic readout pairs. |
+| F16 | Independently seeded Sobol streams are not independent (|corr| ≤ 0.96). One joint stream, sliced. |
+| F17 | Write response rows before same-step reads; assert nonzero at read time. Ablations must bite. |
+
 ## Reference files
 
 - `references/algorithm.md` — the 9 steps in long form (operational detail).
 - `references/instances.md` — each validated computation as an algorithm trace.
-- `references/failure-modes.md` — the F1–F17 registry (mirror of `registry/`).
 - `references/solver-library.md` — validated numerical patterns for Step 7.

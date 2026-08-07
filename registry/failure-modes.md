@@ -1,15 +1,30 @@
 # Failure-mode registry (DMFT derivation & solver program)
 
-Named failure modes accumulated across validation rounds. F15–F17 entries
-are verbatim from the session that discovered them; F1–F14 are faithful
-summaries reconstructed from the program record (original long-form
-entries live in the dmft-master archive, pending restoration).
+**This file is canonical.** Do not mirror it into skill trees — a byte
+duplicate previously existed at `skills/dmft-master/references/failure-modes.md`
+and was removed. Skills cite F-numbers and point here.
+
+Named failure modes accumulated across validation rounds. F15–F17 are verbatim
+from the session that discovered them; F1–F14 are summaries reconstructed from
+the program record. The long-form originals were lost with the session archives
+and are NOT recoverable — F7, F9 and F13 are permanent holes, not pending
+restoration. By the program's own F14 standard, the reconstructed entries are
+hints, not sources: where an entry conflicts with a derivation or a measurement,
+the measurement wins and the entry gets rewritten.
+
+Entry schema for new modes: **mechanism → detection signature → fix → guard.**
+The reconstructed entries mostly lost their detection signatures; that is the
+field that makes an entry actionable, so supply it for anything new.
 
 - **F1 — equal-time response diagonal.** B̄(t,t) = ⟨φ̈·backward⟩ ≠ 0 for
   nonlinear φ (and for gain-modulated linear structures). Masking response
   kernels with strict lower-triangular masks silently drops it (was worth
   20–50% kernel error in the deep-MLP round). Corollary F1b: linear
   cross-checks are blind to this — they pass with the bug present.
+  *Refinement (from `dmft-master/references/algorithm.md` Step 1b): the rule is
+  set by computation order, not by nonlinearity alone — a field read BEFORE the
+  backward pass has Ā(t,t) = 0; a drive that sees the SAME step's forward pass
+  has B̄(t,t) ≠ 0. Determine both from the update graph rather than assuming.*
 - **F2 — backward-transpose scale.** The transposed-matrix backward field
   carries its own scale; mis-bookkeeping shows up as a collapse of
   measured parameter movements under the appropriate rescaling (used to
@@ -30,11 +45,13 @@ entries live in the dmft-master archive, pending restoration).
 - **F6 — response-noise rectification.** MC noise in response kernels
   rectifies into a positive kernel bias inside self-consistent loops; fix
   with slow damping on the response updates.
-- **F7 — (entry in archived registry.)**
+- **F7 — LOST.** Entry existed in the archived long-form registry; content not
+  recoverable. Do not reuse the number.
 - **F8 — MC floor.** Solver Monte-Carlo floors scale as S^{-1/2} (or worse
   for heavy-tailed populations, cf. F12); certify by sample-halving and
   report the floor next to any theory-vs-sim gap.
-- **F9 — (entry in archived registry.)**
+- **F9 — LOST.** Entry existed in the archived long-form registry; content not
+  recoverable. Do not reuse the number.
 - **F10 — init-offset hygiene.** Finite-width init fluctuations (e.g.
   f(0) ≠ 0) contaminate comparisons; seed-average, and design
   parameterizations whose limit init is exactly known (centering,
@@ -46,7 +63,8 @@ entries live in the dmft-master archive, pending restoration).
   (1/γ₀ readouts, heavy-tailed site weights) inflate MC variance and can
   invert apparent trends; use robust aggregation and variance-reduced
   estimators.
-- **F13 — (entry in archived registry.)**
+- **F13 — LOST.** Entry existed in the archived long-form registry; content not
+  recoverable. Do not reuse the number.
 - **F14 — garbled sources.** Fetched/transcribed formulas can be wrong
   (a ResNet-round transcription was 3.3× off). Derive independently; make
   two independent routes agree; simulations are ground truth.

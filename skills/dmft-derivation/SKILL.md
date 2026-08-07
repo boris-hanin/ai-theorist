@@ -19,6 +19,9 @@ Reference files (load as needed):
   tables and the richness dial γ₀.
 - `references/validation-checks.md` — mandatory sanity checks and known
   reproduction targets with exact settings.
+- `scripts/` — runnable two-layer solver, matched finite-width simulator, and
+  `validate.py` (the Phase 5 battery). Certified against the exactly-solvable
+  cases; see `scripts/README.md` for what is and is not covered.
 
 ## Phase 0 — Scope check (mandatory)
 
@@ -107,17 +110,25 @@ Always check, in order:
 
 ## Phase 4 — Numerical solution
 
-Follow `references/numerics.md`. Summary:
+Follow `references/numerics.md`. Two invariants override the textbook forms:
+- **Predictions by the correlator rule (F4):** f_μ(t) = γ₀⁻¹⟨w(t)φ(h^L_μ(t))⟩
+  read off the sampled population each step. NEVER Euler-march
+  df/dt = KΔ at SGD's step — that error masquerades as finite-width error.
+- **Responses by exact forward-mode sensitivities (never finite differences in
+  production).** FD is how you TEST the sensitivity code: correct agreement is
+  ε-independent and O(1/S).
+
+Summary:
 - General deep case: alternating Monte Carlo fixed point (their Algorithm 1):
   sample S single-site trajectories given kernels → re-estimate kernels and
-  response functions (sample-averaged Jacobians via autodiff, NOT finite
-  differences) → damped update (β ≈ 0.3–0.7) → iterate to convergence.
-- Two-layer: forward causal co-integration (exact, no iteration): march t →
-  t+dt integrating S single-site samples and the prediction ODE jointly,
-  estimating equal-time kernels empirically at each step.
+  responses → damped update (β ≈ 0.3–0.7) → iterate to convergence.
+- Two-layer: forward causal co-integration (exact, no iteration): march S
+  single-site samples t → t+dt, then read f off the updated population.
 - Cost: O(P²T²) memory, O(P³T³) time. If N_sim·(cost of direct training) is
   cheaper than the DMFT solve (i.e. PT ≳ N), reconsider whether theory
   numerics are the right tool.
+- Runnable implementation of the two-layer case, with the Phase 5 battery:
+  `scripts/` (see `scripts/README.md`).
 
 ## Phase 5 — Mandatory checks (do not report results without these)
 
@@ -135,20 +146,45 @@ From `references/validation-checks.md`:
    kernel movement growing with γ₀).
 5. **Convergence audits:** results stable under dt → dt/2, S → 2S, and (for
    the fixed-point solver) different damping β and inits.
+6. **Report the Monte-Carlo floor next to every theory-vs-sim gap (F8).**
+   Certify it by sample-halving. A gap smaller than its own floor is not
+   evidence of agreement OR disagreement.
+
+`scripts/validate.py` runs checks 1–6 for the two-layer case and prints the
+numbers; extend it rather than re-deriving the battery by hand.
 
 ## Failure modes to watch
 
-- Applying the theory at P or t that scale with N (silently wrong).
+Full entries in `registry/failure-modes.md` (repo-level, canonical).
+
+- Applying the theory at P or t that scale with N (silently wrong) — Phase 0.
+- **F1 — equal-time response diagonals are generically NONZERO.** Do not mask
+  Ā, B̄ with a strict lower-triangular mask. Computation order sets the rule: a
+  field read before the backward pass has Ā(t,t)=0; a drive that sees the same
+  step's forward pass has B̄(t,t)≠0. Worth 20–50% kernel error when dropped, and
+  linear cross-checks pass with the bug present (F1b) — they do not certify it.
 - Dropping the response functions A, B for L ≥ 2 (they are O(1) and matter;
-  only L=1 kills them).
+  only L=1 kills them). Corollary: L=1 agreement cannot certify response code.
+- **F4 — never Euler-march theory prediction curves.** Correlator rule; see
+  Phase 4.
+- **F15 — the readout channel carries γ₀⁻¹**, so its MC floor is O(1/(γ₀√S))
+  and GROWS as γ₀ shrinks, masquerading as theory failure in near-lazy runs.
+  Fix with antithetic readout pairs.
+- **F16 — independently seeded Sobol streams are NOT independent.** One joint
+  stream, sliced per source family.
+- **F17 — write response rows before same-step reads**, and assert nonzero at
+  read time. An ablation that changes nothing is a red flag, not a pass.
+- **F10 — seed-average before comparing**; f(0) = 0 holds only in the γ → ∞
+  scaling (f(0) = O(1/(γ₀√N)) at finite width).
 - Confusing γ (bare, = γ₀√N) with γ₀ in memory-kernel prefactors.
-- Using finite differences for response Jacobians (noisy, unstable) instead
-  of autodiff through the unrolled solve.
-- Forgetting f(0) = 0 holds only in the γ → ∞ scaling (f(0) = O(1/(γ₀√N))).
+- Using finite differences for response sensitivities in production (noisy,
+  unstable) instead of exact forward-mode propagation.
 - Comparing against sims in a DIFFERENT parameterization (standard PyTorch
   init/LR does not match; convert first).
-- Undamped fixed-point iteration diverging for rich γ₀; raise damping,
-  anneal γ₀ from small values, or increase S.
+- **F5/F6 — undamped fixed-point iteration diverges** for rich γ₀ (the Δ-map
+  has operator norm ~ dt·λ·T); response-noise rectifies into a positive kernel
+  bias. Raise damping (extra damping on responses), anneal γ₀ from small
+  values, or increase S.
 
 ## Extensions recorded (see references for the deltas)
 

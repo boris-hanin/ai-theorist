@@ -1,10 +1,20 @@
 # Solver library
 
 > RECONSTRUCTED from the program record; pending re-validation. Numerical
-> patterns validated across the program's solvers, keyed to Step 7. The
-> original file also carried code-level templates (lost); the hyperbolic
-> repo's solvers are working reference implementations of every pattern
-> below (hyp_dmft.py, hyp_dmft_deep.py, hyp_dmft_res.py, theory_sim_res.py).
+> patterns validated across the program's solvers, keyed to Step 7.
+>
+> **The original code-level templates are LOST.** Earlier drafts of this file
+> cited `hyp_dmft.py`, `hyp_dmft_deep.py`, `hyp_dmft_res.py`,
+> `theory_sim_res.py` as working reference implementations; those files no
+> longer exist in any reachable location. Treat every pattern below as a
+> specification awaiting an implementation, not as documentation of running
+> code.
+>
+> The one executable implementation in this repo is
+> `skills/dmft-derivation/scripts/`, which covers patterns 1, 3, 7, 10 and the
+> §Guards for the L=1 (no-response) case. Patterns 2, 4, 5, 6, 8, 9 —
+> everything in the response sector — are currently UNIMPLEMENTED. Implement
+> against the checks in `scripts/validate.py` and extend it.
 
 ## Integration schemes
 
