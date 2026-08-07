@@ -164,10 +164,50 @@ This sharpens F1 in three ways:
    The minimal architecture that can is nonlinear with `L = 2`, where
    `A^0 = B^2 = 0` but `B^1` retains the Onsager piece.
 
-**Status: theory only.** This is a derived prediction and has not been
-measured. It is the first thing the nonlinear solver must test (Phase 4), and
-until then it should not be quoted as established. If it is wrong, the
-`1/dt`-scaling of the measured diagonal is where it will show.
+### MEASURED (round 003): structure confirmed, coefficient FALSIFIED
+
+The `1/dt` prediction is **confirmed**. Measured on the L=2, P=1 solver at fixed
+horizon 1.0, erf activation:
+
+| dt | `B^1(t,t)` max | `gamma_0 * dt * B^1(t,t)` |
+|---|---|---|
+| 0.100 | 5.40 | 0.540 |
+| 0.050 | 11.08 | 0.554 |
+| 0.025 | 24.21 | 0.605 |
+
+The diagonal doubles as `dt` halves (ratios 2.05, 2.18) while the weighted
+contribution stays near 0.55. So the equal-time response really is a delta
+representative with `1/dt` magnitude, not an ordinary kernel entry.
+
+**But the O(1) coefficient claim is wrong.** Adding the term to the memory sum
+with weight `c`, and comparing against finite-width simulations extrapolated to
+`N -> infinity` in `1/N` (four widths, 24 seeds each):
+
+| coefficient `c` | max abs error vs `f_inf` |
+|---|---|
+| extrapolation residual (the floor) | 2.64e-3 |
+| **0** | **4.41e-3** |
+| 0.5 | 7.53e-3 |
+| 1 | 1.07e-2 |
+
+`c = 0` is favoured; `c = 1` sits at four times the floor. The spread across `c`
+(6.3e-3) comfortably exceeds the floor, so unlike the first attempt -- which was
+floor-limited and resolved nothing -- this measurement discriminates.
+
+**Conclusion.** The delta-function *structure* is real and the `1/dt` scaling is
+confirmed, but the naive step of integrating it against `int_0^t ds` with
+weight 1 is not right: a delta sitting exactly at the endpoint of the causal
+integral does not contribute. The correct discrete treatment uses the STRICT
+past. The claim in the previous version of this section -- that the term
+contributes at `O(1)` and that dropping it costs 20-50% -- is not supported by
+this measurement and has been withdrawn.
+
+Scope of the refutation: L=2, P=1, erf, `gamma_0 = 1`, horizon 1.0, one task.
+It does not follow that F1 is wrong in general -- F1 was recorded from a deep
+MLP round with a different solver, where the reported error may have come from
+masking something other than the endpoint term. What is established here is
+narrower: **in this solver, at these settings, weight 0 fits and weight 1 does
+not.**
 
 ## 8. Audit summary
 

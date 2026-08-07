@@ -31,11 +31,18 @@ field that makes an entry actionable, so supply it for anything new.
   δh(t)/δu(s) ⊃ δ(t−s) and B̄ ⊃ γ₀⁻¹⟨φ̈(h(t))z(t)⟩δ_{μα}δ(t−s). **In discrete
   time the delta becomes 1/dt**, so the kernel diagonal exceeds its neighbours
   by that factor and looks like an outlier — "cleaning" it is the natural wrong
-  instinct. After the γ₀·dt·B̄ weighting it contributes at O(1), which is why
-  dropping it costs 20–50% rather than a small correction. Detection signature:
-  the measured diagonal should scale as 1/dt; if it does not, this analysis is
-  wrong. **Status: derived, NOT yet measured** — pending the nonlinear L=2
-  solver.*
+  instinct. **Status of the 1/dt structure: MEASURED AND CONFIRMED** (round 003,
+  L=2 P=1 erf: the diagonal doubles as dt halves, 5.40 → 11.08 → 24.21).*
+  *Correction (round 003): the follow-on claim that this term therefore
+  contributes at O(1) — i.e. that it should be integrated against ∫₀ᵗds with
+  weight 1 — was **FALSIFIED**. Against simulations extrapolated to N→∞, weight
+  0 fits (4.4e-3, floor 2.6e-3) and weight 1 does not (1.07e-2, 4× the floor).
+  A delta at the endpoint of the causal integral does not contribute; the
+  correct discrete treatment uses the STRICT past. Scope: one solver, L=2, P=1,
+  erf, γ₀=1. This does NOT retract F1 itself — the original deep-MLP round's
+  20–50% error may have come from masking something other than the endpoint
+  term — but the "worth 20–50%" figure is not reproduced here and should not be
+  quoted as if it were general.*
 - **F2 — backward-transpose scale.** The transposed-matrix backward field
   carries its own scale; mis-bookkeeping shows up as a collapse of
   measured parameter movements under the appropriate rescaling (used to
