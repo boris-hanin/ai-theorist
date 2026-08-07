@@ -60,7 +60,12 @@ def solve(y, gamma0, dt, T, L, S=8192, act="tanh", seed=0, Kx=1.0,
     if S % 2 != 0:
         raise ValueError("antithetic readout pairs need an even S")
     y = float(y)
-    Sr = min(S, 512) if S_resp is None else min(S_resp, S)
+    # The response is a T x T kernel estimated from Sr samples, so a fixed Sr
+    # degrades as T grows. Measured at L=3, T=33: the sim gap falls
+    # 2.96e-2 -> 1.62e-2 -> 1.14e-2 as Sr goes 128 -> 256 -> 512, then plateaus.
+    # A fixed Sr=512 was materially biasing results at larger T -- and it was a
+    # documented-but-unchecked shortcut, which is exactly how that happens.
+    Sr = min(S, max(512, 24 * T)) if S_resp is None else min(S_resp, S)
     ones = np.ones((T, T))
     tri = np.tril(ones, -1)
 

@@ -122,6 +122,25 @@ def check_response_ablation(rep, cfg):
                 % (ga, gb, gb / max(ga, 1e-15)))
 
 
+def check_S_resp(rep, cfg):
+    """M7: the response subsample must not be driving the answer.
+
+    Promised in the solver docstring from the start and NOT actually checked
+    until it started mattering. It did: at L=3, T=33 the sim gap ran
+    2.96e-2 / 1.62e-2 / 1.14e-2 / 1.25e-2 for S_resp = 128 / 256 / 512 / 1024,
+    so the old fixed default of 512 was biasing results at larger T. Sr now
+    scales with T; this check keeps it honest.
+    """
+    dt, T, L = 0.05, cfg["T"], 3
+    kw = dict(L=L, act="tanh", seed=0, n_iter=cfg["iters"], damping=0.45,
+              S=cfg["S"])
+    a = dn.solve(1.0, 1.0, dt, T, S_resp=24 * T, **kw)
+    b = dn.solve(1.0, 1.0, dt, T, S_resp=48 * T, **kw)
+    shift = float(np.abs(a["f"] - b["f"]).max())
+    rep.add("M7 answer stable under S_resp doubling", shift < 8e-3,
+            "|f(Sr) - f(2Sr)|max = %.2e at L=3, T=%d" % (shift, T))
+
+
 def check_sim_match(rep, cfg):
     """M6: nonlinear theory vs finite-width sims at depth, BOTH floors reported."""
     X, y = np.array([[1.0]]), np.array([1.0])
@@ -170,7 +189,8 @@ def main():
     rep = Report()
     t0 = time.time()
     for fn in (check_linear_reduction, check_S_convergence, check_matches_l2_solver,
-               check_antithetic, check_response_ablation, check_sim_match):
+               check_antithetic, check_response_ablation, check_S_resp,
+               check_sim_match):
         fn(rep, cfg)
     print("\n%d checks, %d failed, %.1fs"
           % (len(rep.rows), len(rep.failed), time.time() - t0))
