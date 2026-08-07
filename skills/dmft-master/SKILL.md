@@ -6,10 +6,10 @@ description: The master DMFT algorithm — a single zero-shot procedure for deri
 > **PROVENANCE: RECONSTRUCTED.** Original validated skill tree (SKILL.md +
 > references/algorithm.md, instances.md, failure-modes.md,
 > solver-library.md) lost to workspace recycling; rewritten from the
-> program record. The 9-step algorithm and edge classification below are
-> as validated; the reference files' long-form content is partially
-> reconstructed. Pending re-validation as a package. The failure-mode
-> registry now lives at `registry/failure-modes.md` (F1–F17).
+> program record — including all four reference files, restored under
+> `references/`. Faithful in substance, NOT verbatim; pending
+> re-validation as a package. `references/failure-modes.md` mirrors the
+> repo-level `registry/failure-modes.md` (F1–F17).
 
 # The master algorithm (9 steps)
 
@@ -96,3 +96,11 @@ response ablation must matter or the test is reported under-powered.
 Zero-shot claim (validated on the hyperbolic rounds, which postdate the
 synthesis): a NEW architecture is handled by running Steps 0–8 without
 consulting the per-instance skills, which serve as worked traces.
+
+
+## Reference files
+
+- `references/algorithm.md` — the 9 steps in long form (operational detail).
+- `references/instances.md` — each validated computation as an algorithm trace.
+- `references/failure-modes.md` — the F1–F17 registry (mirror of `registry/`).
+- `references/solver-library.md` — validated numerical patterns for Step 7.
