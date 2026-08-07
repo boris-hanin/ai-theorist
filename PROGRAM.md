@@ -8,15 +8,16 @@ solvability of new problems → solve. Each skill is crisp (one technique).
 | Skill | Status | Files |
 |---|---|---|
 | dmft-derivation | **in repo, verbatim** | `skills/dmft-derivation/` |
-| dmft-resnet-depth | validated; files in session archive (to restore) | — |
-| dmft-attention | validated; files in session archive (to restore) | — |
-| dmft-moe | validated; files in session archive (to restore) | — |
-| dmft-master | validated; files in session archive (to restore) | — |
+| dmft-resnet-depth | RECONSTRUCTED (pending re-validation) | `skills/dmft-resnet-depth/` |
+| dmft-attention | RECONSTRUCTED (pending re-validation) | `skills/dmft-attention/` |
+| dmft-moe | RECONSTRUCTED (pending re-validation) | `skills/dmft-moe/` |
+| dmft-master | RECONSTRUCTED (pending re-validation) | `skills/dmft-master/` |
 
-The four missing skill trees were delivered as downloadable archives in
-earlier sessions ("math-assistant" trees and overlay archives) before
-cloud-workspace recycling; re-attaching those archives to a session will
-restore them here verbatim. The master skill's 9-step algorithm: scaling
+The four companion skills were originally delivered as downloadable
+archives whose copies were lost (cloud-workspace recycling; archives no
+longer in chat). They have been REWRITTEN from the program record: each
+carries a provenance banner, is faithful in substance but not verbatim,
+and is pending re-validation before being treated as certified. The master skill's 9-step algorithm: scaling
 audit; edge classification (single-use → Gaussian source / reused →
 response pair / readout carrier → correlator / bilinear order parameter);
 populations & nesting; exact update identities; disorder average; closure;
