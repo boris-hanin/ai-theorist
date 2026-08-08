@@ -206,14 +206,33 @@ window settles all three onto their derived values.
 | `U` (`z`) | -0.820 | **-0.526** | -1/2 |
 | `R` (logit) | -0.678 | **-0.452** | -1/2 |
 
-**2. Round 008's confounded `1/sqrt(D)` term.** That measurement was contaminated
-because the regression problem itself changed with `D`. A **fixed-task**
-instrument (`MoEFixedTask`: fixed `d0 = 8` input, scalar readout, *identical*
-`X`, `Y` at every `D`, so every shape approximates the same function) removes
-exactly that confound. Re-measured: slope **-0.580** against `-1/2`, versus
-`-0.645` confounded. Inside the bar and un-confounded — but the deviations sit
-only `1.2x`–`2.0x` above their seed floor, so this is **consistent with `-1/2`,
-not cleanly established**. More seeds would settle it.
+**2. The `1/sqrt(D)` term is NOT established, and three separate contaminations
+were found.** This is the exponent the `C^{-1/6}` shape rests on, so it matters.
+
+| attempt | result | what was wrong |
+|---|---|---|
+| round 008, loss vs `D` | `-0.645` | **task changes with `D`** — the regression problem itself differs, so this is not a property of the limit |
+| fixed-task, vs a `D_ref = 512` reference | `-0.580` | **reference bias.** A `1/sqrt(D)` term is a *systematic bias*, not noise, so the reference carries one too: the gap is `E_D (1 - sqrt(D/D_ref))`, which biases the slope **steep**. With `D_ref = 512` that alone predicts an apparent `-0.70` |
+| same, floor subtracted in quadrature | `-0.68` | matches the `-0.70` predicted by reference bias — i.e. **consistent with a true `-1/2`, but demonstrating nothing** |
+| reference-free pairwise `\|f_D - f_2D\|` | `+2.17` | **below the seed floor** (ratios 0.6–1.2x, two points zeroed by subtraction) |
+| pairwise at `L a M` = 2048 to cut CLT noise | `+3.15` | **the seed variance is not the CLT term.** Widening `LaM` 8x barely moved the floor, because the variance is dominated by the per-seed *embedding and readout init*, which `LaM` does not suppress |
+
+**Status: the `-1/2` exponent is consistent with every measurement and
+demonstrated by none of them.** The first two were reported as results before
+this audit; both were wrong, in different ways, and the second was wrong *by
+construction* — a bias cannot be measured against a reference that carries the
+same bias.
+
+**What it would take.** The signal is `E_D = C D^{-1/2}` with `C ~ 0.29`; the
+per-seed spread is `~0.12`–`0.24` and falls only weakly with `D`. A 3x margin at
+`D = 64` needs **`S ~ 100` seeds per point**, roughly 6x what was run. That is
+the honest cost, and it is the first thing to spend GPU time on — before any
+`C^{-1/6}` fit, which would otherwise rest on an unmeasured exponent.
+
+**Consequence.** `C^{-1/6}` depends on three exponents. Two are clean
+(`1/L`: `-0.953`, `M`-independent `+0.012`; and `sqrt(D/(LaM))`: `-0.505`,
+`-0.489`, `-0.512`). The third is **not measured**. The shape claim is derived,
+with two of three legs empirically grounded.
 
 A bug found on the way: the readout LR was written `eta * D` when the counting
 gives `eta / D` (`f = <w,h>` is coherent over `D`, so `df = D dw` and `dw` must

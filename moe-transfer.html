@@ -176,8 +176,14 @@ footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--rule);font-si
   <p>The DMFT for this limit is derived &mdash; three response pairs per expert-layer, including a router
   pair with no dense counterpart &mdash; but there is <b>no solver</b>, so the memoryless-limit claim is
   untested. Parameterization and limit structure are validated; the dynamics are not. The
-  <code>C^(1/6)</code> rate also inherits an earlier caveat: the <code>1/&radic;D</code> term it depends on
-  was only suggestively measured, because the regression problem itself changes with D.</p>
+  <code>C^(1/6)</code> rate rests on three exponents. Two are measured cleanly &mdash; the 1/L term
+  (&minus;0.953, and blind to block width at +0.012) and the &radic;(D/LaM) term (&minus;0.505,
+  &minus;0.489, &minus;0.512). The third, <code>1/&radic;D</code>, is <b>not established</b>: three
+  successive attempts were each contaminated &mdash; by a D-dependent task, then by reference bias
+  (a systematic 1/&radic;D term cannot be measured against a reference that carries the same term),
+  then by a seed floor the signal sits beneath. The exponent is consistent with &minus;1/2 and
+  demonstrated by none of them; reaching a 3&times; margin needs roughly 100 seeds per point.
+  So the shape claim is derived with two of three legs empirically grounded.</p>
   <p style="font-size:14px;color:var(--ink3)">Series colours are the Okabe&ndash;Ito colourblind-safe set;
   the palette validator could not be run in this environment, so every series is also direct-labelled.</p>
 </section>
