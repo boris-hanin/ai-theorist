@@ -30,7 +30,7 @@ changing, stop and say so.
 | group | init std | LR (Adam/SignGD) |
 |---|---|---|
 | router | `n^{-gamma}`, `gamma >= 1/2` | `n^{-1}` |
-| expert bias | `0` | `Theta(1)` |
+| expert bias | `0` (main text) / **nonzero** (App. E) — see F21 below | `Theta(1)` |
 | expert up `W_up` | `n^{-1/2}` | `n^{-1}` |
 | expert down `W_down` | **`alpha_ffn^{-1} n^{-1/2}`** | `alpha_ffn^{-1} n^{-1}` |
 
