@@ -286,11 +286,35 @@ as a confirmed result of this file** — it agrees with 2405.15712 Table 1 on
 paper and disagrees with my own simulation, and by the program's rule the prior
 is on my derivation or my model, not on the paper.
 
-### Not done: solver check
+### Solver check — built, first comparison, NOT yet validated
 
-No residual DMFT solver was built, so the **single-site system of §5 is
-unchecked** — only its scaling consequences were tested. The open response-
-function question of §7 therefore also remains open.
+`skills/dmft-resnet-depth/scripts/dmft_residual.py` implements the §5 system
+with pre-LN, specialised to `k = 1` blocks (one response pair per block instead
+of two) and `P = 1`.
+
+**Pre-LN in the limit.** With `h` having i.i.d.-like entries across the width,
+its per-sample mean self-averages to 0 and its variance to `H^l(t,t)`, so
+`LN(h^l) -> h^l / sqrt(H^l(t,t))` — a *deterministic* gain set by the stream
+kernel, not a new stochastic field. That is what makes pre-LN tractable here,
+and it fixes the block input scale at `(1/N)|hbar|^2 = 1` whatever the stream
+does.
+
+| L | alpha | plateau | gap vs sim | sim floor | MC floor | gap/combined |
+|---|---|---|---|---|---|---|
+| 2 | 1.0 | 8.0e-7 | 1.83e-2 | 3.48e-3 | 8.84e-3 | **1.92x** |
+| 2 | 0.5 | 8.7e-7 | 4.36e-2 | 1.90e-3 | 8.89e-3 | **4.79x** |
+| 4 | 1.0 | 9.4e-7 | 1.15e-2 | 1.94e-3 | 2.76e-2 | 0.42x |
+| 4 | 0.5 | 9.4e-7 | 1.84e-2 | 6.24e-3 | 2.56e-2 | 0.70x |
+
+`L = 4` sits inside the combined floor, `L = 2` does not. The `L = 4` pass rides
+on a looser MC floor, so the raw gaps are comparable throughout (~1–4e-2).
+**Not validated.** Open candidates: the `k = 1` specialisation against a `k = 2`
+derivation, the frozen `W^0` boundary the solver assumes, and the late-time
+fixed-point instability. The response-function question of §7 is untouched.
+
+**Pre-LN did not explain the §8c falsification.** Re-running the `d_L` test with
+LN on gives slope **+1.553** at `alpha = 1` (was +1.506 without). Candidate (i)
+is eliminated; (ii) the chain effect and (iii) block type remain.
 
 ## 9. Status
 

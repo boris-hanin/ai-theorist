@@ -2,10 +2,23 @@
 trained with SGD. Written to test that file's derived exponents.
 
     h^1     = (1/sqrt(D)) W0 x
-    z^l     = (1/sqrt(N)) W^{l,1} h^l ;  a^l = phi(z^l)
+    hbar^l  = LN(h^l)                       <- PRE-LN, always on
+    z^l     = (1/sqrt(N)) W^{l,1} hbar^l ;  a^l = phi(z^l)
     F_l     = (1/sqrt(N)) W^{l,2} a^l
     h^{l+1} = h^l + (beta0 / L^alpha) F_l
-    f       = (1/(gamma sqrt N)) w . h^{L+1},   gamma = gamma_0 sqrt(N)
+    f       = (1/(gamma sqrt N)) w . LN(h^{L+1}),   gamma = gamma_0 sqrt(N)
+
+Pre-LN is on by construction (both 2405.15712 and 2505.01618 are pre-LN
+transformers, and its absence was the leading suspect for the alpha=1
+discrepancy recorded in derivations/05 §8c). In the DMFT limit LN is NOT a new
+stochastic element: with h having i.i.d.-like entries, its mean self-averages to
+0 and its std to sqrt(H^l(t,t)), so
+
+    LN(h^l) -> h^l / sqrt(H^l(t,t))
+
+a DETERMINISTIC, layer- and time-dependent gain set by the stream kernel. That
+is what makes it tractable in the solver, and it is why it fixes the block input
+scale: (1/N)|hbar|^2 = 1 identically, whatever the stream does.
 
 SGD with `theta <- theta - d_L gamma^2 dt grad L`, `d_L` free so the derived
 rule `d_L = L^{2 alpha - 1}` can be imposed or withheld.
@@ -24,6 +37,13 @@ def phi(x):
     return torch.tanh(x)
 
 
+def layer_norm(h, eps=1e-12):
+    """LN over the feature axis. h: (N, P) -> (N, P)."""
+    mu = h.mean(dim=0, keepdim=True)
+    c = h - mu
+    return c / (c.pow(2).mean(dim=0, keepdim=True).sqrt() + eps)
+
+
 class ResNet:
     def __init__(self, D, N, L, alpha=1.0, gamma0=1.0, beta0=1.0, block_k=2,
                  seed=0, device="cpu", dtype=torch.float64):
@@ -40,7 +60,8 @@ class ResNet:
         self.W1_0 = [W.clone() for W in self.W1]       # keep init for movement stats
 
     def params(self):
-        p = [self.W0] + self.W1 + [self.w]
+        # W0 frozen, to match the solver's boundary condition
+        p = self.W1 + [self.w]
         if self.W2 is not None:
             p += self.W2
         return p
@@ -51,15 +72,16 @@ class ResNet:
         h = (self.W0 @ X) / math.sqrt(self.D)
         stream = [h.clone()] if keep else None
         for l in range(self.L):
-            z = (self.W1[l] @ h) / rn
+            z = (self.W1[l] @ layer_norm(h)) / rn if self.k == 2 else None
             if self.k == 2:
                 F = (self.W2[l] @ phi(z)) / rn
             else:
-                F = phi(z)
+                # k=1: the block IS the single matrix applied to phi(LN(h))
+                F = (self.W1[l] @ phi(layer_norm(h))) / rn
             h = h + self.s * F
             if keep:
                 stream.append(h.clone())
-        f = (self.w @ h) / (self.gamma * rn)
+        f = (self.w @ layer_norm(h)) / (self.gamma * rn)
         return (f, stream) if keep else f
 
     # -- diagnostics -----------------------------------------------------
