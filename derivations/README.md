@@ -13,6 +13,8 @@ correction and the taxonomy.
 | `03-attention.md` | **mixed** — D4 is DMFT, D1/D2/D3/D5/D6 are heuristic | the attention parameterisation, plus the structural form of the key/query process |
 | `04-completep.md` | **heuristic only** — no DMFT anywhere | the CompleteP parameterisation, Adam |
 | `05-completep-dmft-sgd.md` | **DMFT** (cavity) | the CompleteP residual limit under SGD — dynamics, not just exponents; solver-validated |
+| `06-moe.md` | **heuristic + limit structure** — no cavity derivation | the MoE parameterisation (2601.20205 Table 1) and the three-level mean-field structure; measured in `rounds/006-moe` |
+| `07-moe-dmft.md` | **comparison only** | what `06` got right/wrong against their Appendix E, and what a real MoE DMFT still needs |
 
 ## The two methods
 
@@ -88,7 +90,9 @@ evidence.
 ## What is missing
 
 No DMFT derivation exists for **attention** (only the structural form of the
-key/query process, D4). CompleteP now has one under **SGD**
+key/query process, D4) or for **MoE** (`06`/`07` give the parameterisation and
+the limit structure, validated, but no cavity derivation, no response sector and
+no solver — see `07-moe-dmft.md` §5). CompleteP now has one under **SGD**
 (`05-completep-dmft-sgd.md`); the **Adam** case remains heuristic only.
 Attention is still supported by heuristic analysis plus measurement. That is enough for
 the HP-transfer claims made in rounds 004/005 and the CompleteP work, and it is
