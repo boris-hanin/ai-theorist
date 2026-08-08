@@ -206,12 +206,19 @@ choice and `alpha = 1` suppresses responses strictly faster.
 What is **still** not reproduced is the strict `Theta(1)` survival at
 `alpha = 1/2`: I get `L^{-1/2}` there (measured `-0.60`), not `L^0`. Getting
 `L^0` would require the response kernel `A^l` to be `Theta(1)` rather than
-`L^{-alpha}`, and the branch-factor argument above says it is not. Scope of my
-measurement: `k = 1` blocks, `P = 1`, pre-LN, `gamma_0 * horizon` in `[0.6, 3.6]`
-(§8d checks the richness dependence). Their setup is MHSA+MLP with `k = 2`.
-**Open, and narrowed**: the question is now exactly "is `A^l` `Theta(1)` or
-`L^{-alpha}`", not the coherence question, which is settled coherent. Their
-Appendix E.4 has the full computation; I have not reproduced it.
+`L^{-alpha}` — and `A^l` is now **measured directly off the solver at
+`-0.65`/`-1.09`** (§8d), so within my model it is settled: `A^l` is not
+`Theta(1)`, and the disagreement does not come from that link either.
+
+Scope of my measurement, which is where the remaining difference must live:
+`k = 1` blocks, `P = 1`, pre-LN, `gamma_0 * horizon` in `[0.6, 3.6]`. Their
+setup is MHSA+MLP with `k = 2`, where the second in-block matrix adds a response
+pair per block that my `k = 1` specialisation does not have. **That is now the
+single remaining candidate**, and it is a real one: contribution (c) counts
+response pairs, so `k` enters it directly while it does not enter (a) or (b) —
+which is exactly the pattern of what agrees and what does not. Testing it needs
+the `k = 2` solver. Their Appendix E.4 has the full computation; I have not
+reproduced it.
 
 ### vs 2505.01618 (CompleteP)
 
@@ -441,10 +448,44 @@ as evidence; recorded, not counted.)
 | 3.6 | -0.594 | **-1.006** |
 
 `alpha = 1` is on its predicted `-1.00` to within 0.04. `alpha = 1/2` sits
-persistently at `-0.59/-0.63` rather than `-0.50` — a real residual ~0.1 that I
-have **not** explained; it is in the direction of the paper being *more* right
-than my exponent, not less, and it does not go away with richness. Flagged, not
-swept.
+persistently at `-0.59/-0.63` rather than `-0.50`; see the residual below.
+
+#### The response kernel `A^l` itself, measured directly
+
+The composite above tests `d_L L^{1-3alpha}` as a whole. The one contested link
+in it is whether `A^l` is `Theta(1)` (which would give a **flat** share,
+`d_L L^{1-2alpha} = L^0`) or `L^{-alpha}`. Read straight off the converged
+solver rather than inferred:
+
+| alpha | mean `|A^l|` at `L` = 4,8,16,32 | slope | predicted `-alpha` |
+|---|---|---|---|
+| 1/2 | 5.98e-2 3.37e-2 2.36e-2 1.49e-2 | **-0.653** | -0.50 |
+| 1 | 2.58e-2 1.12e-2 5.57e-3 2.63e-3 | **-1.088** | -1.00 |
+
+`A^l` is **not** `Theta(1)`. The branch-factor argument in §6 is confirmed at
+the level of the kernel, which is the last link of the chain.
+
+**Self-consistency check the derivation forces.** The prefactor is
+`L * s * kappa = L * L^{-alpha} * (d_L L^{-alpha}) = L^0` **exactly**, so the
+response *share* and `|A^l|` must have the **same** slope — an internal
+prediction with no free parameter:
+
+| alpha | share slope | `|A^l|` slope | agree to |
+|---|---|---|---|
+| 1/2 | -0.601 | -0.653 | 0.052 |
+| 1 | -1.032 | -1.088 | 0.056 |
+
+They do. The closure is internally consistent.
+
+**The residual, stated rather than swept.** Both observables sit `0.05`–`0.16`
+*steeper* than `-alpha`, at both exponents, and the excess does **not** shrink
+with `L` (the `16 -> 32` decade alone gives `-0.665` and `-1.082`) nor with a 6x
+richness change. Since it is common to both observables it is a property of
+`A^l` itself, not of the assembly. **Named candidate, not tested:** the pre-LN
+gain `1/sqrt(H^l(t,t))`. `H^l` accumulates along the stream — at `alpha = 1/2`
+contribution (a) survives, so `H^{L+1} != H^1` — which puts an extra, `alpha`-
+and `L`-dependent factor inside every block that the §6 counting treats as a
+constant. This is the natural next thing to carry.
 
 ## 9. Status
 
@@ -457,7 +498,9 @@ swept.
 | per-block weights freeze unless `alpha = 1` | derived, matches Result 3 and Fig 5a, **and confirmed in simulation** (§8b) |
 | the init-kernel vs block-learning tension | derived |
 | response sector scales as `d_L L^{1-3alpha}` = `L^{-alpha}` | **derived (corrected) and CONFIRMED** — measured `-1.03` at `alpha=1` vs `-1.00`, `d_L=1` control bites at `-1.96` vs `-2.00`, stable under a 6x richness change (§8d). Supersedes the original `L^{1/2-2alpha}`. |
-| response functions suppressed unless `alpha = 1/2` | **direction confirmed, magnitude not.** `alpha=1/2` is least-suppressed as the paper says, but I get `L^{-1/2}` there, not `Theta(1)`. Narrowed to a single question: is `A^l` `Theta(1)` or `L^{-alpha}`? Open (§7). |
+| `A^l ~ L^{-alpha}` (the contested link) | **measured directly off the solver**: `-0.653` / `-1.088` (§8d). Not `Theta(1)`. The derivation's forced check — that share and `|A^l|` share a slope, since `L s kappa = L^0` exactly — holds to 0.06. |
+| response functions suppressed unless `alpha = 1/2` | **direction confirmed, magnitude not.** `alpha=1/2` is least-suppressed as the paper says, but I get `L^{-1/2}` there, not `Theta(1)`. Every internal link is now measured, so the difference must be in the model: **`k = 2` vs my `k = 1`** is the one remaining candidate, and (c) is the only contribution `k` enters. Open (§7). |
+| residual: both observables `0.05`-`0.16` steeper than `-alpha` | **open and stated.** Stable in `L` and richness, common to both observables. Candidate: the pre-LN gain `1/sqrt(H^l)`, which §6 counts as constant but which accumulates along the stream (§8d). |
 | solver vs simulation | **VALIDATED** at `L` = 2,4,8 and both exponents, all inside the combined two-floor bar (worst 1.72x) (§8c). |
 
 **Not attempted: solving this system numerically.** The structure is the deep-MLP
