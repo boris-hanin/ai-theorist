@@ -114,3 +114,93 @@ def data(D, P, seed=0, dtype=torch.float64):
     X = torch.randn(P, D, generator=g, dtype=dtype)
     y = torch.randn(P, generator=g, dtype=dtype)
     return X, y / y.std()
+
+
+# ---------------------------------------------------------------------------
+# Faithful implementation of the parameterisation of 2509.10167 §2.1, with an
+# explicit richness dial `alpha` and plain GD (their Eq. 5), for the rate tests
+# of round 008. No LayerNorm -- their model has none, and adding one would
+# change the analysis.
+#
+#     h^0 = x                                        x per-coordinate Theta(1)
+#     h^l = h^{l-1} + (alpha/(L M)) sum_j w^j tanh(<u^j, h^{l-1}>)
+#     u^j ~ N(0, I/D)        so <u,h> = Theta(1)
+#     w^j ~ N(0, (1/alpha)^2 I)
+#     GD:  Z <- Z - (L M eta / alpha^2) grad_Z Lhat
+#
+# With s_w = 1/alpha the residual scale is (alpha/(LM)) * ||w|| = sqrt(D)/(LM),
+# i.e. the MLU scale, for every alpha -- so `alpha` moves richness WITHOUT
+# leaving the MLU parameterisation, which is what their Theorem 2 varies.
+class MeanODENet:
+    def __init__(self, D, M, L, alpha=1.0, seed=0, dtype=torch.float64):
+        g = torch.Generator().manual_seed(seed)
+        rn = lambda *s: torch.randn(*s, generator=g, dtype=dtype)
+        self.D, self.M, self.L, self.alpha = D, M, L, alpha
+        self.U = [rn(D, M) * D ** -0.5 for _ in range(L)]      # u^j = column j
+        self.W = [rn(M, D) / alpha for _ in range(L)]          # w^j = row j
+
+    def params(self):
+        return self.U + self.W
+
+    def forward(self, X):
+        h, c = X, self.alpha / (self.L * self.M)
+        for l in range(self.L):
+            h = h + c * (phi(h @ self.U[l]) @ self.W[l])
+        return h
+
+    def loss(self, X, Y):
+        return 0.5 * (self.forward(X) - Y).pow(2).sum(-1).mean() / self.D
+
+
+def gd(net, X, Y, eta, steps):
+    """Their Eq. (5): Z <- Z - (L M eta / alpha^2) grad. Plain GD, not SignGD."""
+    lr = net.L * net.M * eta / net.alpha ** 2
+    ps = net.params()
+    for p in ps:
+        p.requires_grad_(True)
+    for _ in range(steps):
+        gs = torch.autograd.grad(net.loss(X, Y), ps)
+        with torch.no_grad():
+            for p, gr in zip(ps, gs):
+                p -= lr * gr
+    for p in ps:
+        p.requires_grad_(False)
+    return net
+
+
+def linearized_gd(net, X, Y, eta, steps):
+    """Train the model LINEARISED about its own init -- the Neural Tangent ODE
+    analogue: f_lin(p0+dp) = f(p0) + J(p0) dp, trained by the same GD rule.
+    Theorem 2 bounds how far the true ResNet is from this object, so the gap
+    between `gd` and `linearized_gd` is the quantity that should be minimised at
+    alpha* = (M L)^{1/4}."""
+    lr = net.L * net.M * eta / net.alpha ** 2
+    p0 = tuple(p.detach().clone() for p in net.params())
+    dp = [torch.zeros_like(p) for p in p0]
+    for _ in range(steps):
+        v = tuple(d.detach().requires_grad_(True) for d in dp)
+        f0, Jv = torch.autograd.functional.jvp(
+            lambda *ws: _fwd(net, X, list(ws)), p0, v, create_graph=True)
+        loss = 0.5 * (f0 + Jv - Y).pow(2).sum(-1).mean() / net.D
+        gs = torch.autograd.grad(loss, v)
+        dp = [d - lr * g for d, g in zip(dp, gs)]
+    with torch.no_grad():
+        f0, Jv = torch.autograd.functional.jvp(
+            lambda *ws: _fwd(net, X, list(ws)), p0, tuple(dp))
+    return f0 + Jv
+
+
+def _fwd(net, X, ws):
+    L, M = net.L, net.M
+    U, W = ws[:L], ws[L:]
+    h, c = X, net.alpha / (L * M)
+    for l in range(L):
+        h = h + c * (phi(h @ U[l]) @ W[l])
+    return h
+
+
+def odedata(D, P, seed=0, dtype=torch.float64):
+    g = torch.Generator().manual_seed(9000 + seed)
+    X = torch.randn(P, D, generator=g, dtype=dtype)
+    Y = torch.randn(P, D, generator=g, dtype=dtype) * 0.5
+    return X, Y

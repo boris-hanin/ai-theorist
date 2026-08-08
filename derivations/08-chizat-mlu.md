@@ -202,3 +202,23 @@ Ordered by what the down-projection init actually buys.
 Q3/Q4 are measurable **at initialisation** — no training, no optimiser
 confounds, nearly free. Q4 is the one that would falsify the papers' headline.
 Q1 is the one a practitioner would act on.
+
+## 7. Measured (rounds 007 and 008)
+
+| claim | measured | status |
+|---|---|---|
+| CLT term `sqrt(D/(LM))` at init | `L` -0.502, `M` -0.501, `D` +0.510 | **validated** |
+| fan-in control: no `M`, no `D` | `L` -0.502, `M` -0.002, `D` +0.009 | **validated** |
+| `L`/`M` interchangeable at fixed `LM` | MLU spread **1.03x**, fan-in **7.85x** | **validated** |
+| CLT term after `k` GD steps | `L` -0.513, `M` -0.500 | **validated** |
+| Euler term `1/L`, **`M`-independent** | `L` -0.953, `M` **+0.012** | **validated** |
+| `1/alpha` nonlinearity | ML-independent, monotone in `alpha` | validated in isolation |
+| lazy optimum `alpha* = (ML)^{1/4}` | — | **inconclusive** (round 008 §B) |
+| third term `1/sqrt(D)` | -0.645 vs -0.50 | suggestive, confounded |
+| `P^{-1/6}` shape | — | derived; 2 of 3 exponents supported |
+
+The decomposition that made this sharp: the Euler term is a **deterministic**
+bias (identical across seeds) while the CLT term is a **fluctuation**, so
+seed-averaging and seed-differencing isolate them separately — no two-constant
+fit of `a/L + b/sqrt(ML)` required. Details and the two instrument failures in
+`rounds/008-mean-ode-rates/results.md`.
