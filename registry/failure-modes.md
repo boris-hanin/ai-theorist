@@ -183,6 +183,26 @@ field that makes an entry actionable, so supply it for anything new.
   initialise at zero" remark is load-bearing on the rest of that convention.
   Corollary: an ablation that zeroes an init scale is not obviously benign — ask
   what population statistic it was the sole source of.
+- **F22 — a transfer verdict blind to the SHAPE of the drift.** HP-transfer
+  verdicts judge `max - min` of the optimal learning rate across a scale dial
+  against a bar (here 0.3 decades). That statistic cannot tell a drift that is
+  *settling* from one that is *running away*, and transfer is an **asymptotic**
+  claim, so only the settling one is a pass. A sub-threshold drift whose spread
+  over the largest three dial values EXCEEDS its spread over the smallest three
+  is evidence the exponent is wrong and has not finished showing it. Instance:
+  the MoE `D` dial read `+1.05 +1.13 +1.08 +0.91` — drift 0.22, under the bar,
+  reported as a pass — while its increments were `+0.08, -0.05, -0.17`,
+  accelerating away, and the true cause was a genuinely wrong parameterisation
+  (one global LR for three groups with different `D`-counting; their induced
+  updates scaled as `D^{-0.18}`, `D^{+1.28}`, `D^{+1.37}` instead of `D^0`).
+  Aggravating factor: in the same table I justified the `L` and `a` dials as
+  finite-size *because they flatten*, then applied that verdict to a curve doing
+  the opposite. Detection signature: `tail_drift > head_drift`. Fix: report
+  `head_drift_log10` and `tail_drift_log10` and return **SUSPECT**, never a pass,
+  when `tail > 1.3 * head` and the drift is statistically resolved —
+  implemented in `skills/dmft-derivation/scripts/transfer.py::verdict`. Guard:
+  when a dial passes and others fail, check that the passing ones pass *for the
+  same reason*; "small" and "settling" are different properties.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

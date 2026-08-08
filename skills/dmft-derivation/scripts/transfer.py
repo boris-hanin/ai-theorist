@@ -103,17 +103,40 @@ def verdict(losses, per_seed, lr_grid, dial_values, n_sigma=2.0,
     thresh = n_sigma * pooled * np.sqrt(2.0)
 
     resolved = drift > max(thresh, 1e-9)
+
+    # --- SHAPE of the drift, not just its size (F22) -----------------------
+    # max-minus-min is blind to whether a drift is settling or running away.
+    # Transfer is an ASYMPTOTIC claim, so a small drift that is monotone AND
+    # accelerating is worse evidence than a larger one that is flattening: the
+    # first says the exponent is wrong and has not finished showing it.
+    m = mean[~np.isnan(mean)]
+    if m.size >= 4:
+        head = float(np.max(m[:3]) - np.min(m[:3]))
+        tail = float(np.max(m[-3:]) - np.min(m[-3:]))
+    else:
+        head = tail = drift
+    # Transfer is an ASYMPTOTIC claim, so the drift must SHRINK toward the large
+    # end. `settling` is that test, and it is the one `max - min` cannot make.
+    settling = bool(tail <= head * 1.3 + 1e-12)
+
     if not np.all(inside):
         status = "UNDER-POWERED (optimum on grid edge)"
     elif pooled > 0.25:
         status = "UNDER-POWERED (lr* too noisy to resolve)"
     elif drift > practical_bar and resolved:
         status = "FAILS"
+    elif (not settling) and resolved:
+        # Sub-threshold but running away: do NOT read as a pass.
+        status = ("SUSPECT (drift %.2f dec is NOT settling: %.2f over the "
+                  "largest three vs %.2f over the smallest three)"
+                  % (drift, tail, head))
     elif resolved:
         status = "TRANSFERS (residual drift resolved but < %.2f dec)" % practical_bar
     else:
         status = "TRANSFERS"
     return {"status": status, "drift_log10": drift, "sem_log10": pooled,
+            "tail_drift_log10": tail, "head_drift_log10": head,
+            "settling": settling,
             "threshold_log10": float(thresh), "resolved": bool(resolved),
             "refined_log10_lr": mean, "per_seed_log10_lr": per_dial,
             "interior": inside, "dial": np.asarray(dial_values, dtype=float)}

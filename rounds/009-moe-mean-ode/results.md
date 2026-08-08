@@ -164,6 +164,32 @@ statement of why MoE works, and it locates the benefit of 2601.20205's Finding
 rate — the rate cannot see `E` at all, which N1/N3/N4 now confirm three separate
 ways (`+0.030`, and 0.04 decades of LR drift).
 
+## Audit of every transfer plot in the program
+
+Prompted by the `D` failure, all previously published transfer figures were
+re-judged on the **shape** of the drift, not its size. Only the MoE one was
+wrong.
+
+| figure | arm | log10 lr* | drift | tail (largest 3) | shape |
+|---|---|---|---|---|---|
+| MLP width | muP L2 | -0.97 -0.91 -0.90 -0.87 | 0.10 | **0.04** | settling |
+| MLP width | muP L3 | -0.99 -1.15 -1.03 -0.98 | 0.17 | 0.17 | non-monotone |
+| MLP width | muP L4 | -1.17 -1.14 -1.14 -1.23 | 0.09 | 0.09 | non-monotone |
+| MLP width | SP control | -2.10 -2.30 -2.49 -2.81 | 0.72 | 0.51 | fails, as it must |
+| Attention | width `N`, `aA=1` | -0.49 -0.53 -0.34 -0.60 | 0.26 | 0.26 | non-monotone |
+| Attention | width `N`, `aA=1/2` | -0.45 -0.54 -0.62 -0.62 | 0.17 | **0.08** | settling |
+| Attention | heads `H` | -0.58 -0.53 -0.62 -0.60 | 0.10 | 0.10 | non-monotone |
+| Attention | depth `L`, `aL=1` | -0.53 -0.58 -0.62 | 0.10 | 0.10 | settling |
+| Attention | depth `L`, `aL=1/2` | *identical to its control* | — | — | identity, already flagged |
+| Attention | all controls | — | 0.36–0.78 | — | bite |
+
+**No published arm other than MoE `D` shows a non-settling drift.** The MLP and
+attention figures stand as published.
+
+Registered as **F22**, and `transfer.py::verdict` now returns **SUSPECT** rather
+than a pass whenever `tail_drift > 1.3 * head_drift` and the drift is resolved.
+Regression-tested against all five cases above.
+
 ## Not done
 
 - **N5** (Euler term `1/L`, independent of `a` and `M`) — not measured.
