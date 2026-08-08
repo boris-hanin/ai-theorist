@@ -209,19 +209,102 @@ gamma_0^2 N` **independent of `L`**. My rule gives `d_L = L^{2(1/2)-1} = L^0`
 increments with covariance from `Phi(tau)`", which is contribution (a) at
 `alpha = 1/2`. **Match.**
 
-## 8. Status
+## 8. CHECKED AGAINST SIMULATION — two confirmed, one falsified
+
+`skills/dmft-resnet-depth/scripts/residual_sgd.py`, k=2 MLP blocks, tanh, SGD,
+float64, seed-averaged.
+
+### (a) init accumulation `L^{1-2 alpha}` — CONFIRMED EXACTLY
+
+Measured as `(1/N)|h^{L+1}(0) - h^1(0)|^2`, isolating the block contribution:
+
+| alpha | N=256 slope | N=1024 slope | predicted |
+|---|---|---|---|
+| 1/2 | **-0.005** | **+0.003** | 0 |
+| 1 | **-1.017** | **-1.004** | -1 |
+
+N-independent, so the exponent is clean. *First attempt measured
+`H^{L+1}-H^1` instead and got -1.50 at alpha=1: that observable mixes in a
+cross term `2s sum_l h^1.F_l / N` which is `O(N^{-1/2})` with the wrong
+`L`-scaling. Same lesson as round 005's `delta k` — measure the quantity the
+derivation is about, not a proxy that mixes paths.*
+
+### (b) per-block movement `L^{alpha-1}` — CONFIRMED at alpha=1/2, and at
+early time for alpha=1
+
+| alpha | t=2 | t=20 | t=200 | predicted |
+|---|---|---|---|---|
+| 1/2 | -0.508 | -0.504 | -0.481 | **-0.5** |
+| 1 | -0.034 | -0.113 | -0.785 | **0** |
+
+`alpha = 1/2` matches at every time, and **-0.5 is exactly the exponent
+2405.15712 Fig 5(a) measures** for key/query movement. `alpha = 1` matches at
+`t = 2, 20` and degrades by `t = 200` — because with `d_L = L` the deep models
+have already converged (loss 0.038 at L=32 vs 2.17 at L=4), so movement
+saturates. Matched-*loss* comparison gives -0.9, but steps-to-that-loss also
+scale as `L^{-0.9}` (125 → 19), so movement *per step* is `L^0` as derived.
+The papers take the limit at **fixed steps**, so the `t = 2/20` rows are the
+right comparison.
+
+### (c) `d_L = L^{2 alpha - 1}` — **FALSIFIED at alpha = 1**
+
+Direct test of contribution (b): does the derived `d_L` make the *stream*
+movement `L`-independent? Measured `(1/N)|h^{L+1}(t) - h^{L+1}(0)|^2` at fixed
+steps:
+
+| alpha | `d_L` | slope | wanted |
+|---|---|---|---|
+| 1/2 | `L^{2a-1}` = `L^0` (derived) | **-0.058** | 0 |
+| 1/2 | `L^{a-1}` = `L^{-1/2}` | -1.055 | — |
+| 1 | `L^{2a-1}` = `L^1` (derived) | **+1.506** | 0 |
+| 1 | `L^0` | -0.361 | 0 |
+
+And the HP-transfer sweep agrees: at `alpha = 1` the derived rule gives a
+**0.971 decade drift** in the optimal `eta_0` (`-1.56 -1.99 -2.26 -2.53`), i.e.
+it does not transfer.
+
+**Two things this means.**
+
+1. **The `alpha = 1/2` confirmation is vacuous as a test of the rule.** There
+   `L^{2 alpha - 1} = L^0`, so "apply the derived rule" and "apply no depth rule
+   at all" are the same run — verified, byte-identical. This is the *third* time
+   in this program an identity control has looked like evidence (round 005's
+   `alpha_L = 1/2`, the CompleteP depth-LR control, now this). The rule is only
+   tested at `alpha = 1`, and there it fails.
+2. **Since `|delta h|^2` is quadratic in the update, the measured slopes give
+   `delta h ∝ L^{-0.18}` at `d_L = L^0` and `L^{+0.755}` at `d_L = L^1`** — a
+   clean unit shift per power of `d_L`, as it must be. Setting `delta h` slope to
+   zero needs `d_L ≈ L^{0.18}`, far from the derived `L^1`.
+
+**Candidate causes, in order.** (i) My model has **no LayerNorm**, while both
+2405.15712 and CompleteP use pre-LN throughout; LN rescales every block's input
+and can change this counting. (ii) The blocks are chained through the stream, so
+a change in block `l` propagates to all later blocks — I argued this
+amplification is `Theta(1)` at `alpha = 1` but did not carry it. (iii) My blocks
+are MLP blocks, not MHSA+MLP. **Unresolved. `d_L = L^{2 alpha - 1}` is withdrawn
+as a confirmed result of this file** — it agrees with 2405.15712 Table 1 on
+paper and disagrees with my own simulation, and by the program's rule the prior
+is on my derivation or my model, not on the paper.
+
+### Not done: solver check
+
+No residual DMFT solver was built, so the **single-site system of §5 is
+unchecked** — only its scaling consequences were tested. The open response-
+function question of §7 therefore also remains open.
+
+## 9. Status
 
 | result | status |
 |---|---|
 | single-site system, sources, two response pairs per block | derived |
 | `kappa = d_L gamma_0 beta_0 L^{-alpha}` as the effective richness | derived |
-| SGD depth LR `d_L = L^{2 alpha - 1}` | derived, matches two papers |
-| init Brownian survives iff `alpha = 1/2` | derived, matches Result 3 |
-| per-block weights freeze unless `alpha = 1` | derived, matches Result 3 **and** Fig 5a's exponent |
+| SGD depth LR `d_L = L^{2 alpha - 1}` | derived and matches two papers on paper, but **FALSIFIED against my own simulation at `alpha = 1`** (§8c). Withdrawn pending LayerNorm and the chain effect. |
+| init Brownian survives iff `alpha = 1/2` | derived, matches Result 3, **and confirmed in simulation to 3 d.p.** (§8a) |
+| per-block weights freeze unless `alpha = 1` | derived, matches Result 3 and Fig 5a, **and confirmed in simulation** (§8b) |
 | the init-kernel vs block-learning tension | derived |
 | response functions suppressed unless `alpha = 1/2` | **NOT reproduced** — I get `L^{-1/2}` at both. Open. |
 
-Not attempted: solving this system numerically. The structure is the deep-MLP
+**Not attempted: solving this system numerically.** The structure is the deep-MLP
 system with `gamma_0 -> kappa` plus a layer-time integral, so
 `dmft_deep_nonlinear.py` is the natural starting point, but nothing here has
 been checked against a solver or a simulation.
