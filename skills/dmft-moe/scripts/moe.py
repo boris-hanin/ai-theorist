@@ -68,7 +68,15 @@ class MoENet:
         self.b = [torch.zeros(E, dtype=dtype) for _ in range(L)]
         self.Wu = [rn(E, n, self.m) * s_up for _ in range(L)]
         self.Wd = [rn(E, self.m, n) * s_dn for _ in range(L)]
-        self.w = rn(n) * n ** -0.5
+        # Readout init is n^-1, NOT fan-in n^-1/2. This is the level-1 instance
+        # of exactly the same mean-field condition as sigma(W_down) in §1c:
+        #   f(init) = sigma_w sqrt(n)  (incoherent),  Delta f = n * eta_w (coherent)
+        # eta_w = 1/n gives Delta f = Theta(1); sigma_w = n^-1 then sends
+        # f(init) = n^-1/2 -> 0, so the trained part dominates. With fan-in
+        # n^-1/2 the init function stays Theta(1) and a random Theta(1)
+        # component survives the width limit -- which broke the width collapse
+        # test (11.5 s.e.) before this was fixed.
+        self.w = rn(n) * n ** -1.0
         self._init_snapshot()
 
     def _init_snapshot(self):
