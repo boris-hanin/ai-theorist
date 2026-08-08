@@ -240,11 +240,39 @@ to be most informative.
 **§7's hazard did not materialise**: the `a` active experts add *incoherently*
 despite sharing the routing-conditioning event, so `W_eff = L a M` stands.
 
-**One gap this file had**, caught by the HP-transfer test: §2 fixes the LR
-scaling in `L`, `M`, `a` but never states its **`D`-dependence**. Since the loss
-is per-coordinate normalised, `b ~ 1/D` and `grad_w ~ 1/(L M a D)`, so the
-learning rate must carry a factor `D`:
+**The LR sector of this file was wrong, twice, and the HP-transfer test found
+both.** §2 fixes the LR scaling in `L`, `M`, `a` but never states its
+`D`-dependence.
 
-    **lr = L * M * a * D * eta**
+*First fix (insufficient).* Since the loss is per-coordinate normalised,
+`b ~ 1/D`, so `grad_w ~ 1/(L M a D)` and a factor `D` is needed. With
+`lr = L M a D eta` the `D` drift fell 0.65 → 0.22 decades. I reported that as a
+pass. **It was not.** The `D` curve was `+1.05, +1.13, +1.08, +0.91` — a
+*monotone decline* over the last three points, accelerating (`+0.08, -0.05,
+-0.17`), where the `L` and `a` curves flatten. A drift that accelerates is not a
+finite-size transient.
 
-Without it the optimal LR drifts 0.65 decades across `D`; with it, 0.22.
+*Second fix (the real one).* **A single global LR cannot be correct in `D`,**
+because the three parameter groups have different `D`-counting. Measured with one
+global `lr = L M a D eta`, the induced change in each group's own observable
+scales as
+
+    W (block output)  D^{-0.18}      U (z = <u,h>)  D^{+1.28}      R (logit)  D^{+1.37}
+
+instead of `D^0` — the router and up-projection updates *blow up* with embedding
+dimension. Deriving each group under the coherent (LLN-alignment) labelling that
+governs the trained regime:
+
+    **lr_U = L M a / D        lr_W = L M a D        lr_R = L a sqrt(M) / D**
+
+a spread of `D^2` between the up- and down-projections. With these the `D` curve
+changes *character* — increments `+0.14, +0.06, +0.03, +0.01`, converging — and
+the drift over the largest three values is **0.04 decades**.
+
+*Residual, unexplained.* These LRs come from the coherent labelling, so at
+initialisation the one-step exponents should sit exactly `1/2` lower for `U` and
+`R` (the F18 signature). The *shift* is exactly `-2.0` for both, as intended, but
+the absolute one-step slopes are `-0.72` and `-0.64` against a predicted `-0.50`,
+and `W` is `-0.18` against `0`. A common `~0.2` offset across all three groups
+that I have not accounted for. The asymptotic transfer is unaffected; the
+one-step counting is not closed.

@@ -86,6 +86,33 @@ class MoEMeanODE:
         return 0.5 * (self.forward(X) - Y).pow(2).sum(-1).mean() / self.D
 
 
+def group_lrs(net, eta):
+    """Per-group learning rates. A SINGLE global LR is WRONG in D.
+
+    Measured with one global lr = L M a D eta, the induced change in each
+    group's own observable scales as D^-0.18 (W), D^+1.28 (U), D^+1.37 (R)
+    instead of D^0 -- so the router and up-projection updates blow up with the
+    embedding dimension. Derivation, using the coherent (LLN-alignment)
+    labelling that governs the trained regime:
+
+      W:  block output change per coord = c_L * (a M) * dW / a ... = dW
+          grad_w ~ (c_L/a)(1/D)          =>  lr_W = L M a D
+      U:  dz = <du, h> = lr_U (c_L/a) <w,b> ||h||^2,  <w,b> coherent = Theta(1)
+          =>  lr_U = L M a / D
+      R:  d<r,h> = lr_R (c_L/a) <E,b> ||h||^2,  <E,b> coherent = sqrt(M)
+          =>  lr_R = L a sqrt(M) / D
+
+    Note the spread between U and W is D^2. At INITIALISATION <w,b> and <E,b>
+    are incoherent and carry an extra D^-1/2, so the one-step exponents differ
+    from these by 1/2 -- the F18 signature. These are the asymptotic values, and
+    HP transfer is an asymptotic claim.
+    """
+    L, M, a, D = net.L, net.M, net.a, net.D
+    return ([L * M * a / D * eta] * L +           # U
+            [L * M * a * D * eta] * L +           # W
+            [L * a * math.sqrt(M) / D * eta] * L) # R
+
+
 def gd(net, X, Y, eta, steps):
     """LR scaled so the per-unit update is Theta(eta).
 
@@ -96,7 +123,7 @@ def gd(net, X, Y, eta, steps):
     The D was MISSING in the first version, which made Delta w ~ eta/D and made
     the optimal LR drift 0.65 decades across D (round 009 N4). It is the only
     dial whose LR dependence derivation 09 did not state explicitly."""
-    lr = net.L * net.M * net.a * net.D * eta
+    lrs = group_lrs(net, eta)
     ps = net.params()
     for p in ps:
         p.requires_grad_(True)
@@ -108,7 +135,7 @@ def gd(net, X, Y, eta, steps):
             break
         gs = torch.autograd.grad(loss, ps)
         with torch.no_grad():
-            for p, gr in zip(ps, gs):
+            for p, gr, lr in zip(ps, gs, lrs):
                 p -= lr * gr
         hist.append(float(loss))
     for p in ps:

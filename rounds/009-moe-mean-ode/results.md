@@ -27,7 +27,7 @@ experts contribute to a token's forward pass, so
 | N1c | fan-in control: `M` drops out | **-0.013** (vs `-0.512` MLU) | **PASS** |
 | **N2** | **invariant to the split at fixed `L a M`** | spread **1.10x** over 10 splits | **PASS** |
 | N2c | fan-in not invariant | spread **3.90x** | **PASS** |
-| N4 | optimal LR transfers | `L` 0.11, `a` 0.06, `M` 0.14, `D` 0.22, `E` 0.04 | **PASS** (asymptotically) |
+| N4 | optimal LR transfers | see below — needed **per-group** LRs | **PASS** after correction |
 | N5 | Euler term `1/L`, `a`/`M`-independent | — | **not tested** |
 
 ## N2 — the test that mattered
@@ -56,7 +56,20 @@ The `(8,2,16)` row has `M = D = 16`, where the two initialisations are literally
 the same model — the identity control landing inside the sweep, and agreeing to
 every printed digit.
 
-## N4 — HP transfer, and a missing factor it caught
+## N4 — HP transfer, and the two LR errors it caught
+
+**Corrected result** (per-group learning rates, `lr_U = LMa/D`, `lr_W = LMaD`,
+`lr_R = La sqrt(M)/D`):
+
+| dial | range | drift, full | drift, largest 3 |
+|---|---|---|---|
+| embedding `D` | 8 → 128 | 0.24 | **0.04** |
+| depth `L` | 4 → 64 | 0.16 | **0.01** |
+| active experts `a` | 2 → 32 | 0.06 | 0.03 |
+| expert width `M` | 8 → 128 | 0.08 | 0.07 |
+| expert count `E` (`a` fixed) | 16 → 128 | **0.03** | 0.03 |
+
+### The history, because the first "pass" was wrong
 
 First pass: `D` drifted **0.65 decades** and pinned at the grid edge, while
 `L`, `a`, `M` drifted 0.22–0.25. The `D` failure was a real gap: `09` states the
@@ -66,9 +79,32 @@ normalised so `b ~ 1/D`, hence `grad_w ~ 1/(L M a D)` and
 
     **lr = L * M * a * D * eta**
 
-With that, `D` drift → **0.22, interior**. This is the second time in this
-session a preregistered dial has caught a scaling factor the derivation left
-implicit (cf. `05` §1's unstated `d_L` domain, F19).
+With that, `D` drift → 0.22, interior — **and I reported that as a pass. It was
+not.** The curve was `+1.05, +1.13, +1.08, +0.91`: a monotone decline over the
+last three points with *accelerating* increments (`+0.08, -0.05, -0.17`), where
+`L` and `a` flatten. I had justified `L`/`a` as finite-size *because* they
+flatten, then applied the same verdict to a curve doing the opposite, against an
+arbitrary 0.25 bar.
+
+**The real cause: a single global LR cannot be correct in `D`.** The three
+parameter groups have different `D`-counting. Measured with one global LR, the
+induced change in each group's own observable scales as
+
+| group | observable | measured | required |
+|---|---|---|---|
+| `W` down-projection | block output | `D^{-0.18}` | `D^0` |
+| `U` up-projection | `z = <u,h>` | **`D^{+1.28}`** | `D^0` |
+| `R` router | logit `<r,h>` | **`D^{+1.37}`** | `D^0` |
+
+The router and up-projection updates blow up with embedding dimension. Per-group
+LRs derived from the coherent labelling (`09` §9) fix it, and the `D` curve
+changes character: increments `+0.14, +0.06, +0.03, +0.01`, converging.
+
+This is the second time this session a preregistered dial caught a scaling factor
+a derivation left implicit (cf. `05` §1's unstated `d_L` domain, F19) — and the
+first time this session I passed a dial that should have failed. The lesson is in
+the *shape* of the drift, not its size: **a drift that accelerates is not a
+finite-size transient**, whatever the bar says.
 
 The residual `L`/`a` drift is **finite-size**, not a broken rule — it shrinks
 monotonically as the smallest configs are dropped, which is what an asymptotic
