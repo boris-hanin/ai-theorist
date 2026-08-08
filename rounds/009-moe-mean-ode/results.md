@@ -190,6 +190,35 @@ Registered as **F22**, and `transfer.py::verdict` now returns **SUSPECT** rather
 than a pass whenever `tail_drift > 1.3 * head_drift` and the drift is resolved.
 Regression-tested against all five cases above.
 
+## Settled after the audit
+
+**1. The ~0.2 one-step residual (was: unexplained).** Every link in the chain was
+measured separately and every one is on prediction — `h` `+0.004`, `b` `-0.995`,
+`z` `+0.006`, gate `-0.005`, `<w,b>` `-0.490`, `<E,b>` `-0.478`, and the
+gradients `grad_U -0.572`, `grad_W -1.068`, `grad_R -0.499` against `-1/2`,
+`-1`, `-1/2`. So the residual is small deviations compounding, not a wrong
+exponent — and it is **finite-D**: refitting the same observables on a larger
+window settles all three onto their derived values.
+
+| group | fit over `D` = 8–64 | over `D` = 64–512 | predicted |
+|---|---|---|---|
+| `W` block | -0.241 | **-0.029** | 0 |
+| `U` (`z`) | -0.820 | **-0.526** | -1/2 |
+| `R` (logit) | -0.678 | **-0.452** | -1/2 |
+
+**2. Round 008's confounded `1/sqrt(D)` term.** That measurement was contaminated
+because the regression problem itself changed with `D`. A **fixed-task**
+instrument (`MoEFixedTask`: fixed `d0 = 8` input, scalar readout, *identical*
+`X`, `Y` at every `D`, so every shape approximates the same function) removes
+exactly that confound. Re-measured: slope **-0.580** against `-1/2`, versus
+`-0.645` confounded. Inside the bar and un-confounded — but the deviations sit
+only `1.2x`–`2.0x` above their seed floor, so this is **consistent with `-1/2`,
+not cleanly established**. More seeds would settle it.
+
+A bug found on the way: the readout LR was written `eta * D` when the counting
+gives `eta / D` (`f = <w,h>` is coherent over `D`, so `df = D dw` and `dw` must
+be `Theta(1/D)`). Every fixed-task run diverged until it was inverted.
+
 ## Not done
 
 - **N5** (Euler term `1/L`, independent of `a` and `M`) — not measured.

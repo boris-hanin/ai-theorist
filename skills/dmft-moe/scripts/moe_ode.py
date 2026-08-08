@@ -148,3 +148,65 @@ def odedata(D, P, seed=0, dtype=torch.float64):
     X = torch.randn(P, D, generator=g, dtype=dtype)
     Y = torch.randn(P, D, generator=g, dtype=dtype) * 0.5
     return X, Y
+
+
+# ---------------------------------------------------------------------------
+# Fixed-task variant for the C^{-1/6} rate test (round 010).
+#
+# The rate test must compare models at DIFFERENT D, so it needs an observable
+# whose meaning does not change with D. Solution: a fixed low-dimensional task
+# with a scalar readout, so every shape approximates the SAME function
+# R^d0 -> R and the data is literally identical across shapes.
+#
+#   h^0 = W_embed x,  W_embed in R^{d0 x D}, entries N(0,1/d0)  -> h per-coord O(1)
+#   ... L MoE blocks as above ...
+#   f   = <w, h^L>,   sigma_w = 1/D   (muP readout: f(init) -> 0, trained part O(1))
+class MoEFixedTask(MoEMeanODE):
+    def __init__(self, d0, **kw):
+        super().__init__(**kw)
+        g = torch.Generator().manual_seed(kw.get("seed", 0) + 90000)
+        D = self.D
+        self.d0 = d0
+        self.Wemb = torch.randn(d0, D, generator=g, dtype=torch.float64) / math.sqrt(d0)
+        self.wout = torch.randn(D, generator=g, dtype=torch.float64) / D
+
+    def params(self):
+        return super().params() + [self.wout]
+
+    def forward_scalar(self, X):
+        h = X @ self.Wemb
+        for l in range(self.L):
+            h = h + self.block(h, l)
+        return h @ self.wout
+
+    def loss(self, X, Y):
+        return 0.5 * (self.forward_scalar(X) - Y).pow(2).mean()
+
+
+def gd_fixed(net, X, Y, eta, steps):
+    # Readout: f = <w, h^L> is a COHERENT sum over D, so df = D * dw and dw must
+    # be Theta(1/D). grad_w = (f-y) h is Theta(1) per coordinate, hence lr = eta/D.
+    # (An earlier version had eta*D -- inverted -- and every run diverged.)
+    lrs = group_lrs(net, eta) + [eta / net.D]
+    ps = net.params()
+    for p in ps:
+        p.requires_grad_(True)
+    for _ in range(steps):
+        loss = net.loss(X, Y)
+        if not torch.isfinite(loss):
+            break
+        gs = torch.autograd.grad(loss, ps)
+        with torch.no_grad():
+            for p, gr, lr in zip(ps, gs, lrs):
+                p -= lr * gr
+    for p in ps:
+        p.requires_grad_(False)
+    return net
+
+
+def shape_for(C, kappa=0.25, a=4):
+    """The optimal-rate shape of derivations/09 §4: D ~ C^(1/3), L ~ C^(1/6)."""
+    L = max(2, int(round(C ** (1 / 6.0))))
+    D = max(4, int(round(C ** (1 / 3.0))))
+    M = max(2, int(round(C / (L * D * a))))
+    return dict(L=L, D=D, M=M, E=int(a / kappa), kappa=kappa)
