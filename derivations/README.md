@@ -11,7 +11,8 @@ correction and the taxonomy.
 | `01-deep-mlp.md` | **DMFT** | full single-site system for a deep MLP |
 | `02-deep-linear.md` | **DMFT** | algebraic closure, operators, responses |
 | `03-attention.md` | **mixed** — D4 is DMFT, D1/D2/D3/D5/D6 are heuristic | the attention parameterisation, plus the structural form of the key/query process |
-| `04-completep.md` | **heuristic only** — no DMFT anywhere | the CompleteP parameterisation |
+| `04-completep.md` | **heuristic only** — no DMFT anywhere | the CompleteP parameterisation, Adam |
+| `05-completep-dmft-sgd.md` | **DMFT** (cavity) | the CompleteP residual limit under SGD — dynamics, not just exponents |
 
 ## The two methods
 
@@ -76,8 +77,9 @@ evidence.
 ## What is missing
 
 No DMFT derivation exists for **attention** (only the structural form of the
-key/query process, D4) or for **CompleteP**. Both parameterisations are
-currently supported by heuristic analysis plus measurement. That is enough for
+key/query process, D4). CompleteP now has one under **SGD**
+(`05-completep-dmft-sgd.md`); the **Adam** case remains heuristic only.
+Attention is still supported by heuristic analysis plus measurement. That is enough for
 the HP-transfer claims made in rounds 004/005 and the CompleteP work, and it is
 **not** enough to claim a replication of either paper's DMFT analysis — which is
 why those rounds say so explicitly in their scope sections.

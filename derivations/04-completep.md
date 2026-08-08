@@ -1,6 +1,7 @@
 # CompleteP for Adam, derived from first principles — then checked against 2505.01618
 
-> **Method: HEURISTIC ONE-STEP SCALE ANALYSIS ONLY.** No DMFT anywhere in this file. It derives the parameterisation (a table of exponents) by coherent/incoherent counting through one Adam step. It says nothing about the limiting dynamics, and does not constitute a replication of the paper's theory beyond Table 1.
+> **Method: HEURISTIC ONE-STEP SCALE ANALYSIS ONLY.** (The DMFT companion for
+> the same architecture under **SGD** is `05-completep-dmft-sgd.md`.) No DMFT anywhere in this file. It derives the parameterisation (a table of exponents) by coherent/incoherent counting through one Adam step. It says nothing about the limiting dynamics, and does not constitute a replication of the paper's theory beyond Table 1.
 
 Target: Dey, Zhang, Noci, Li, Bordelon, Bergsma, Pehlevan, Hanin, Hestness,
 *Don't be lazy: CompleteP enables compute-efficient deep transformers*
