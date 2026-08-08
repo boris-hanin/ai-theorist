@@ -125,6 +125,42 @@ field that makes an entry actionable, so supply it for anything new.
   declare whether it claims t=1 or t→large; if a claim spans both, it needs the
   DMFT track or a measurement. See `derivations/README.md` for the method
   taxonomy this failure motivates.
+- **F19 — a derived coefficient with an unstated domain.** A derivation fixes a
+  factor by counting *some* set of objects (here `d_L = L^{2 alpha - 1}`, fixed
+  by accumulation over the `L` residual blocks), then writes it into a global
+  rule (`theta_dot = -d_L gamma^2 grad L`) without saying **which parameters it
+  applies to**. Every downstream implementation then resolves the ambiguity
+  independently, and they need not agree. Instance: `derivations/05` §1 left the
+  scope of `d_L` unstated; the *simulator* applied it to `W^0` and the *solver*
+  applied it to the readout — opposite boundaries, same error. The first
+  produced a fake falsification of the rule (slope `+1.55` vs a wanted `0`) and
+  the second produced a fake solver-vs-sim gap (`1.92x`/`4.79x` over floor).
+  Detection signature: a discrepancy whose size **grows with `L`** (or with
+  whatever the coefficient counts) while the quantity it should govern is
+  `L`-flat — the boundary path scales differently from the bulk path it was
+  wrongly applied to. Fix: state the domain in the same sentence as the
+  coefficient. Guard: for any factor fixed by counting `n` copies of a thing,
+  **name the objects it multiplies**, and check every object that appears
+  `O(1)` times rather than `n` times is excluded. Cross-check against the
+  source's own table (CompleteP Table 1 gives Emb/Unemb no depth factor —
+  that was on the page throughout and would have caught both).
+- **F20 — the wrong floor for a common-random-number difference.** F8 says
+  certify by sample-halving and quote the MC floor beside the gap. That recipe
+  is for an **unpaired** comparison. When the two quantities being differenced
+  share a random stream — an ablation solved twice from the same seed, ON vs
+  OFF — the difference is a CRN estimate whose variance is far below either
+  solve's own floor, because the common noise cancels. Quoting the individual
+  MC floor then **over-rejects**: real signal is discarded as noise. Instance:
+  the response-sector ablation in `derivations/05` §8d, where half the points
+  read `0.3x`/`0.4x` of the individual floor and were rewritten as `5.6x`–`297x`
+  of the correct one. Detection signature: an ablation whose measured effect is
+  smooth and monotone in a control parameter, yet "inside the floor" — smooth
+  monotone trends are not what noise looks like. Fix: floor the **difference**,
+  i.e. recompute `d(S)` and `d(S/2)` at fixed seed and use `|d(S) - d(S/2)|`.
+  Guard: whenever two runs share a seed, state which floor is being quoted.
+  Note this cuts the opposite way from F8's usual conservatism, so it will not
+  be caught by "was I strict enough?" — only by asking whether the runs were
+  paired.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

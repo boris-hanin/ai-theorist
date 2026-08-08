@@ -59,12 +59,22 @@ class ResNet:
         self.w = rn(N)
         self.W1_0 = [W.clone() for W in self.W1]       # keep init for movement stats
 
+    def block_params(self):
+        """In-block parameters -- these and only these take the depth LR factor
+        d_L. The L-block accumulation that fixes d_L counts these; W^0 and the
+        readout appear ONCE, not L times, so applying d_L to them is wrong.
+        CompleteP Table 1 says the same: Emb and Unemb LR carry no depth factor.
+        Applying d_L to W^0 was the cause of the alpha=1 falsification recorded
+        in derivations/05 §8c -- it made the stream input move L times faster,
+        giving stream-movement slope +1.55 instead of 0."""
+        return self.W1 + (self.W2 if self.W2 is not None else [])
+
+    def outer_params(self):
+        """Outside the residual stack: no depth factor."""
+        return [self.W0, self.w]
+
     def params(self):
-        # W0 frozen, to match the solver's boundary condition
-        p = self.W1 + [self.w]
-        if self.W2 is not None:
-            p += self.W2
-        return p
+        return self.block_params() + self.outer_params()
 
     def forward(self, X, keep=False):
         """X: (D, P). Returns f (P,), and optionally the per-layer stream."""
@@ -106,8 +116,10 @@ def train(net, X, y, dt, steps, d_L=None, record=False):
     """
     if d_L is None:
         d_L = net.L ** (2 * net.alpha - 1.0)
-    lr = d_L * net.gamma ** 2 * dt
-    ps = net.params()
+    base = net.gamma ** 2 * dt
+    blk, out = net.block_params(), net.outer_params()
+    ps = blk + out
+    lrs = [d_L * base] * len(blk) + [base] * len(out)   # d_L on blocks ONLY
     for p in ps:
         p.requires_grad_(True)
     hist = []
@@ -118,7 +130,7 @@ def train(net, X, y, dt, steps, d_L=None, record=False):
             return float("inf"), hist
         gs = torch.autograd.grad(loss, ps)
         with torch.no_grad():
-            for p, gr in zip(ps, gs):
+            for p, gr, lr in zip(ps, gs, lrs):
                 p -= lr * gr
         if record:
             hist.append(float(loss))

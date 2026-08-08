@@ -33,7 +33,7 @@ Single-site system (one scalar trajectory per sample, per layer):
     kappa = d_L gamma0 beta0 L^{-alpha}
 
 Readout (correlator rule, F4):  f(t) = gamma0^{-1} <w(t) hbar^{L+1}(t)>,
-with  w(t) = w(0) + d_L gamma0 int_0^t ds D(s) hbar^{L+1}(s),
+with  w(t) = w(0) + gamma0 int_0^t ds D(s) hbar^{L+1}(s)   (no d_L: outside the stack),
 and   g^{L+1}(t) = w(t)/sqrt(H^{L+1}(t,t)).
 
 STATUS -- NOT YET VALIDATED. First solver-vs-simulation comparison
@@ -171,7 +171,11 @@ def solve(y, L, alpha, dt, T, S=4096, gamma0=1.0, beta0=1.0, Kx=1.0, d_L=None,
             hb[L + 1][:, t] = h[L + 1][:, t] / np.sqrt(HdL)
 
             # -- readout and prediction (correlator rule, F4)
-            w[:, t] = zw + (d_L * gamma0 * dt) * (hb[L + 1][:, past] @ Dlt[past]) \
+            # NO d_L here: the readout sits OUTSIDE the residual stack, so the
+            # L-block counting that fixes d_L does not apply to it. CompleteP
+            # Table 1 agrees (Unemb LR carries no depth factor). Applying d_L
+            # here was the mirror of the simulator bug in derivations/05 §8c.
+            w[:, t] = zw + (gamma0 * dt) * (hb[L + 1][:, past] @ Dlt[past]) \
                 if t else zw
             f[t] = float(np.mean(w[:, t] * hb[L + 1][:, t])) / gamma0
             Dlt[t] = y - f[t]

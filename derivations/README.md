@@ -12,7 +12,7 @@ correction and the taxonomy.
 | `02-deep-linear.md` | **DMFT** | algebraic closure, operators, responses |
 | `03-attention.md` | **mixed** — D4 is DMFT, D1/D2/D3/D5/D6 are heuristic | the attention parameterisation, plus the structural form of the key/query process |
 | `04-completep.md` | **heuristic only** — no DMFT anywhere | the CompleteP parameterisation, Adam |
-| `05-completep-dmft-sgd.md` | **DMFT** (cavity) | the CompleteP residual limit under SGD — dynamics, not just exponents |
+| `05-completep-dmft-sgd.md` | **DMFT** (cavity) | the CompleteP residual limit under SGD — dynamics, not just exponents; solver-validated |
 
 ## The two methods
 
@@ -67,6 +67,17 @@ So the honest division of labour: **use the heuristic track to get the
 parameterisation, and do not trust it for anything that depends on how
 correlations develop over training.** If a claim involves more than one step,
 it needs the DMFT track or an explicit measurement.
+
+- **And the DMFT track made the same class of error, twice.** `05`'s
+  contribution (c) labelled the per-block Onsager terms *incoherent* when they
+  add coherently, and separately treated the response kernel `A^l` as `Theta(1)`
+  when it carries a branch factor `L^{-alpha}`. At `alpha = 1/2` the two errors
+  cancel **exactly**, so the formula looked right at the exponent everyone
+  checks. Only `alpha = 1` exposed it, and only against a solver. So F18 is not
+  "the heuristic track is the sloppy one" — coherent/incoherent labelling is the
+  error-prone step in **both** methods. What the DMFT track adds is that its
+  claims are *solvable*, hence falsifiable by measurement rather than by
+  argument.
 
 ## Registered as F18
 

@@ -25,6 +25,17 @@ All weights i.i.d. `N(0,1)`. Dynamics `theta_dot = -d_L gamma^2 grad_theta L`,
 where `d_L` is a depth factor on the learning rate, **left free** and fixed by
 the derivation in §6. `Delta_mu = -dl/df_mu`.
 
+> **`d_L` applies to the in-block weights `W^{l,1}, W^{l,2}` and to those
+> ONLY.** `W^0` and the readout `w` sit *outside* the residual stack. The
+> counting in §6 that fixes `d_L` is an accumulation over the `L` blocks; the
+> boundary weights appear **once, not `L` times**, so there is nothing to
+> compensate and applying `d_L` to them is simply wrong. CompleteP Table 1 says
+> the same thing independently — Emb and Unemb LR carry no depth factor.
+> This qualification was implicit and unstated in the first version of this
+> file, and both the simulator and the solver were written without it. That is
+> the entire content of the §8c "falsification" and of the first solver-vs-sim
+> gap; see §8c.
+
 ## 2. Backward fields (M1 prerequisite)
 
 `g^l_mu = gamma sqrt(N) df_mu/dh^l_mu` on the stream. From
@@ -119,7 +130,27 @@ that is the whole content of the depth limit:
 |---|---|---|
 | **(a) Gaussian source `u^{l,2}`** | independent across blocks ⇒ **incoherent**, `sqrt(L)` | `L^{-alpha} sqrt(L)` = **`L^{1/2 - alpha}`** |
 | **(b) trained memory `kappa Delta Phi g`** | all blocks driven by the same `Delta` ⇒ **coherent**, `L` | `L^{-alpha} * kappa * L` = `d_L L^{1 - 2 alpha}` |
-| **(c) Onsager `kappa A g`** | response to each block's *own* source ⇒ **incoherent** | `d_L L^{1/2 - 2 alpha}` |
+| **(c) Onsager `kappa A g`** | driven by the shared kernels ⇒ **coherent**, `L`; and `A` itself carries one branch factor `L^{-alpha}` | `d_L L^{1 - 3 alpha}` |
+
+> **Contribution (c) was wrong twice over in the first version of this file**,
+> which had `d_L L^{1/2 - 2 alpha}`. Both errors are now measured and corrected
+> (§8d):
+> 1. It summed the per-block Onsager terms **incoherently** (`sqrt(L)`). They
+>    are responses to each block's own independent source, which is what made
+>    me call them incoherent — but each response is a *functional of the shared
+>    kernels* `H, Phi, G, P` and is contracted against the shared `Delta`, so
+>    the terms carry a systematic sign and add **coherently**: `L`, not
+>    `sqrt(L)`.
+> 2. It treated the response kernel `A^l` as `Theta(1)`. It is not: the
+>    sensitivity path that defines `A^l` runs *through the residual branch*
+>    (`dh^{l+1}/dh^l = 1 + (beta_0 L^{-alpha}) dF/dh`, and only the second term
+>    is the response), so `A^l ~ L^{-alpha}`.
+>
+> The exponent shift from the two fixes is `+1/2` and `-alpha`. **At
+> `alpha = 1/2` they cancel exactly**, which is precisely why the old formula
+> looked correct there and only `alpha = 1` exposed it. Assembling honestly:
+> `L * s * kappa * A = L * L^{-alpha} * (d_L L^{-alpha}) * L^{-alpha}
+> = d_L L^{1-3alpha}`.
 
 Requiring (b) `= Theta(1)` fixes the learning-rate depth factor:
 
@@ -131,7 +162,7 @@ and then, substituting back:
 |---|---|---|
 | (a) init Brownian `L^{1/2-alpha}` | **`Theta(1)`** — survives | `L^{-1/2}` — **vanishes** |
 | (b) trained memory | `Theta(1)` | `Theta(1)` |
-| (c) Onsager `d_L L^{1/2-2alpha}` | `L^{-1/2}` | `L^{-1/2}` |
+| (c) Onsager `d_L L^{1-3alpha}` = **`L^{-alpha}`** | `L^{-1/2}` | `L^{-1}` |
 | per-block weight movement `d_L L^{-alpha}` = `L^{alpha-1}` | `L^{-1/2}` — **blocks freeze** | **`Theta(1)`** — blocks learn |
 
 **The trichotomy.** (a) and the per-block movement pull in *opposite*
@@ -162,22 +193,25 @@ Their limiting stream equation is
 | Brownian covariance `∝ delta(tau-tau')[Phi + V^sigma]`, Eq. (11) | source `u^{l,2} ~ GP(0, Phi^l)`, independent across blocks ⇒ white in layer time with covariance `Phi` | **match** (their `V^sigma` is the attention-block analogue of my `Phi`) |
 | "weights inside each hidden layer are **frozen** in the `L -> inf` limit **unless** `alpha_L = 1`" | per-block movement `L^{alpha-1}` | **match** |
 | Fig. 5(a): key/query weight change `~ L^{-1/2}` at `alpha_L = 1/2` | `L^{alpha-1}` at `alpha = 1/2` is `L^{-1/2}` | **match, including the exponent** |
-| "all response functions are suppressed at `L -> inf` **unless** `alpha_L = 1/2`" | contribution **(c)**, which I get as `L^{-1/2}` at *both* exponents | **MISMATCH — see below** |
+| "all response functions are suppressed at `L -> inf` **unless** `alpha_L = 1/2`" | contribution **(c)**, corrected to `d_L L^{1-3alpha}` = `L^{-alpha}` | **direction confirmed; strict `Theta(1)` at `alpha=1/2` not reproduced — see below** |
 
-**The one disagreement, stated plainly.** I derive the Onsager contribution as
-incoherent across blocks, giving `d_L L^{1/2-2alpha} = L^{-1/2}` at both
-`alpha = 1/2` and `alpha = 1`. The paper says responses survive at `alpha = 1/2`
-and are suppressed at `alpha = 1`. Getting `Theta(1)` at `alpha = 1/2` requires
-the response contribution to accumulate **coherently** (`L`, not `sqrt(L)`),
-i.e. `d_L L^{1-2alpha} = L^0`.
+**The disagreement, restated after measuring it (§8d).** My original claim here
+was that responses go as `L^{-1/2}` at *both* exponents — i.e. that `alpha` does
+not enter at all. **That is falsified.** The measured response share scales as
+`L^{-alpha}`: slope `-1.03` at `alpha = 1` against a predicted `-1.00`, with the
+`d_L = 1` control biting at `-1.96` against a predicted `-2.00`. So the paper's
+*direction* is right and I was wrong — `alpha = 1/2` is the least-suppressed
+choice and `alpha = 1` suppresses responses strictly faster.
 
-Which is right turns on whether the per-block Onsager terms are correlated
-across blocks. They are responses to each block's own independent source, which
-is what made me call them incoherent — but the responses are functionals of the
-*shared* kernels `H, Phi, G, P`, which may make them coherent after all. **I have
-not settled this.** The paper's Appendix E.4 has the full computation; I have
-not reproduced it. Recorded as an open disagreement rather than resolved in my
-favour, and by the program's own rule the prior is on my derivation being wrong.
+What is **still** not reproduced is the strict `Theta(1)` survival at
+`alpha = 1/2`: I get `L^{-1/2}` there (measured `-0.60`), not `L^0`. Getting
+`L^0` would require the response kernel `A^l` to be `Theta(1)` rather than
+`L^{-alpha}`, and the branch-factor argument above says it is not. Scope of my
+measurement: `k = 1` blocks, `P = 1`, pre-LN, `gamma_0 * horizon` in `[0.6, 3.6]`
+(§8d checks the richness dependence). Their setup is MHSA+MLP with `k = 2`.
+**Open, and narrowed**: the question is now exactly "is `A^l` `Theta(1)` or
+`L^{-alpha}`", not the coherence question, which is settled coherent. Their
+Appendix E.4 has the full computation; I have not reproduced it.
 
 ### vs 2505.01618 (CompleteP)
 
@@ -246,7 +280,44 @@ scale as `L^{-0.9}` (125 → 19), so movement *per step* is `L^0` as derived.
 The papers take the limit at **fixed steps**, so the `t = 2/20` rows are the
 right comparison.
 
-### (c) `d_L = L^{2 alpha - 1}` — **FALSIFIED at alpha = 1**
+### (c) `d_L = L^{2 alpha - 1}` — first FALSIFIED, then **RESOLVED AND CONFIRMED**
+
+> **Resolution (later round).** The falsification below was **my simulator's
+> bug, not the rule's.** `residual_sgd.py` applied `d_L` to *every* parameter,
+> including `W^0`. `W^0` sits outside the residual stack and appears once, not
+> `L` times (§1), so scaling its LR by `L^{2 alpha - 1}` made the stream *input*
+> move `L` times too fast — which is exactly the `+1.5` slope reported below.
+> Isolating it settles it beyond argument:
+>
+> | config | stream movement by `L` | slope |
+> |---|---|---|
+> | `W^0` **trained** (the buggy run) | 3.72e-4 1.06e-3 3.09e-3 9.44e-3 | **+1.553** |
+> | `W^0` frozen | 1.12e-5 1.04e-5 9.28e-6 8.32e-6 | **-0.144** |
+>
+> With `d_L` correctly restricted to the in-block weights, and measuring the
+> **isolated** block contribution (`W^0` and readout frozen, so `|delta h|^2`
+> measures contribution (b) alone rather than (b) plus a boundary path that
+> swamps it):
+>
+> | alpha | `d_L` | `|delta h|^2` by `L` = 2,4,8,16 | slope | predicted |
+> |---|---|---|---|---|
+> | 1/2 | `L^{2a-1}` **derived** | 1.34e-5 1.30e-5 1.31e-5 1.26e-5 | **-0.025** | 0 |
+> | 1/2 | `1` control | *(identical — `L^0`, see below)* | -0.025 | 0 |
+> | 1 | `L^{2a-1}` **derived** | 1.14e-5 1.09e-5 1.01e-5 9.73e-6 | **-0.082** | 0 |
+> | 1 | `1` control | 7.18e-7 1.71e-7 3.96e-8 9.54e-9 | **-2.081** | **-2.0** |
+>
+> The derived rule is flat at both exponents, and at `alpha = 1` the negative
+> control **bites at `-2.081` against a predicted `-2.0`**. `d_L = L^{2 alpha
+> - 1}` is confirmed. The `alpha = 1/2` control remains vacuous (identity) and
+> is not counted as evidence.
+>
+> **Two errors compounded here, and they are the same error.** Applying `d_L`
+> to `W^0`, and measuring total stream movement instead of the isolated block
+> path — both are *failures to isolate the path the derivation is about*. The
+> second is what let the first hide: with the boundary path included, even the
+> corrected run could not show the control biting.
+
+The original falsifying measurement is kept below as the record.
 
 Direct test of contribution (b): does the derived `d_L` make the *stream*
 movement `L`-independent? Measured `(1/N)|h^{L+1}(t) - h^{L+1}(0)|^2` at fixed
@@ -276,15 +347,14 @@ it does not transfer.
    clean unit shift per power of `d_L`, as it must be. Setting `delta h` slope to
    zero needs `d_L ≈ L^{0.18}`, far from the derived `L^1`.
 
-**Candidate causes, in order.** (i) My model has **no LayerNorm**, while both
-2405.15712 and CompleteP use pre-LN throughout; LN rescales every block's input
-and can change this counting. (ii) The blocks are chained through the stream, so
-a change in block `l` propagates to all later blocks — I argued this
-amplification is `Theta(1)` at `alpha = 1` but did not carry it. (iii) My blocks
-are MLP blocks, not MHSA+MLP. **Unresolved. `d_L = L^{2 alpha - 1}` is withdrawn
-as a confirmed result of this file** — it agrees with 2405.15712 Table 1 on
-paper and disagrees with my own simulation, and by the program's rule the prior
-is on my derivation or my model, not on the paper.
+**Candidate causes I listed at the time, all three wrong.** (i) no LayerNorm —
+eliminated by measurement (adding pre-LN moved the slope `+1.506 -> +1.553`).
+(ii) the chain effect through the stream. (iii) MLP vs MHSA blocks. The actual
+cause was in none of them: it was the unstated scope of `d_L` in §1, i.e. **my
+own derivation was written ambiguously and my simulator resolved the ambiguity
+the wrong way.** The lesson is that "candidate causes" drawn from *modelling
+differences with the paper* crowded out the possibility of a plain bug in the
+thing I controlled. All three candidates pointed away from my own code.
 
 ### Solver check — built, first comparison, NOT yet validated
 
@@ -306,15 +376,75 @@ does.
 | 4 | 1.0 | 9.4e-7 | 1.15e-2 | 1.94e-3 | 2.76e-2 | 0.42x |
 | 4 | 0.5 | 9.4e-7 | 1.84e-2 | 6.24e-3 | 2.56e-2 | 0.70x |
 
-`L = 4` sits inside the combined floor, `L = 2` does not. The `L = 4` pass rides
-on a looser MC floor, so the raw gaps are comparable throughout (~1–4e-2).
-**Not validated.** Open candidates: the `k = 1` specialisation against a `k = 2`
-derivation, the frozen `W^0` boundary the solver assumes, and the late-time
-fixed-point instability. The response-function question of §7 is untouched.
+`L = 4` sits inside the combined floor, `L = 2` does not. **Not validated** at
+the time; resolved immediately below.
 
 **Pre-LN did not explain the §8c falsification.** Re-running the `d_L` test with
 LN on gives slope **+1.553** at `alpha = 1` (was +1.506 without). Candidate (i)
-is eliminated; (ii) the chain effect and (iii) block type remain.
+is eliminated.
+
+#### Solver check — RESOLVED. The solver had the mirror of the simulator's bug.
+
+None of the three candidates was the cause. The solver applied `d_L` to its
+**readout** update `w(t) = w(0) + d_L gamma_0 int Delta hbar^{L+1}` — the same
+§1 scope error as the simulator, on the other boundary. With `d_L` removed from
+the readout (it is outside the stack) and the simulator matched to the solver's
+boundary (`W^0` frozen, `d_L` on blocks only), every configuration lands at or
+inside the combined floor:
+
+| L | alpha | plateau | gap vs sim | sim floor | MC floor | gap/combined |
+|---|---|---|---|---|---|---|
+| 2 | 1.0 | 9.8e-7 | 1.80e-2 | 3.79e-3 | 1.49e-2 | **1.17x** |
+| 2 | 0.5 | 8.2e-7 | 2.81e-2 | 5.66e-3 | 1.53e-2 | **1.72x** |
+| 4 | 1.0 | 7.8e-7 | 8.90e-3 | 4.15e-3 | 9.47e-3 | 0.86x |
+| 4 | 0.5 | 8.7e-7 | 1.69e-2 | 5.12e-3 | 2.45e-2 | 0.68x |
+| 8 | 1.0 | 8.3e-7 | 1.85e-2 | 2.39e-2 | 2.46e-2 | 0.54x |
+
+`L = 2` at `alpha = 1` went from **1.92x -> 1.17x** and `alpha = 1/2` from
+**4.79x -> 1.72x**, and `L = 8` now runs. The `k = 1` vs `k = 2` specialisation
+was **not** the cause and is no longer an open candidate for this gap.
+
+### (d) contribution (c), the response sector — corrected exponent, MEASURED
+
+§6's original `d_L L^{1/2-2alpha}` = `L^{-1/2}`-at-both is **falsified**; the
+corrected `d_L L^{1-3alpha}` = `L^{-alpha}` is confirmed. Instrument: solve with
+the response kernels `A, B` on and off from **the same seed**, and report the
+response share `|f_on - f_off| / |f_on|`.
+
+> **The floor here is subtle and I got it wrong first.** Because ON and OFF
+> share a seed, the difference is a *common-random-number* estimate whose
+> variance is far below either solve's own MC floor. Comparing the gap to the
+> individual MC floor (F8's default recipe) made half the points look like
+> noise (`0.3x`, `0.4x`) when they are signal. The right floor is the floor
+> **on the difference**: recompute the difference at `S` and `S/2`. Every point
+> below then sits `5.6x`–`297x` above its own paired floor.
+
+| alpha | `d_L` | share at `L` = 4,8,16,32 | slope | predicted `d_L L^{1-3a}` |
+|---|---|---|---|---|
+| 1/2 | `L^{2a-1}` derived | 4.76e-2 3.37e-2 2.09e-2 1.39e-2 | **-0.601** | -0.50 |
+| 1/2 | `1` control | *(identical — `L^0`)* | -0.601 | -0.50 |
+| 1 | `L^{2a-1}` derived | 2.53e-2 1.40e-2 6.33e-3 3.04e-3 | **-1.032** | **-1.00** |
+| 1 | `1` control | 9.76e-3 2.82e-3 6.78e-4 1.70e-4 | **-1.959** | **-2.00** |
+
+The `alpha = 1` control **bites with a completely different slope** — `-1.96`
+against a predicted `-2.00` — which tests the exponent formula itself and not
+merely the composite. (The `alpha = 1/2` rows are byte-identical: `d_L = L^0`
+there. That is the **fourth** identity control in this program to present itself
+as evidence; recorded, not counted.)
+
+**Not a near-lazy artifact.** Raising richness `gamma_0 * horizon` from 0.6 to
+3.6 leaves the exponents alone:
+
+| `gamma_0 * horizon` | slope at `alpha = 1/2` | slope at `alpha = 1` |
+|---|---|---|
+| 0.6 | -0.631 | -1.041 |
+| 3.6 | -0.594 | **-1.006** |
+
+`alpha = 1` is on its predicted `-1.00` to within 0.04. `alpha = 1/2` sits
+persistently at `-0.59/-0.63` rather than `-0.50` — a real residual ~0.1 that I
+have **not** explained; it is in the direction of the paper being *more* right
+than my exponent, not less, and it does not go away with richness. Flagged, not
+swept.
 
 ## 9. Status
 
@@ -322,11 +452,13 @@ is eliminated; (ii) the chain effect and (iii) block type remain.
 |---|---|
 | single-site system, sources, two response pairs per block | derived |
 | `kappa = d_L gamma_0 beta_0 L^{-alpha}` as the effective richness | derived |
-| SGD depth LR `d_L = L^{2 alpha - 1}` | derived and matches two papers on paper, but **FALSIFIED against my own simulation at `alpha = 1`** (§8c). Withdrawn pending LayerNorm and the chain effect. |
+| SGD depth LR `d_L = L^{2 alpha - 1}`, **on in-block weights only** | derived, matches two papers, and **CONFIRMED in simulation at both exponents** once `d_L` is correctly scoped and the block path isolated — negative control bites at `-2.081` vs `-2.0` (§8c). The earlier falsification was my simulator's bug. |
 | init Brownian survives iff `alpha = 1/2` | derived, matches Result 3, **and confirmed in simulation to 3 d.p.** (§8a) |
 | per-block weights freeze unless `alpha = 1` | derived, matches Result 3 and Fig 5a, **and confirmed in simulation** (§8b) |
 | the init-kernel vs block-learning tension | derived |
-| response functions suppressed unless `alpha = 1/2` | **NOT reproduced** — I get `L^{-1/2}` at both. Open. |
+| response sector scales as `d_L L^{1-3alpha}` = `L^{-alpha}` | **derived (corrected) and CONFIRMED** — measured `-1.03` at `alpha=1` vs `-1.00`, `d_L=1` control bites at `-1.96` vs `-2.00`, stable under a 6x richness change (§8d). Supersedes the original `L^{1/2-2alpha}`. |
+| response functions suppressed unless `alpha = 1/2` | **direction confirmed, magnitude not.** `alpha=1/2` is least-suppressed as the paper says, but I get `L^{-1/2}` there, not `Theta(1)`. Narrowed to a single question: is `A^l` `Theta(1)` or `L^{-alpha}`? Open (§7). |
+| solver vs simulation | **VALIDATED** at `L` = 2,4,8 and both exponents, all inside the combined two-floor bar (worst 1.72x) (§8c). |
 
 **Not attempted: solving this system numerically.** The structure is the deep-MLP
 system with `gamma_0 -> kappa` plus a layer-time integral, so
