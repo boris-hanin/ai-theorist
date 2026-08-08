@@ -168,3 +168,68 @@ Not derived here: AdamW `eps` scaling (`eps_base m_N^{-1} m_L^{-alpha}` for
 residual blocks) and weight decay (`lambda_base m_N`). Weight decay is out of
 scope by instruction; `eps` is implemented per Table 1 and kept small enough
 that the solve does not sit in the `eps`-dominated regime.
+
+
+# Provenance: how every rule in the implementation was obtained
+
+`skills/dmft-resnet-depth/scripts/completep.py` implements four
+parameterisations. This table is the audit trail: for each rule, **where it came
+from**, and whether it was derived here, transcribed from the paper, or chosen
+by me. Anything in the third category is an implementation decision the paper
+does not fix, and is flagged so a later disagreement can be traced to it.
+
+## Derived here, then checked against Table 1
+
+| Rule | Applies to | Derivation | Table 1 | Code |
+|---|---|---|---|---|
+| hidden LR `x m_N^{-1}` | muP, alpha | **D1** — coherent fan-in sum of an aligned Adam update | match | `groups()` group 1 |
+| no `m_N` on emb / bias / LN LR | muP, alpha | **D2** — per-activation parameter, no fan-in sum | match | `groups()` groups 2,3 |
+| hidden init var `x m_N^{-1}` | muP, alpha | **D3** — incoherent fan-in sum at init | match | `Model.__init__` |
+| unemb forward `x m_N^{-1}` | muP, alpha | **D4** — incoherent init vs coherent update | match | `self.uscale` |
+| in-block LR `x m_L^{alpha-1}` | alpha only | **D5** — `L` blocks each entering via `m_L^{-alpha}` | match | `groups()`, `dep` |
+| residual `x m_L^{-alpha}` | alpha only | given by Eq. (1); `alpha=1` singled out by **D6** | match | `self.res` |
+
+## Transcribed from the paper, NOT derived here
+
+| Rule | Source | Why not derived |
+|---|---|---|
+| AdamW `eps x m_N^{-1} m_L^{-alpha}` (blocks), `m_N^{-1}` (outside) | Table 1 | Not attempted. Implemented as written, with `eps_base` set small enough that the run is not in the `eps`-dominated regime — so the rule is present but not exercised. |
+| weight decay `lambda x m_N` | Table 1 | Out of scope by instruction (Adam, no weight decay). `weight_decay=0.0` throughout. |
+| attention logits `Q^T K / N` for **all** parameterisations | paper §3 | Taken as given. Independently justified by `03-attention.md` D1/D2 and by 2405.15712's requirement that `alpha_A = 1` for the `N -> inf` limit to exist. |
+| SP = no width rules at all | Table 1 | Definitional. |
+
+## My implementation choices — NOT from the paper
+
+These are free parameters the paper does not fix. If a result later disagrees
+with the paper, **check these first**.
+
+| Choice | Value here | Paper | Note |
+|---|---|---|---|
+| `N_base`, `L_base` | 64, 2 | 256, 2 | Smaller base to keep the sweep affordable. All parameterisations coincide at the base shape either way — verified as sanity check 1. |
+| `sigma_base` | `N_base^{-1/2}` | free | Table 1 gives every layer variance `sigma^2_base` and only rescales *hidden* by `m_N^{-1}`, so `sigma_base` must independently make the **base** model well conditioned. At `sigma_base = 1` the init loss was 21.2 against `ln V = 4.16`; at `N_base^{-1/2}` it is 4.18. Recorded because it is a real degree of freedom, not a detail. |
+| `eps_base` | `1e-12` | free | Deliberately far below the gradient scale so the `eps` rule is inert. |
+| task | synthetic next-token, `V=64`, `S=16` | 300M tokens of real text | The biggest deviation. Named in advance as the first suspect for any disagreement. |
+| heads, MLP ratio | 4 heads, `4N` | 4N stated | heads not specified at this scale. |
+| Adam betas | (0.9, 0.95) | not extracted | conventional LLM values; not verified against the paper. |
+| steps | 30-40 full batch | 300M tokens | far shorter horizon. |
+
+## Two controls that are NOT informative, and why
+
+1. **"CompleteP minus the depth-LR factor" is a no-op.** At `alpha = 1` that
+   factor is `m_L^{alpha-1} = m_L^0 = 1`. Removing the identity changes nothing,
+   and the first sweep duly returned byte-identical drift (0.042 both). Removed
+   from the sweep with a comment rather than left in looking like a fifth
+   result. *Same trap as round 005's `alpha_L = 1/2` row — a control is only
+   evidence if the thing it removes is not already the identity.*
+
+2. **The real depth control ladder is the parameterisation list itself.** muP is
+   "no residual scaling"; `alpha = 0.5` is partial; `alpha = 1` is full. Those
+   three rows are the ablation.
+
+## Verification performed before any sweep
+
+| Check | Result |
+|---|---|
+| All four parameterisations identical at the base shape (`m_N = m_L = 1`) | init loss identical to 4 d.p. (21.2407, then 4.1790 after the `sigma_base` fix); `res = uscale = 1` |
+| Init loss near `ln V` | 4.179 vs 4.159 |
+| Optimum interior in the swept LR grid at every dial value | yes, after regridding |
