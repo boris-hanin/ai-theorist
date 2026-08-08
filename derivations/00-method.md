@@ -1,5 +1,7 @@
 # How to derive a DMFT single-site process (the cavity route)
 
+> **Method: DMFT (cavity).** The machinery itself. See `README.md` for the taxonomy.
+
 Worked derivations live alongside this file. This one is the method: the same
 six moves, in the same order, for any architecture. It is the operational
 content of `dmft-master` Steps 1–5.

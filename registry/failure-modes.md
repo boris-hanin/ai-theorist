@@ -107,6 +107,24 @@ field that makes an entry actionable, so supply it for anything new.
   of dimension (families × dims), sliced per family. Signature:
   init-time cross-moments that should vanish don't; seed scatter far
   above 1/√S.
+- **F18 — one-step scale analysis is blind to correlation buildup.** A heuristic
+  Θ(·) derivation labels each contraction in the chain coherent or incoherent
+  *as it is at initialisation*, then takes one optimiser step. But correlations
+  between weight matrices and backward signals **build over training**, flipping
+  a contraction from incoherent to coherent — so the one-step answer can be
+  right asymptotically and wrong at t=1, or vice versa. Discovered in the
+  attention round: the update to the keys travels back through W_O, which is
+  uncorrelated with ∂f/∂h̃ at init, so the first step is *suppressed*
+  ((ΔA)² ~ N⁻² at t=1) and only reaches Θ(1) once that correlation develops.
+  A one-step frame cannot see this **because the first step is the anomalous
+  one**, not merely because one step is too few. Detection signature: the
+  measured exponent drifts monotonically with training time toward the
+  predicted one (measured −1.20 → −0.58 → −0.35 → −0.29 over t = 1 → 2500).
+  Fix: enumerate *every* contraction in the chain, label each, **and state at
+  what training time each label holds**. Guard: a heuristic derivation must
+  declare whether it claims t=1 or t→large; if a claim spans both, it needs the
+  DMFT track or a measurement. See `derivations/README.md` for the method
+  taxonomy this failure motivates.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

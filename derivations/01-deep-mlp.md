@@ -1,5 +1,7 @@
 # Deep MLP DMFT, derived from scratch — and an audit of `equations.md` §1
 
+> **Method: DMFT (cavity).** Derives the limiting dynamics, not just exponents.
+
 Derived independently by the cavity route of `00-method.md`, then compared
 factor by factor against `skills/dmft-derivation/references/equations.md` §1.
 

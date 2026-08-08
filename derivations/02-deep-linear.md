@@ -1,5 +1,7 @@
 # Deep linear DMFT: the algebraic closure, with the operators actually defined
 
+> **Method: DMFT (algebraic closure of the §1 system).**
+
 `equations.md` §3 states the closure in terms of "causal operators **C**^ℓ (from
 **A**^{ℓ-1}, **H**^{ℓ-1}, Δ) and **D**^ℓ (from **B**^ℓ, **G**^{ℓ+1}, Δ)" but
 never defines them, and gives no formula for the responses at all. Both are

@@ -1,7 +1,10 @@
 # Multi-head attention: first-principles derivation, then checked against 2405.15712
 
-Derived from the architecture in §2.1 of the paper using the cavity method of
-`00-method.md`, **before** reading the paper's results, then compared against
+> **Method: MIXED.** D4 is DMFT (cavity, class-(b) reused edge). D1, D2, D3, D5, D6 are **heuristic one-step scale analysis** — they establish the parameterisation, not the dynamics. An earlier version of this header claimed the whole file used the cavity method; it does not.
+
+Derived from the architecture in §2.1 of the paper **before** reading the paper's
+results. Note the method split flagged above: only D4 uses the cavity method of
+`00-method.md`; the rest is heuristic scale counting, then compared against
 its Table 1, §3.3 and Result 1 (Eq. 8). Each item below records what was
 derived independently and whether it matched.
 
