@@ -168,8 +168,52 @@ ablation bites, and it is the sharpest available test of `1c`.
 - **Biases**: `b_i <- b_i - eta_bias (Load_i - kappa)`. For the bias to be able
   to move an expert across the selection threshold it must move on the same
   scale as the spread of `q = sigma(r) + b`, which is `Theta(1)` once the router
-  has trained. So `eta_bias = Theta(1)`, and `b = 0` at init is the
-  load-balanced choice. ✓ Scaling Rule 2.
+  has trained. So `eta_bias = Theta(1)`. ✓ Scaling Rule 2.
+
+### 2a. The bias initialisation is not free — it carries the init diversity
+
+Max-update counting places no constraint on `sigma_init(b)` beyond `b = O(1)`,
+and the paper's *main text* sets `b = 0` so that no expert is favoured at step 0.
+That is safe **only because the main text's router carries `n^{-gamma}` noise**,
+which supplies the diversity instead. Their **Appendix E footnote 2** takes the
+other branch: the router is initialised at **zero**, and
+
+> "we rely on the random initial biases `b_k(0)` to generate diversity across
+> experts at initialization."
+
+**These two settings must not be mixed.** With `r = 0` *and* `b = 0`, every
+expert has the identical gate `q_k = sigma(0)`, so:
+
+- `top_a` breaks an exact tie by index order,
+- the **same** `a` experts serve **every** token in **every** layer,
+- the expert population is degenerate, so the mean-field average over experts
+  (§3, row 2) has nothing to average over — the `E -> inf` limit is not the limit
+  of this object,
+- and **none of this is visible in the loss**, which still decreases.
+
+Measured: with `b_std -> 0` and a zero router, the spread of `q` across experts is
+`7.3e-13`. Registered as **F21**.
+
+**Which branch this program uses.** `moe.py` defaults to `b_std = 1.0` (nonzero,
+always) and offers `gamma = None` for the exact Appendix E convention. The
+degenerate combination now raises rather than running.
+
+**Consequence for the threshold.** Under Appendix E's convention the gating
+variable is `q_k = sigma(0) + b_k`, a *bare* Gaussian order statistic, so
+
+    q*(kappa) = 1/2 + b_std * Phi^{-1}(1 - kappa)
+
+with no free parameters and no nonlinearity applied to the random variable.
+Measured against this at `kappa` = 1/8, 1/4, 1/2, 3/4: worst deviation **1.43
+s.e.** This *also* resolves the one loose end of round 006 — under my earlier
+convention (`q = sigma(r)`, `r` normal) the `kappa >= 1/2` points sat 4.1 and 2.8
+s.e. off the closed form. That deviation was an artefact of the `sigma(.)` map
+applied to an order statistic, not of the quantile structure, and it disappears
+when the map is removed.
+
+**Token-dependent routing still develops**, as `Delta r = Theta(1)` requires:
+starting from a zero router, the fraction of tokens whose active set differs from
+the modal set goes `0.000` at init to `0.189` after 30 steps.
 
 ## 3. The three-level mean-field hierarchy, derived
 

@@ -161,6 +161,28 @@ field that makes an entry actionable, so supply it for anything new.
   Note this cuts the opposite way from F8's usual conservatism, so it will not
   be caught by "was I strict enough?" — only by asking whether the runs were
   paired.
+- **F21 — silent degenerate tie in a discrete selection.** An architecture with a
+  hard `top_k` (routing, expert choice, any arg-selection) draws its selection
+  from a score that is supposed to vary across the population. If *every* source
+  of init variation in that score is zeroed, the scores are exactly equal and the
+  selection collapses to whatever the kernel's tie-break is — `torch.topk`
+  breaks ties by index, so the **same** units are chosen for every input, every
+  layer, every step. The population is then degenerate and the mean-field average
+  over it is averaging over one point, so an `E -> inf` limit is not the limit of
+  that object. Instance: 2601.20205 has two conventions — the main text zeroes
+  the biases and lets the router's `n^{-gamma}` noise carry diversity, App. E
+  zeroes the router and lets random `b_k(0)` carry it. Taking `b = 0` *from one*
+  and `r = 0` *from the other* silently destroys routing (measured cross-expert
+  score spread `7.3e-13`). **Detection signature: the loss still goes down.**
+  Nothing errors, gradients are finite, training curves look ordinary — the
+  failure is only visible in the *selection statistics*, never in the objective.
+  Fix: assert a nonzero spread of the selection score across the population at
+  init, and refuse to construct the degenerate combination. Guard: when a paper
+  offers two init conventions for the same mechanism, **identify which object
+  carries the diversity in each** and never mix them; a "conveniently
+  initialise at zero" remark is load-bearing on the rest of that convention.
+  Corollary: an ablation that zeroes an init scale is not obviously benign — ask
+  what population statistic it was the sole source of.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

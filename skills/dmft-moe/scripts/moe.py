@@ -48,7 +48,24 @@ def layer_norm(h, eps=1e-12):
 
 class MoENet:
     def __init__(self, n, L, E, kappa=0.25, alpha_ffn=1.0, D=1, gamma=1.0,
-                 down_init="table1", seed=0, dtype=torch.float64):
+                 down_init="table1", b_std=1.0, seed=0, dtype=torch.float64):
+        """`b_std` is the init std of the router biases, and it must be NONZERO.
+
+        This follows the DMFT convention of 2601.20205 App. E footnote 2: the
+        router is initialised at zero and *expert diversity at initialisation
+        comes from the random biases* `b_k(0)`. The gating variable is
+        `q_k = sigma(r_k) + b_k`, so with `r = 0` and `b = 0` every expert has
+        the identical `q_k = sigma(0)`, `topk` breaks the exact tie by index
+        order, and the SAME experts are selected for every token in every layer.
+        That is not sparse routing, it is a fixed subnetwork -- and it is silent,
+        because the loss still goes down.
+
+        `b_std = 0` is retained only as the explicit degenerate control (it
+        reproduces the tie above whenever the router is also zero). The paper's
+        *main text* does initialise biases at zero, but there the router carries
+        `n^-gamma` noise which supplies the diversity instead; the two settings
+        must not be mixed and matched.
+        """
         g = torch.Generator().manual_seed(seed)
         rn = lambda *s: torch.randn(*s, generator=g, dtype=dtype)
         self.n, self.L, self.E, self.kappa = n, L, E, kappa
@@ -62,10 +79,19 @@ class MoENet:
             else self.m ** -0.5
         self.s_dn_used = s_dn
 
+        self.b_std, self.gamma = b_std, gamma
         self.W_embed = rn(D, n) * D ** -0.5
         # per layer: routers (n,E), biases (E,), up (E,n,m), down (E,m,n)
-        self.Wr = [rn(n, E) * n ** (-gamma) for _ in range(L)]
-        self.b = [torch.zeros(E, dtype=dtype) for _ in range(L)]
+        # gamma=None is the App. E convention: router identically zero at init,
+        # so ALL init routing diversity comes from the biases.
+        self.Wr = [(torch.zeros(n, E, dtype=dtype) if gamma is None
+                    else rn(n, E) * n ** (-gamma)) for _ in range(L)]
+        self.b = [rn(E) * b_std for _ in range(L)]
+        if b_std == 0.0 and gamma is None:
+            raise ValueError(
+                "b_std=0 with a zero-init router gives every expert an identical "
+                "gate: top-k then selects by index order and routing is a fixed "
+                "subnetwork. Set b_std>0 (App. E) or gamma to a finite value.")
         self.Wu = [rn(E, n, self.m) * s_up for _ in range(L)]
         self.Wd = [rn(E, self.m, n) * s_dn for _ in range(L)]
         # Readout init is n^-1, NOT fan-in n^-1/2. This is the level-1 instance

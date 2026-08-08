@@ -77,9 +77,23 @@ threshold has a closed form with no free parameters:
 
     q*(kappa) = sigmoid( Phi^{-1}(1 - kappa) )
 
-Measured to within 1 s.e. at `kappa` = 1/8 and 1/4; threshold fluctuation falls
-as `E^{-1/2}` (measured `-0.559`). Small (~1.5e-3) deviations at `kappa >= 1/2`
-are unexplained — probably a finite-`E` rank correction, not established.
+and in the paper's **Appendix E** convention (router zero, diversity from random
+biases) it is a bare Gaussian order statistic:
+
+    q*(kappa) = 1/2 + b_std * Phi^{-1}(1 - kappa)
+
+verified at `kappa` = 1/8, 1/4, 1/2, 3/4 (worst 1.43 s.e.). Threshold fluctuation
+falls as `E^{-1/2}` (measured `-0.559`).
+
+**The bias init is load-bearing (F21).** There are two conventions and they must
+not be mixed: the main text zeroes the biases and lets the router's `n^{-gamma}`
+noise carry init diversity; App. E zeroes the router and lets random `b_k(0)`
+carry it. Take `b = 0` from one and `r = 0` from the other and every expert has
+an identical gate, `top_k` breaks the tie by index, and the same experts serve
+every token in every layer — a fixed subnetwork, not sparse routing. **The loss
+still goes down**, so this is invisible unless you look at selection statistics.
+Token-dependent routing does develop from the App. E init (`0.000 -> 0.189`
+over 30 steps), as `Delta r = Theta(1)` requires.
 
 ## The crossover — quote the asymptotic exponent only where it applies
 
@@ -105,6 +119,8 @@ Consequences:
   `alpha_ffn` scaling under fan-in, so the total is not a clean probe (F18).
 - **Pair the comparisons.** Dial sweeps share seeds and data, so the floor is the
   paired one, not the seed-to-seed spread (F20).
+- **Assert nonzero spread of the gating score across experts at init** before
+  anything else (F21). Cheap, and it catches a degeneracy nothing else reveals.
 - Report per-expert load beside any transfer claim (F12).
 - Dense limit: `E = a = 1`, `kappa = 1` must reduce to the plain residual-MLP
   results of `05-completep-dmft-sgd.md`.

@@ -17,7 +17,7 @@ Derivation: `derivations/06-moe.md`. Model: `skills/dmft-moe/scripts/moe.py`.
 | P4 | slope in `alpha_ffn` | **-0.988** | ±0.15 | **PASS** |
 | P4c | slope in `n` (not in the formula) | **-0.056** | ~0 | **PASS** |
 | P5 | threshold s.d. `~ E^{-1/2}` | **-0.559** | ±0.15 | **PASS** |
-| P5b | `q*(kappa) = sigmoid(Phi^{-1}(1-kappa))`, parameter-free | 0.19 / 0.75 s.e. at `kappa` = 1/8, 1/4 | — | **PASS** |
+| P5b | `q*(kappa)` closed form, parameter-free | see below | — | **PASS** |
 | P6 | optimal LR flat in `alpha_ffn` (1..64) | **0.18 decades** | <=0.25 | **PASS** |
 | P1 | loss curves collapse in `alpha_ffn` | 5.0% of loss drop | <5% | **INCONCLUSIVE** |
 | P2 | collapse in `E` / width / depth | 5.1 / 6.5 / 6.3% | <5% | **INCONCLUSIVE** |
@@ -48,12 +48,18 @@ standard normal, so the limiting selection threshold is
     q*(kappa) = sigmoid( Phi^{-1}(1 - kappa) )
 
 with **no free parameters**. Measured 0.75973 vs 0.75957 at `kappa = 1/8` (0.19
-s.e.) and 0.66299 vs 0.66251 at `kappa = 1/4` (0.75 s.e.). At `kappa` = 1/2 and
-3/4 the deviations are 4.1 and 2.8 s.e. — small in absolute terms (~1.5e-3) and
-shrinking with `E`, consistent with a finite-`E` rank correction (the `a`-th
-order statistic sits at quantile `a/(E+1)`, not `a/E`), but the sample size
-cannot separate that from noise and the `a/(E+1)` form over-corrects. **Recorded
-as bounded, not explained.**
+s.e.) and 0.66299 vs 0.66251 at `kappa = 1/4` (0.75 s.e.). At `kappa` = 1/2 and 3/4 the deviations were 4.1 and 2.8 s.e.
+
+**RESOLVED (follow-up).** Switching to the paper's Appendix E convention — router
+initialised at zero, diversity carried by random biases `b_k(0)` — makes the
+threshold a *bare* Gaussian order statistic with no nonlinearity applied to it:
+
+    q*(kappa) = 1/2 + b_std * Phi^{-1}(1 - kappa)
+
+Deviations at `kappa` = 1/8, 1/4, 1/2, 3/4 are now **0.92, 1.43, 0.75, 0.36
+s.e.** — all four agree. So the earlier residual was the `sigma(.)` map applied
+to an order statistic, **not** a finite-`E` rank correction as I had guessed, and
+not a property of the quantile structure.
 
 ## The crossover — a real effect §1c glossed
 

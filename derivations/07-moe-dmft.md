@@ -57,17 +57,30 @@ the **closed form is convention-specific**:
     my setup   (gamma = 1/2, b = 0):     q*(kappa) = sigmoid( Phi^{-1}(1 - kappa) )
     their DMFT (r = 0, b_k(0) random):   q* = sigma(0) + (1-kappa)-quantile of the b law
 
-So round 006's parameter-free result — measured to 0.19 and 0.75 s.e. at
-`kappa` = 1/8, 1/4 — **verifies the quantile structure, and is a specialisation
-of their setup, not a reproduction of it.** Recorded so the claim is not quoted
-beyond its scope.
+So round 006's original parameter-free result — measured to 0.19 and 0.75 s.e. at
+`kappa` = 1/8, 1/4 — verified the quantile *structure* but was a specialisation
+of their setup, not a reproduction of it.
+
+**Now implemented and checked in their convention** (`moe.py`, `gamma=None`,
+`b_std>0`). The threshold is a bare Gaussian order statistic, so
+
+    q*(kappa) = 1/2 + b_std * Phi^{-1}(1 - kappa)
+
+Measured at `kappa` = 1/8, 1/4, 1/2, 3/4: deviations 0.92, 1.43, 0.75, 0.36 s.e.
+**All four now agree**, where under my earlier `sigma(r)` convention the
+`kappa >= 1/2` points were 4.1 and 2.8 s.e. off. That closes round 006's one
+unexplained residual: it was the `sigma(.)` map applied to an order statistic,
+not the quantile structure.
 
 Worth noting separately: the *main text* initialises biases at zero ("we
 conveniently initialize biases at zero so no one expert disproportionately
 receives tokens at init"), while the *DMFT appendix* needs them non-zero to
 generate init diversity. That is a difference between the empirical setup and
 the theoretical one, not an inconsistency — but it means the DMFT's init
-transient is not the experiments' init transient.
+transient is not the experiments' init transient, and **the two conventions must
+not be mixed**: taking `b = 0` from the main text and `r = 0` from App. E leaves
+the gates exactly tied and routing degenerate, with nothing visible in the loss.
+Registered as **F21**; `moe.py` now refuses that combination.
 
 ## 4. What I could NOT verify, and why I am not calling it a discrepancy
 
