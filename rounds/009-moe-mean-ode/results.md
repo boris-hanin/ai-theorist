@@ -95,6 +95,12 @@ the control bites hard (`-0.013` vs `-0.512`; 3.90x vs 1.10x).
 Stated explicitly because a non-biting control is normally a red flag (F17), and
 here it is a derived consequence instead.
 
+## Figure
+
+`../../moe-transfer.html` — HP transfer across all five dials, the `L a M`
+invariance sweep, and the fixed-FLOP shape landscape. Underlying numbers in
+`figure-data.json`. Published: https://claude.ai/code/artifact/d960549e-05dd-4ab8-8c5e-b7d4626eaed2
+
 ## What this buys — two budgets
 
     parameters  P = Theta(L E M D)      FLOPs  C = Theta(L a M D)
@@ -102,9 +108,19 @@ here it is a derived consequence instead.
 The rate depends on the FLOP budget. Minimising subject to `L a M D = C` with
 `W = aM`:
 
-    **L = C^{1/6},   a M = C^{1/2},   D = C^{1/3},   error = O(C^{-1/6})**
+    **D = Theta(C^{1/3})  binding;   L >= Theta(C^{1/6})  a floor, not an optimum;
+      a M = C/(L D);   error = O(C^{-1/6})**
 
-with the split of `aM` between expert count and expert width **free**. So at
+with the split of `aM` between expert count and expert width **free**.
+
+**Correction, forced by the fixed-`C` sweep.** `09` §4 originally balanced all
+three terms and reported `L = C^{1/6}` as *the* optimum. Substituting the
+constraint, the CLT term is `D/sqrt(C)` — **independent of `L`**, because fixing
+`C` and `D` pins `L * aM`. Measured directly: at `C = 8192`, `D = 16`, sweeping
+`L` = 2 → 64 with `aM` = 256 → 8, the CLT term is flat (1.62e-2 → 1.49e-2). So
+`L` enters only one of the three terms and can only help; `L = C^{1/6}` is the
+**shallowest** shape achieving the optimal rate, not a unique optimum. The
+binding requirement is `D = Theta(C^{1/3})`. `09` §4 has been corrected. So at
 fixed FLOPs a model can buy capacity by raising `E` at fixed `a` — costing
 parameters but neither FLOPs nor convergence rate. That is a scaling-theoretic
 statement of why MoE works, and it locates the benefit of 2601.20205's Finding

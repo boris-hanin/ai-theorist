@@ -108,14 +108,35 @@ The rate depends on `L a M D`-type combinations, i.e. on the **FLOP** budget.
 Minimising `1/L + sqrt(D/(L a M)) + 1/sqrt(D)` subject to `L a M D = C`, and
 writing `W = a M`:
 
-    1/L = 1/sqrt(D)        =>  D = L^2
-    1/L = sqrt(D/(L W))    =>  W = D L = L^3
-    C = L * W * D = L^6
+    substituting W = C/(L D) into the CLT term:
+        sqrt( D/(L W) ) = sqrt( D / (L * C/(L D)) ) = D / sqrt(C)
 
-    **L = C^{1/6},   a M = C^{1/2},   D = C^{1/3},   error = O(C^{-1/6})**
+so the three terms are
 
-Same exponents as the dense case with `M -> aM`, and **the split of `aM` between
-expert count and expert width is free**. At fixed FLOPs the model is then free to
+    T1 = a/L        T2 = b * D/sqrt(C)        T3 = c/sqrt(D)
+
+> **CORRECTION (round 009, caught by the fixed-`C` sweep).** An earlier version of
+> this section "balanced all three terms" and reported `L = C^{1/6}` as *the*
+> optimum. That is wrong: **`T2` does not depend on `L` at all** once `C` and `D`
+> are fixed, because `L * W = C/D` is then pinned. So `L` appears only in `T1` and
+> can only help. The measurement is direct — at `C = 8192`, `D = 16`, sweeping
+> `L` = 2 → 64 with `aM` = 256 → 8, the measured CLT term is **flat**
+> (1.62e-2 → 1.49e-2), exactly because `L aM = C/D = 512` throughout.
+
+Minimising properly: balance `T2` against `T3` over `D`,
+
+    b/sqrt(C) = (c/2) D^{-3/2}   =>   **D = Theta( C^{1/3} )**,  T2 = T3 = Theta( C^{-1/6} )
+
+and then require `T1 = a/L` not to dominate, i.e. `L >= Theta(C^{1/6})`:
+
+    **D = Theta(C^{1/3}),   L >= Theta(C^{1/6}),   a M = C/(L D),   error = O(C^{-1/6})**
+
+At the shallowest admissible depth `L = C^{1/6}` this gives `aM = C^{1/2}`, which
+is the shape quoted before — but it is the **shallowest shape achieving the
+optimal rate, not a unique optimum**. Deeper is not worse (until `aM` hits its
+floor of 1). The genuinely binding requirement is `D = Theta(C^{1/3})`.
+
+**The split of `aM` between expert count and expert width is free.** At fixed FLOPs the model is then free to
 buy capacity by raising `E` at fixed `a` — which costs parameters but neither
 FLOPs nor rate. **That is a scaling-theoretic statement of why MoE works**, and
 it is consistent with 2601.20205's Finding 3.1 (more, smaller experts is better
