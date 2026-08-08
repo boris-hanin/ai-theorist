@@ -205,3 +205,25 @@ to be most informative.
 | **N3** | `E` absent from the rate: at fixed `a`, varying `E` (hence `kappa`) leaves the deviation unchanged | — |
 | **N4** | optimal LR transfers across `L`, `a`, `M`, `E`, `D` under this parameterisation | fan-in `sigma_down = M^{-1/2}` must drift |
 | **N5** | Euler term `1/L`, independent of `a` and `M` | — |
+
+## 9. Measured (round 009) — all preregistered predictions confirmed
+
+| claim | measured |
+|---|---|
+| `W_eff = L a M`: slopes `-1/2` in each | `L` **-0.505**, `a` **-0.489**, `M` **-0.512** |
+| `E` absent from the rate | **+0.030** at fixed `a`; 0.04 decades of LR drift |
+| **invariance at fixed `L a M`** (§7's risky step) | spread **1.10x** over 10 splits, `a` = 2..16, `L` = 2..64 |
+| fan-in control kills the `M`-averaging | `M` slope **-0.013** vs `-0.512`; split spread **3.90x** vs 1.10x |
+| HP transfer | `L` 0.11, `a` 0.06, `M` 0.14, `D` 0.22, `E` **0.04** decades |
+
+**§7's hazard did not materialise**: the `a` active experts add *incoherently*
+despite sharing the routing-conditioning event, so `W_eff = L a M` stands.
+
+**One gap this file had**, caught by the HP-transfer test: §2 fixes the LR
+scaling in `L`, `M`, `a` but never states its **`D`-dependence**. Since the loss
+is per-coordinate normalised, `b ~ 1/D` and `grad_w ~ 1/(L M a D)`, so the
+learning rate must carry a factor `D`:
+
+    **lr = L * M * a * D * eta**
+
+Without it the optimal LR drifts 0.65 decades across `D`; with it, 0.22.
