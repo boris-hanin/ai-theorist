@@ -7,6 +7,13 @@ Date: 2026-08-08
 Target: Bordelon, Chaudhry & Pehlevan, arXiv:2405.15712v2, Table 1 and §3.2.
 Artifacts: `skills/dmft-attention/scripts/{attention.py, sweep.py}`
 
+## Figure
+
+`figures/attention-transfer.html` — five sweeps, each as a pair: full Table 1
+scaling on the left, the same sweep with one factor removed on the right. Raw
+loss grids in `figures/sweep-data.json`. Published at
+https://claude.ai/code/artifact/4522c1be-b319-4e49-82ee-bed78a46eb23
+
 ## Headline
 
 **All three dials transfer under the Table 1 scaling, and every control that

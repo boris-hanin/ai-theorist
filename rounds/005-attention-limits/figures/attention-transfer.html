@@ -1,0 +1,362 @@
+<title>Transformer hyperparameter transfer across width, heads and depth</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb; --panel: #ffffff;
+    --ink: #15181d; --ink-2: #545a66; --ink-3: #8a909c;
+    --rule: #e3e5e9; --grid: #edeff2;
+    --w1: #86b6ef; --w2: #3987e5; --w3: #1c5cab; --w4: #0d366b;
+    --ok: #2c6e49; --bad: #a33a34; --neutral: #6b7280;
+    --ok-bg: #eaf2ed; --bad-bg: #f8ecea; --neutral-bg: #eef0f2;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface: #1a1a19; --panel: #212120;
+      --ink: #f3f3f1; --ink-2: #b4b6b1; --ink-3: #84867f;
+      --rule: #34352f; --grid: #2a2b26;
+      --w1: #184f95; --w2: #2a78d6; --w3: #6da7ec; --w4: #cde2fb;
+      --ok: #63b58a; --bad: #e08b86; --neutral: #9ca3af;
+      --ok-bg: #1d2a22; --bad-bg: #2e211f; --neutral-bg: #26272a;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19; --panel: #212120;
+    --ink: #f3f3f1; --ink-2: #b4b6b1; --ink-3: #84867f;
+    --rule: #34352f; --grid: #2a2b26;
+    --w1: #184f95; --w2: #2a78d6; --w3: #6da7ec; --w4: #cde2fb;
+    --ok: #63b58a; --bad: #e08b86; --neutral: #9ca3af;
+    --ok-bg: #1d2a22; --bad-bg: #2e211f; --neutral-bg: #26272a;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--surface); color:var(--ink);
+         font-family:var(--sans); font-size:15px; line-height:1.55;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:1060px; margin:0 auto; padding:44px 28px 72px; }
+  .eyebrow { font-family:var(--mono); font-size:11.5px; letter-spacing:0.1em;
+             text-transform:uppercase; color:var(--ink-3); }
+  h1 { font-family:var(--serif); font-weight:400; font-size:clamp(26px,3.5vw,37px);
+       line-height:1.18; margin:10px 0 0; text-wrap:balance; letter-spacing:-0.01em; }
+  h1 em { font-style:italic; }
+  .standfirst { max-width:66ch; color:var(--ink-2); font-size:16px; margin:12px 0 0; }
+  .standfirst strong { color:var(--ink); font-weight:600; }
+  .eq { font-family:var(--mono); font-size:13px; color:var(--ink);
+        background:var(--grid); padding:2px 6px; border-radius:2px; white-space:nowrap; }
+
+  .legendbar { display:flex; flex-wrap:wrap; align-items:center; gap:10px 22px;
+    margin:30px 0 6px; padding:12px 14px; border:1px solid var(--rule);
+    border-radius:3px; background:var(--panel); }
+  .lab { font-family:var(--mono); font-size:11px; letter-spacing:0.08em;
+         text-transform:uppercase; color:var(--ink-3); }
+  .sw { display:inline-flex; align-items:center; gap:7px; font-family:var(--mono);
+        font-size:12.5px; color:var(--ink-2); }
+  .sw i { width:22px; height:3px; border-radius:2px; display:block; }
+  .marknote { display:inline-flex; align-items:center; gap:7px; font-size:12.5px;
+              color:var(--ink-3); }
+
+  .colhead { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:26px 0 6px; }
+  .colhead div { font-family:var(--mono); font-size:11.5px; letter-spacing:0.07em;
+                 text-transform:uppercase; color:var(--ink-3); padding-left:2px; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px; }
+  @media (max-width:860px){ .pair,.colhead{ grid-template-columns:1fr; } }
+
+  .rowhead { display:flex; align-items:baseline; gap:12px; margin:24px 0 4px;
+             padding-bottom:7px; border-bottom:1px solid var(--rule); }
+  .rowhead h2 { font-family:var(--serif); font-weight:400; font-size:20px; margin:0; }
+  .rowhead p { margin:0; color:var(--ink-2); font-size:13.5px; }
+
+  .panel { border:1px solid var(--rule); border-radius:3px; background:var(--panel);
+           padding:11px 12px 8px; display:flex; flex-direction:column; gap:5px; }
+  .ptop { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .ptitle { font-family:var(--mono); font-size:12px; color:var(--ink-2); }
+  .pill { font-family:var(--mono); font-size:10.5px; letter-spacing:0.06em;
+          text-transform:uppercase; padding:2px 7px; border-radius:2px;
+          display:inline-flex; align-items:center; gap:5px; white-space:nowrap; }
+  .pill.ok{color:var(--ok);background:var(--ok-bg)}
+  .pill.bad{color:var(--bad);background:var(--bad-bg)}
+  .pill.neutral{color:var(--neutral);background:var(--neutral-bg)}
+  figure{margin:0}
+  svg.chart{display:block;width:100%;height:auto;overflow:visible}
+  .caption{font-family:var(--mono);font-size:11.5px;color:var(--ink-3);
+           font-variant-numeric:tabular-nums}
+  .caption b{color:var(--ink-2);font-weight:500}
+  .tip{position:fixed;pointer-events:none;opacity:0;transform:translate(-50%,-120%);
+       background:var(--panel);border:1px solid var(--rule);border-radius:3px;
+       padding:7px 9px;font-family:var(--mono);font-size:11.5px;color:var(--ink);
+       font-variant-numeric:tabular-nums;white-space:nowrap;z-index:40;
+       box-shadow:0 4px 14px rgba(0,0,0,.13);transition:opacity .1s}
+  .tip .k{color:var(--ink-3)}
+  details{margin-top:34px}
+  summary{cursor:pointer;font-family:var(--mono);font-size:12px;color:var(--ink-2);
+          letter-spacing:0.06em;text-transform:uppercase;padding:8px 0}
+  summary:focus-visible{outline:2px solid var(--w2);outline-offset:3px}
+  .scroll{overflow-x:auto}
+  table{border-collapse:collapse;font-family:var(--mono);font-size:12.5px;
+        font-variant-numeric:tabular-nums;min-width:620px;width:100%}
+  th,td{text-align:right;padding:6px 12px;border-bottom:1px solid var(--rule)}
+  th:first-child,td:first-child{text-align:left}
+  thead th{color:var(--ink-3);font-weight:500;font-size:11px;letter-spacing:0.07em;
+           text-transform:uppercase}
+  .notes{margin-top:38px;padding-top:20px;border-top:1px solid var(--rule);
+         color:var(--ink-2);font-size:13.5px;max-width:68ch}
+  .notes h3{font-family:var(--serif);font-weight:400;font-size:17px;margin:0 0 8px;color:var(--ink)}
+  .notes p{margin:0 0 10px}
+  .notes code{font-family:var(--mono);font-size:12.5px;color:var(--ink)}
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">ai-theorist &middot; round 005 &middot; arXiv:2405.15712</div>
+    <h1>One learning rate for every width, head count and depth &mdash; <em>if</em> you keep all three factors</h1>
+    <p class="standfirst">
+      Transformers in the parameterisation of Bordelon, Chaudhry &amp; Pehlevan, trained
+      with <span class="eq">&eta; = &eta;&#8320; &middot; N &middot; H &middot; L^(2&alpha;_L &minus; 1)</span>.
+      Left column: the full scaling &mdash; the loss minimum sits at the same
+      <span class="eq">&eta;&#8320;</span> for every model size. Right column: the same sweep with
+      <strong>exactly one factor removed</strong>, and the optimum walks.
+      The rail under each panel spans the measured optima.
+    </p>
+  </header>
+
+  <div class="legendbar">
+    <span class="lab" id="dialLab">Scale dial</span>
+    <span id="legend" style="display:flex;gap:16px;flex-wrap:wrap"></span>
+    <span class="marknote" aria-hidden="true">
+      <svg width="15" height="15" viewBox="0 0 15 15"><circle cx="7.5" cy="7.5" r="4.2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      optimum &eta;&#8320;*
+    </span>
+    <span class="marknote">&uarr; curve exits the top where training diverges</span>
+  </div>
+
+  <div class="colhead">
+    <div>Full Table&nbsp;1 scaling</div>
+    <div>Negative control &mdash; one factor removed</div>
+  </div>
+
+  <div id="grid"></div>
+
+  <details>
+    <summary>Table view &mdash; measured optima</summary>
+    <div class="scroll"><table>
+      <thead><tr><th>Sweep</th><th>Variant</th><th>&eta;&#8320;* by dial (log&#8321;&#8320;)</th><th>Drift</th><th>Verdict</th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table></div>
+  </details>
+
+  <div class="notes">
+    <h3>Reading these</h3>
+    <p>
+      The learning-rate rule was <em>derived</em> from the architecture before being
+      tested &mdash; the width factor from requiring <code>&delta;f = &Theta;(1)</code> at the
+      &mu;P readout, the depth factor from summing <code>L</code> residual blocks each moving
+      the stream by <code>&eta; &beta;&#8320;&sup2; L^(&minus;2&alpha;_L)</code>. It lands on the paper's
+      Table&nbsp;1 exactly. Each control then removes precisely one factor that derivation
+      predicts, so a control that still transferred would mean the sweep cannot see that
+      factor at all.
+    </p>
+    <p>
+      <strong>The bottom row is not evidence.</strong> At <code>&alpha;_L = 1/2</code> the depth
+      factor <code>L^(2&alpha;_L&minus;1)</code> is <code>L&#8304;</code> &mdash; the identity &mdash; so
+      its control cannot change anything by construction. It is here as a consistency check
+      on the harness, and the two panels agreeing to three decimals is that check passing.
+    </p>
+    <p>
+      <strong>Both attention exponents transfer.</strong> The first two rows sweep width at
+      <code>&alpha;_A = 1</code> and <code>&alpha;_A = 1/2</code>, and both hold. That was
+      predicted in advance: any <code>&alpha;_A</code> can be made to give
+      <code>&Theta;(1)</code> attention updates by rescaling the learning rate, so a transfer
+      sweep <em>cannot</em> discriminate it. The observable that does is the across-head
+      variance of the attention logits, which is a different experiment.
+    </p>
+    <p>
+      A verdict of &ldquo;transfers&rdquo; requires the optimum drift to be under 0.3 decades
+      <em>and</em> the optimum to be located separately per seed so its across-seed scatter is
+      measured. An optimum sitting on the edge of the swept grid is reported as
+      under-powered, not as a pass &mdash; the first run of this sweep did exactly that, and
+      the grid was widened until every optimum sat inside it.
+    </p>
+  </div>
+</div>
+
+<div class="tip" id="tip"></div>
+<script type="application/json" id="data">{"grid":[0.01259,0.02276,0.04114,0.07437,0.1344,0.2431,0.4394,0.7943,1.436,2.596,4.693,8.483,15.34,27.72,50.12],"rows":[{"kind":"WIDTH","dial":"N","dial_label":"dimension per head N","setting":"\u03b1_A = 1","dials":[4.0,8.0,16.0,32.0],"ctrl_label":"drop N from eta","identity":false,"full":{"loss":[[0.8575,0.7801,0.5342,0.1968,0.06793,0.01493,0.01276,0.03427,0.02523,null,null,null,null,null,null],[0.83,0.6464,0.3181,0.1264,0.04051,0.008865,0.02437,0.06147,0.02654,null,null,null,null,null,null],[0.7846,0.6136,0.28,0.1072,0.03405,0.01067,0.03257,0.07505,0.02573,null,null,null,null,null,null],[0.7914,0.6093,0.2556,0.1067,0.03608,0.01123,0.03466,0.03172,0.04321,null,null,null,null,null,null]],"status":"TRANSFERS","drift":0.2599,"lrstar":[-0.4881,-0.5261,-0.3417,-0.6016]},"ctrl":{"loss":[[0.9238,0.9058,0.8737,0.8133,0.6487,0.2789,0.09939,0.02644,0.003195,0.0454,0.05214,null,null,null,null],[0.9716,0.9587,0.9354,0.8783,0.7612,0.4941,0.1965,0.07735,0.01977,0.003674,0.02659,0.02406,null,null,null],[0.9417,0.9336,0.919,0.8925,0.8434,0.7451,0.5212,0.2,0.07746,0.0243,0.0066,0.02682,0.0307,null,null],[0.9673,0.9628,0.9546,0.9399,0.9136,0.8658,0.7733,0.5667,0.2161,0.09394,0.02975,0.009317,0.03683,0.02996,0.02867]],"status":"FAILS","drift":0.7713,"lrstar":[0.1462,0.4074,0.6614,0.9175]}},{"kind":"WIDTH","dial":"N","dial_label":"dimension per head N","setting":"\u03b1_A = 1/2","dials":[4.0,8.0,16.0,32.0],"ctrl_label":"drop N from eta","identity":false,"full":{"loss":[[0.8583,0.7799,0.5384,0.1877,0.0484,0.006229,0.001146,0.03874,0.03872,null,null,null,null,null,null],[0.8215,0.6274,0.3056,0.09785,0.02076,0.002096,0.0133,0.04392,0.01511,null,null,null,null,null,null],[0.7934,0.6312,0.2941,0.07994,0.01488,0.001455,0.01317,0.03848,0.0285,null,null,null,null,null,null],[0.7884,0.6049,0.2326,0.06896,0.009672,0.0006661,0.01089,0.0186,0.02754,null,null,null,null,null,null]],"status":"TRANSFERS (residual drift resolved but < 0.30 dec)","drift":0.1658,"lrstar":[-0.4511,-0.5407,-0.6151,-0.6169]},"ctrl":{"loss":[[0.9253,0.9071,0.8747,0.8136,0.6506,0.277,0.08183,0.01395,0.0009459,0.0307,0.03424,null,null,null,null],[0.977,0.964,0.9338,0.8729,0.7486,0.488,0.1724,0.05089,0.0074,0.0005134,0.01835,0.01722,0.1456,null,null],[0.9454,0.9374,0.9231,0.8973,0.8497,0.7557,0.5429,0.1971,0.04914,0.007973,0.0005455,0.01438,0.02282,0.02731,null],[0.9641,0.9595,0.9514,0.9368,0.9106,0.8628,0.7702,0.5613,0.1892,0.05427,0.007012,0.0004007,0.01297,0.01972,0.03201]],"status":"FAILS","drift":0.7791,"lrstar":[0.1368,0.4003,0.6548,0.9159]}},{"kind":"HEADS","dial":"H","dial_label":"head count H","setting":"\u03b1_A = 1","dials":[2.0,4.0,8.0,16.0],"ctrl_label":"drop H from eta","identity":false,"full":{"loss":[[0.8299,0.7351,0.4977,0.1897,0.06218,0.01698,0.02368,0.05811,0.0404,null,null,null,null,null,null],[0.83,0.6464,0.3181,0.1264,0.04051,0.008865,0.02437,0.06147,0.02654,null,null,null,null,null,null],[0.828,0.6402,0.2505,0.08298,0.02654,0.006472,0.02732,0.06315,0.01786,null,null,null,null,null,null],[0.8218,0.6598,0.2674,0.09962,0.03358,0.008429,0.02055,0.05436,0.02718,null,null,null,null,null,null]],"status":"TRANSFERS","drift":0.09702,"lrstar":[-0.5824,-0.5261,-0.6231,-0.5989]},"ctrl":{"loss":[[0.8798,0.8398,0.7575,0.5549,0.2241,0.07631,0.02125,0.004431,0.05324,0.02639,null,null,null,null,null],[0.9557,0.928,0.8642,0.7291,0.4366,0.1697,0.06332,0.01521,0.004923,0.02937,0.04419,null,null,null,null],[0.9774,0.9617,0.9336,0.8777,0.7572,0.4648,0.1434,0.05025,0.01376,0.002734,0.02694,0.05976,null,null,null],[0.9744,0.9661,0.9513,0.925,0.8774,0.7847,0.5666,0.1807,0.07338,0.02172,0.00501,0.03926,0.03668,0.05733,null]],"status":"FAILS","drift":0.7702,"lrstar":[-0.1227,0.08673,0.3935,0.6475]}},{"kind":"DEPTH","dial":"L","dial_label":"depth L","setting":"\u03b1_L = 1","dials":[2.0,4.0,8.0],"ctrl_label":"drop L^(2aL-1)","identity":false,"full":{"loss":[[0.83,0.6464,0.3181,0.1264,0.04051,0.008865,0.02437,0.06147,0.02654,null,null,null,null,null,null],[0.8195,0.6837,0.3491,0.1218,0.03742,0.007105,0.02297,0.02239,null,null,null,null,null,null,null],[0.8141,0.6477,0.2855,0.09566,0.03431,0.005698,0.04412,0.03915,0.02355,null,null,null,null,null,null]],"status":"TRANSFERS","drift":0.09822,"lrstar":[-0.5261,-0.583,-0.6243]},"ctrl":{"loss":[[0.9198,0.8482,0.6912,0.3765,0.1468,0.05102,0.01166,0.003293,0.03309,0.06154,null,null,null,null,null],[0.9073,0.8824,0.84,0.7464,0.488,0.1669,0.06034,0.01257,0.004524,0.03501,0.02188,null,null,null,null],[0.9599,0.9432,0.9135,0.8593,0.7509,0.4914,0.1611,0.0592,0.0177,0.03525,0.03084,0.04942,null,null,null]],"status":"FAILS","drift":0.359,"lrstar":[-0.1875,0.06628,0.1714]}},{"kind":"DEPTH","dial":"L","dial_label":"depth L","setting":"\u03b1_L = 1/2","dials":[2.0,4.0,8.0],"ctrl_label":"drop L^(2aL-1)","identity":true,"full":{"loss":[[0.7586,0.5596,0.2762,0.1209,0.0397,0.008129,0.001467,0.02688,0.03956,null,null,null,null,null,null],[0.7513,0.5574,0.2612,0.1127,0.03552,0.006055,0.04188,0.02982,0.04082,null,null,null,null,null,null],[0.6615,0.4063,0.1678,0.0712,0.02522,0.004028,0.003354,0.04541,0.09841,null,null,null,null,null,null]],"status":"TRANSFERS","drift":0.1101,"lrstar":[-0.4626,-0.5727,-0.5195]},"ctrl":{"loss":[[0.7586,0.5596,0.2762,0.1209,0.0397,0.008129,0.001467,0.02688,0.03956,null,null,null,null,null,null],[0.7513,0.5574,0.2612,0.1127,0.03552,0.006055,0.04188,0.02982,0.04082,null,null,null,null,null,null],[0.6615,0.4063,0.1678,0.0712,0.02522,0.004028,0.003354,0.04541,0.09841,null,null,null,null,null,null]],"status":"TRANSFERS","drift":0.1101,"lrstar":[-0.4626,-0.5727,-0.5195]}}]}</script>
+<script>
+(function(){
+  var D = JSON.parse(document.getElementById('data').textContent);
+  var G = D.grid, ROWS = D.rows;
+  var V4 = ['--w1','--w2','--w3','--w4'], V3 = ['--w1','--w2','--w4'];
+  function cvar(n){ return getComputedStyle(document.documentElement)
+                      .getPropertyValue(n).trim(); }
+  var NS='http://www.w3.org/2000/svg';
+  function el(n,a){ var e=document.createElementNS(NS,n);
+    for(var k in a) e.setAttribute(k,a[k]); return e; }
+  function sup(d){ var m={'-':'\u207b','0':'\u2070','1':'\u00b9','2':'\u00b2','3':'\u00b3',
+    '4':'\u2074','5':'\u2075','6':'\u2076','7':'\u2077','8':'\u2078','9':'\u2079'};
+    return String(d).split('').map(function(c){return m[c];}).join(''); }
+  function fmt(v){ return (v>=1000||(v<0.001&&v>0))?v.toExponential(1)
+                        :(+v.toPrecision(3)).toString(); }
+
+  var XD=[Math.log10(G[0]),Math.log10(G[G.length-1])];
+  var YD=[Math.log10(3e-4),Math.log10(1.6)];
+  var W=340,H=248,M={t:12,r:12,b:58,l:54},iw=W-M.l-M.r,ih=H-M.t-M.b,RY=H-10;
+  var sx=function(v){return M.l+(v-XD[0])/(XD[1]-XD[0])*iw;};
+  var sy=function(v){return M.t+(1-(v-YD[0])/(YD[1]-YD[0]))*ih;};
+  var tip=document.getElementById('tip'), grid=document.getElementById('grid');
+
+  // legend shows the union of dial values actually used
+  var lg=document.getElementById('legend');
+  [['N / H',[4,8,16,32],V4],['L',[2,4,8],V3]].forEach(function(spec){
+    var wrap=document.createElement('span');
+    wrap.style.cssText='display:inline-flex;gap:14px;align-items:center;flex-wrap:wrap';
+    var t=document.createElement('span'); t.className='lab'; t.textContent=spec[0];
+    wrap.appendChild(t);
+    spec[1].forEach(function(d,i){
+      var s=document.createElement('span'); s.className='sw';
+      s.innerHTML='<i style="background:var('+spec[2][i]+')"></i>'+d;
+      wrap.appendChild(s);
+    });
+    lg.appendChild(wrap);
+  });
+
+  function panel(row, key, vars){
+    var rec=row[key], good=rec.status.indexOf('TRANSFERS')===0;
+    var identity=row.identity && key==='ctrl';
+    var cls = identity ? 'neutral' : (good?'ok':'bad');
+    var word = identity ? 'identity' : (good?'transfers':'fails');
+    var p=document.createElement('div'); p.className='panel';
+    p.innerHTML='<div class="ptop"><span class="ptitle">'+
+      (key==='full'?'full scaling':'minus '+row.ctrl_label)+
+      '</span><span class="pill '+cls+'">'+word+'</span></div>';
+
+    var svg=el('svg',{'class':'chart',viewBox:'0 0 '+W+' '+H,role:'img',
+      'aria-label':row.kind+' sweep, '+row.setting+', '+
+        (key==='full'?'full scaling':'control')+': drift '+rec.drift.toFixed(3)+' decades'});
+
+    for(var d=Math.ceil(YD[0]);d<=Math.floor(YD[1]);d++){
+      svg.appendChild(el('line',{x1:M.l,x2:M.l+iw,y1:sy(d),y2:sy(d),
+        stroke:'var(--grid)','stroke-width':1}));
+      svg.appendChild(el('text',{x:M.l-8,y:sy(d)+3.5,'text-anchor':'end',
+        fill:'var(--ink-3)','font-size':10,'font-family':'var(--mono)'}))
+        .textContent = d===0?'1':'10'+sup(d);
+    }
+    for(var d2=Math.ceil(XD[0]);d2<=Math.floor(XD[1]);d2++){
+      svg.appendChild(el('line',{x1:sx(d2),x2:sx(d2),y1:M.t,y2:M.t+ih,
+        stroke:'var(--grid)','stroke-width':1}));
+      svg.appendChild(el('text',{x:sx(d2),y:M.t+ih+15,'text-anchor':'middle',
+        fill:'var(--ink-3)','font-size':10,'font-family':'var(--mono)'}))
+        .textContent='10'+sup(d2);
+    }
+    svg.appendChild(el('line',{x1:M.l,x2:M.l+iw,y1:M.t+ih,y2:M.t+ih,
+      stroke:'var(--rule)','stroke-width':1}));
+    svg.appendChild(el('text',{x:M.l+iw,y:M.t+ih+30,'text-anchor':'end',
+      fill:'var(--ink-3)','font-size':10.5,'font-family':'var(--mono)'}))
+      .textContent='base learning rate \u03b7\u2080';
+    var yl=el('text',{x:0,y:0,transform:'translate(11,'+(M.t+ih/2)+') rotate(-90)',
+      'text-anchor':'middle',fill:'var(--ink-3)','font-size':10.5,
+      'font-family':'var(--mono)'});
+    yl.textContent='final loss'; svg.appendChild(yl);
+
+    var cid='c-'+Math.random().toString(36).slice(2);
+    var defs=el('defs',{}),cp=el('clipPath',{id:cid});
+    cp.appendChild(el('rect',{x:M.l,y:M.t,width:iw,height:ih}));
+    defs.appendChild(cp); svg.appendChild(defs);
+    var plot=el('g',{'clip-path':'url(#'+cid+')'}); svg.appendChild(plot);
+
+    var exits=[];
+    rec.loss.forEach(function(series,di){
+      var col=cvar(vars[di]), dd='', prevIn=false;
+      series.forEach(function(v,j){
+        var yv=(v===null)?YD[1]+2:Math.log10(Math.max(v,1e-12));
+        var X=sx(Math.log10(G[j])), Y=sy(Math.min(yv,YD[1]+2));
+        dd+=(j===0?'M':'L')+X.toFixed(1)+' '+Y.toFixed(1);
+        var ins=yv<=YD[1];
+        if(prevIn&&!ins) exits.push([X,col]);
+        prevIn=ins;
+      });
+      plot.appendChild(el('path',{d:dd,fill:'none',stroke:col,'stroke-width':2,
+        'stroke-linejoin':'round','stroke-linecap':'round'}));
+      var k=0,b=Infinity;
+      series.forEach(function(v,i){ if(v!==null&&v<b){b=v;k=i;} });
+      plot.appendChild(el('circle',{cx:sx(Math.log10(G[k])),cy:sy(Math.log10(series[k])),
+        r:4.6,fill:'var(--panel)',stroke:col,'stroke-width':2}));
+    });
+    exits.forEach(function(e){
+      plot.appendChild(el('path',{d:'M'+(e[0]-3.4)+' '+(M.t+6)+'L'+e[0]+' '+(M.t+1.4)+
+        'L'+(e[0]+3.4)+' '+(M.t+6),fill:'none',stroke:e[1],'stroke-width':1.8,
+        'stroke-linecap':'round','stroke-linejoin':'round',opacity:0.85}));
+    });
+
+    var lo=Math.min.apply(null,rec.lrstar), hi=Math.max.apply(null,rec.lrstar);
+    svg.appendChild(el('line',{x1:M.l,x2:M.l+iw,y1:RY,y2:RY,stroke:'var(--grid)',
+      'stroke-width':2,'stroke-linecap':'round'}));
+    svg.appendChild(el('rect',{x:sx(lo),y:RY-3,width:Math.max(sx(hi)-sx(lo),2.5),
+      height:6,rx:3,fill: identity?'var(--neutral)':(good?'var(--ok)':'var(--bad)')}));
+    rec.lrstar.forEach(function(v,di){
+      svg.appendChild(el('line',{x1:sx(v),x2:sx(v),y1:RY-7.5,y2:RY+7.5,
+        stroke:cvar(vars[di]),'stroke-width':2,'stroke-linecap':'round'}));
+    });
+
+    var cross=el('line',{y1:M.t,y2:M.t+ih,stroke:'var(--ink-3)','stroke-width':1,
+      'stroke-dasharray':'3 3',opacity:0});
+    plot.appendChild(cross);
+    var hit=el('rect',{x:M.l,y:M.t,width:iw,height:ih,fill:'transparent',
+      style:'cursor:crosshair'});
+    svg.appendChild(hit);
+    hit.addEventListener('pointermove',function(ev){
+      var r=svg.getBoundingClientRect(), sc=W/r.width, px=(ev.clientX-r.left)*sc, k=0,b=1e9;
+      G.forEach(function(v,j){ var dd=Math.abs(sx(Math.log10(v))-px); if(dd<b){b=dd;k=j;} });
+      cross.setAttribute('x1',sx(Math.log10(G[k])));
+      cross.setAttribute('x2',sx(Math.log10(G[k])));
+      cross.setAttribute('opacity',1);
+      tip.style.opacity=1; tip.style.left=ev.clientX+'px'; tip.style.top=ev.clientY+'px';
+      tip.innerHTML='<span class="k">\u03b7\u2080</span> '+fmt(G[k])+'<br>'+
+        row.dials.map(function(d,di){
+          var v=rec.loss[di][k];
+          return '<span style="color:'+cvar(vars[di])+'">\u25a0</span> <span class="k">'+
+            row.dial+'='+d+'</span> '+(v===null?'diverged':fmt(v));
+        }).join('<br>');
+    });
+    hit.addEventListener('pointerleave',function(){
+      cross.setAttribute('opacity',0); tip.style.opacity=0; });
+
+    var fig=document.createElement('figure'); fig.appendChild(svg); p.appendChild(fig);
+    var cap=document.createElement('div'); cap.className='caption';
+    cap.innerHTML='drift <b>'+rec.drift.toFixed(3)+'</b> dec';
+    p.appendChild(cap);
+    return p;
+  }
+
+  ROWS.forEach(function(row){
+    var vars = row.dials.length===3 ? V3 : V4;
+    var head=document.createElement('div'); head.className='rowhead';
+    head.innerHTML='<h2>'+row.kind.charAt(0)+row.kind.slice(1).toLowerCase()+
+      ' \u2014 '+row.dial_label+'</h2><p>'+row.setting+
+      (row.identity?' \u00b7 control is the identity here':'')+'</p>';
+    grid.appendChild(head);
+    var pair=document.createElement('div'); pair.className='pair';
+    pair.appendChild(panel(row,'full',vars));
+    pair.appendChild(panel(row,'ctrl',vars));
+    grid.appendChild(pair);
+  });
+
+  var tb=document.getElementById('tbody');
+  ROWS.forEach(function(row){
+    [['full','full scaling'],['ctrl','minus '+row.ctrl_label]].forEach(function(v){
+      var rec=row[v[0]], good=rec.status.indexOf('TRANSFERS')===0;
+      var identity=row.identity&&v[0]==='ctrl';
+      var tr=document.createElement('tr');
+      tr.innerHTML='<td>'+row.kind.toLowerCase()+' ('+row.setting+')</td><td>'+v[1]+'</td>'+
+        '<td>'+rec.lrstar.map(function(x){return x.toFixed(2);}).join('  ')+'</td>'+
+        '<td>'+rec.drift.toFixed(3)+'</td><td style="color:var(--'+
+        (identity?'neutral':(good?'ok':'bad'))+')">'+
+        (identity?'identity':(good?'transfers':'fails'))+'</td>';
+      tb.appendChild(tr);
+    });
+  });
+})();
+</script>

@@ -57,6 +57,9 @@ def run(name, dials, dial_name, build, lr_grid, steps, seeds, controls):
     return out
 
 
+DUMP = {}
+
+
 def report(title, dials, dial_name, res):
     print("\n" + title)
     print("  %-28s %-46s %-9s %s" % ("variant", "verdict", "drift", "lr* by " + dial_name))
@@ -64,11 +67,19 @@ def report(title, dials, dial_name, res):
         print("  %-28s %-46s %-9.3f %s"
               % (k, v["status"], v["drift_log10"],
                  " ".join("%+.2f" % x for x in v["refined_log10_lr"])))
+    DUMP[title] = {"dials": list(map(float, dials)), "dial_name": dial_name,
+                   "variants": {k: {"loss": v0.tolist(),
+                                    "status": v1["status"],
+                                    "drift": float(v1["drift_log10"]),
+                                    "sem": float(v1["sem_log10"]),
+                                    "lrstar": [float(x) for x in v1["refined_log10_lr"]]}
+                                for k, (v0, v1) in res.items()}}
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
+    ap.add_argument("--json", default=None, help="dump loss grids for plotting")
     a = ap.parse_args()
     torch.set_num_threads(4)
     np.seterr(all="ignore")
@@ -116,6 +127,11 @@ transfers means the sweep cannot see that factor -- report under-powered, not
 success. At alpha_L = 1/2 the depth factor L^(2aL-1) = L^0 is the identity, so
 its control is EXPECTED to be inert; that row is a consistency check on the
 harness, not evidence.""")
+    if a.json:
+        import json
+        DUMP["_lr_grid"] = [float(x) for x in grid]
+        json.dump(DUMP, open(a.json, "w"))
+        print("wrote " + a.json)
 
 
 if __name__ == "__main__":
