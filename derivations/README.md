@@ -15,6 +15,7 @@ correction and the taxonomy.
 | `05-completep-dmft-sgd.md` | **DMFT** (cavity) | the CompleteP residual limit under SGD — dynamics, not just exponents; solver-validated |
 | `06-moe.md` | **heuristic + limit structure** — no cavity derivation | the MoE parameterisation (2601.20205 Table 1) and the three-level mean-field structure; measured in `rounds/006-moe` |
 | `07-moe-dmft.md` | **comparison only** | what `06` got right/wrong against their Appendix E, and what a real MoE DMFT still needs |
+| `08-chizat-mlu.md` | **heuristic + CLT accounting** | the MLU down-projection init (2509.10167, 2603.18168), why it makes block width enter the mean-field average, and the `P^{-1/6}` optimal shape; measured in `rounds/007-mean-ode` |
 
 ## The two methods
 
