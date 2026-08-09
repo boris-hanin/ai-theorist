@@ -501,3 +501,99 @@ Ranked, most-likely first:
 | P5 | `A_init ~ D_h^{1/2 - alpha_A}` | — |
 | P6 | `gamma_l` rises with `l` toward 1 (oversmoothing), per formula (G) | a decorrelating (random-rewire) graph must not |
 | P7 | the attention alignment factor stays near 1 where `C_{alpha beta} >> 1` | dense features must give both near 1 |
+
+---
+
+## 9. CORRECTIONS FORCED BY ROUND 011
+
+Kept as an appendix rather than folded into the text above, so the record shows
+what was derived before measuring and what measurement changed
+(`rounds/011-graph-transformer/results.md`).
+
+### 9a. §3 counted one channel out of two — the derivation was incomplete
+
+`Delta A` also moves because the block's **input** moves. The residual stream is
+designed so `Delta xt = Theta(1)`; with `q = (1/(sigma_QK sqrt(D))) W_Q xt` and
+`W_Q` random, `Delta q = Theta(1)` per coordinate, and `Delta(q.k)` is an
+incoherent sum over `D_h`:
+
+    **Delta A |_stream  =  Theta( D_h^{1/2 - alpha_A} )**                        (S)
+
+— exactly the order of `A_init`, and carrying **no dependence on the Q/K
+learning rate at all**. Measured on four configurations (E8): `−0.454`, `−0.482`
+at `alpha_A = 1` and `+0.080`, `+0.069` at `alpha_A = 1/2`, against `(S)`'s
+`−0.5` and `0`.
+
+**Why this hid.** At `alpha_A = 1` channel (S) and the Q/K channel both give
+`D_h^{-1/2}`, so the total agreed with a derivation that had counted only one of
+them. P5's `A_init` slopes and P4's `Delta A` slopes are the *same number* at
+that exponent. The failure only became visible at `alpha_A = 1/2`, where the two
+separate. Registered as **F23**; the guard is to enumerate every *input* to an
+observable, not only the parameters that "belong" to it.
+
+### 9b. The C2 coherence flip is FALSIFIED at `t <= 256` under SGD
+
+§3b asserted that `Delta W_O ∝ g (x) o` makes the backward-through-`W_O`
+contraction coherent from step 2. It does not, at any horizon run. With the Q/K
+group frozen alone (E8), the SGD slope is `−0.562` at `t=1` and `−0.544` at
+`t=256` — a drift of `0.018` over 256 steps, against a coherent prediction of
+`0`. The **incoherent** labelling is what the data support, and it fits at both
+`alpha_A` under the `alpha_A`-compensating rate, so it is a two-point test.
+
+Under **signGD** the same channel is nearly coherent already (`−0.151`) and does
+drift (`−0.065` by `t=256`), which is what §3d's sign argument predicts and which
+shows the probe is not blind to the effect.
+
+Consequence for §3e. With the incoherent labelling the needed rate is
+`eta_Q^SGD = eta_0 D L sigma_QK^2 D_h^{2 alpha_A - 3/2}`, hence
+
+    sigma_QK = D_h^{3/4 - alpha_A}      (incoherent, supported at t <= 256)
+    sigma_QK = D_h^{1 - alpha_A}        (coherent, §3e, NOT supported)
+
+At `alpha_A = 1` these are `D_h^{-1/4}` and `1`. **Neither is established
+empirically** — §3 of the results shows the transfer harness cannot resolve a
+`D_h` mis-scaling of the Q/K logit sector (0.12 dec against a 0.62-dec
+sensitivity for the same sector's `W_V/W_O` rate). The `sigma_QK` row of §5
+should be read as *derived, contested, unmeasured*.
+
+### 9c. The `alpha_A = 1` recommendation is reversed by measurement
+
+§5 recommended `alpha_A = 1` on two grounds: complete learning of the attention
+pattern, and `sigma_QK = 1`. Both are undercut.
+
+With C2 incoherent, at `alpha_A = 1` **every** channel of `Delta A` is
+`Theta(D_h^{-1/2})`, and so is `A_init`. The attention matrix therefore converges
+to *uniform over each graph neighbourhood at all times*, not just at
+initialisation — the MHSA branch's limit is a mean-aggregation MPNN branch with a
+learned value/output projection. That is a stable, transferring parameterisation
+of a model whose attention does nothing. The complete-learning table in §5
+compared `A_init` against a `Delta A` that assumed coherence; with (S) in hand
+the correct table is:
+
+| | `A_init` | `Delta A` (all channels, measured) | attention in the limit |
+|---|---|---|---|
+| `alpha_A = 1/2` | `Theta(1)` | `Theta(1)` | non-degenerate |
+| `alpha_A = 1` | `Theta(D_h^{-1/2})` | `Theta(D_h^{-1/2})` | **uniform aggregation** |
+
+So for *practice* the corrected recommendation is **`alpha_A = 1/2`**. For
+*theory* `11` §9 still prefers `alpha_A = 1`, because at `1/2` the DMFT closure
+needs `<softmax(Theta(1) Gaussian field)>` and drops an unclosed Jensen gap. The
+two routes disagree, and this file does not resolve it.
+
+### 9d. §1a overstated the consequence of the paper's §2.4 typo
+
+The inconsistency is real (Table 1 and Prop. 3 say `1/sqrt(D)`, §2.4 says `1`).
+I claimed it "looks exactly like a failure of width transfer". Measured: drift
+0.110 dec, TRANSFERS (E10). Both conventions leave the forward pass unchanged
+(`z = Theta(D^{-1/2})` either way); only the decoder's needed rate moves, so the
+decoder under-trains by `sqrt(D)` without destabilising anything. The typo is
+worth fixing; it is not a transfer failure.
+
+### 9e. What survived unchanged
+
+§1 (all of the paper's own rows), §2 (`W_V`, `W_O` take the residual rate and are
+head-blind), §4 (formula (G), verified to 1%, and `alpha_A >= 1/2` forced by
+softmax saturation), §5's encoder/MPNN/MLP/decoder/AdamW rows, and §6a/6b (the
+alignment assumptions). §7's ranked list of likely errors put the C2 label first
+and the missing-channel problem nowhere — the ranking was right about *where* to
+look and wrong about *what* was there.

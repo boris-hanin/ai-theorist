@@ -298,9 +298,18 @@ def adam_state(net):
     return [(torch.zeros_like(p), torch.zeros_like(p)) for p, _ in net.groups(1.0)]
 
 
-def train(net, batch, eta0, steps=20, C_ab=1.0, val=None):
+def train(net, batch, eta0, steps=20, C_ab=1.0, val=None, metric="best"):
+    """`metric="best"` is the paper's convention (best train loss attained).
+
+    Under signGD that convention makes the loss-vs-eta_0 curve BIMODAL: at large
+    eta_0 the iterate bounces past the minimum and the running best catches a
+    low value on the way through, so a second basin appears and the argmin jumps
+    between the two. `metric="final"` reports the loss at the horizon instead and
+    is unimodal. Round 011 E11 vs E12 is the measurement of that difference.
+    """
     st = adam_state(net) if net.opt == "adam" else None
     best = float("inf")
+    L = float("inf")
     for t in range(1, steps + 1):
         step(net, batch, eta0, C_ab, st, t)
         with torch.no_grad():
@@ -308,7 +317,7 @@ def train(net, batch, eta0, steps=20, C_ab=1.0, val=None):
         if not math.isfinite(L):
             return float("inf")
         best = min(best, L)
-    return best
+    return best if metric == "best" else L
 
 
 # --------------------------------------------------------------------------

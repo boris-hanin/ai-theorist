@@ -28,6 +28,7 @@ in this repo rests on the program record alone; those artifacts are gone.
 | dmft-resnet-depth | RECONSTRUCTED | `skills/dmft-resnet-depth/` |
 | dmft-attention | RECONSTRUCTED | `skills/dmft-attention/` |
 | dmft-moe | RECONSTRUCTED | `skills/dmft-moe/` |
+| dmft-graph | **PARTIAL** — static sector certified (`rounds/011`: formula (G) to 1%, `A_init` exponent, LLN/CLT concentration, SGD `D`-exponent to `+1.041`); Q/K logit sector NOT resolvable by the transfer harness; no solver | `skills/dmft-graph/` |
 
 The four companion skills were originally delivered as downloadable archives
 whose copies were lost (cloud-workspace recycling). Each carries a provenance
@@ -73,6 +74,14 @@ postdated the synthesis; those artifacts are gone.
 - Seed-average before comparing (F10); check MC floors by sample-halving (F8)
   and report the floor beside every gap; ablations that change nothing are red
   flags, not passes (F17).
+- **Before counting `Delta(observable)`, list every INPUT to that observable**,
+  not only the parameters that "belong" to it (F23, round 011: the attention
+  logits move because the block's input moves, with no reference to the Q/K
+  learning rate — and the omission was invisible at the conventional exponent
+  because two channels coincided there).
+- **Read the whole loss-vs-`eta` row before trusting an `argmin`** (F24): under
+  sign-like optimisers a "best loss during training" statistic creates a second
+  basin at large `eta` and the optimum jumps between basins.
 - **A check battery is not trustworthy until it has been mutation-tested.**
   Reintroduce the failure modes it claims to catch and confirm it catches them.
   The two-layer battery was initially blind to F4 (`rounds/001`).

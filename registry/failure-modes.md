@@ -203,6 +203,44 @@ field that makes an entry actionable, so supply it for anything new.
   implemented in `skills/dmft-derivation/scripts/transfer.py::verdict`. Guard:
   when a dial passes and others fail, check that the passing ones pass *for the
   same reason*; "small" and "settling" are different properties.
+- **F23 — incomplete enumeration of update channels.** A one-step derivation
+  asks "how big is `Delta X`?" and enumerates the ways the parameter group *named
+  in the question* moves `X` — missing channels through which `X` moves because
+  its **inputs** moved, which carry no dependence on that group's learning rate at
+  all. Instance (round 011): `derivations/10` §3 computed `Delta A` (attention
+  logits) purely from the `W_Q/W_K` update, and missed that the block's input
+  `xt` moves by `Theta(1)` by design, giving
+  `Delta A|_stream = Theta(D_h^{1/2 - alpha_A})` — the same order as `A_init`.
+  **Detection signature: the prediction is right at one value of a structural
+  exponent and wrong at another, with the discrepancy equal to the difference
+  between two channels' exponents.** At `alpha_A = 1` both channels give
+  `D_h^{-1/2}` and the total agreed with a derivation that had counted one of
+  them (measured `-0.456` vs predicted `-0.5`); at `alpha_A = 1/2` they separate
+  (`-0.56` vs `+0.08`) and the derivation is visibly wrong. A single-exponent test
+  therefore *cannot* catch this — the check has to vary the exponent that
+  separates the channels. Fix: freeze one parameter group at a time and measure
+  each channel alone (`experiments.py::_freeze`, `skills/dmft-graph/`). Guard:
+  before counting `Delta(observable)`, list **every input** to that observable,
+  not only the parameters that "belong" to it; if an input is itself designed to
+  move by `Theta(1)`, it is a channel.
+- **F24 — "best loss during training" makes the LR optimum bimodal.** Transfer
+  sweeps locate `argmin_eta` of a loss statistic. The common convention — and the
+  one 2607.05017 uses in every figure — is the *best* train loss attained during
+  training. Under a sign-like optimiser (signGD, Adam with small `eps`) the step
+  size does not shrink near the optimum, so at large `eta` the iterate overshoots
+  and the running best catches a low value *on the way through*. That creates a
+  **second basin** at large `eta`, and the per-seed `argmin` jumps between basins
+  as the scale dial moves. Instance (round 011 E11): a 1.14-decade "FAILS" verdict
+  on signGD width transfer, with the `D=32` optimum in the low basin and the
+  `D=256` optimum in the high one; switching to the loss at the horizon (E12)
+  removes the second basin entirely. **Detection signature: two local minima in a
+  single loss-vs-`eta` row, and a drift comparable to the spacing between them
+  rather than to anything smooth.** Fix: report the loss at a fixed horizon
+  (`gt.py::train(metric="final")`). Guard: read the whole loss-vs-`eta` row before
+  trusting an `argmin`; a verdict function sees only the location of the minimum
+  and cannot tell a moved optimum from a swapped basin. Note this is the opposite
+  hazard from F22 — F22 catches a drift that is real but not settling, F24 catches
+  a drift that is not real at all.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

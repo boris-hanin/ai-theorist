@@ -51,6 +51,7 @@ downloadable archive has produced nothing.
 | Round | What | Pre-registered |
 |---|---|---|
 | `001-two-layer-rebuild` | Rebuild the L=1 solver from the reconstructed docs; make Phase 5 runnable | No — retrospective, see its `results.md` |
+| `011-graph-transformer` | Extend 2607.05017 to graph transformers: parameterisation, DMFT, HP transfer | Yes — `9435a39`, before any measurement |
 
 Rounds 1–6 of the original program (deep MLP, depth-muP ResNet, attention, MoE,
 synthesis, hyperbolic) predate this directory and their artifacts were lost.

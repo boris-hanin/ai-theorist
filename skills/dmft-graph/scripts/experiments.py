@@ -163,17 +163,18 @@ def E3():
 # E4  HP transfer sweeps  (verdict from transfer.py, unmodified)
 # ==========================================================================
 
-def _sweep(build, dials, lr_grid, steps, seeds, data):
+def _sweep(build, dials, lr_grid, steps, seeds, data, metric="best"):
     per = np.full((len(dials), len(lr_grid), len(seeds)), np.inf)
     for i, d in enumerate(dials):
         for j, lr in enumerate(lr_grid):
             for k, s in enumerate(seeds):
-                per[i, j, k] = gt.train(build(d, s), data, lr, steps=steps)
+                per[i, j, k] = gt.train(build(d, s), data, lr, steps=steps,
+                                        metric=metric)
     return np.median(per, axis=2), per
 
 
-def _leg(name, build, dials, lr_grid, steps, seeds, data, out):
-    losses, per = _sweep(build, dials, lr_grid, steps, seeds, data)
+def _leg(name, build, dials, lr_grid, steps, seeds, data, out, metric="best"):
+    losses, per = _sweep(build, dials, lr_grid, steps, seeds, data, metric)
     v = verdict(losses, per, lr_grid, dials)
     print(render(name, dials, lr_grid, losses, v))
     out[name] = {k: (val.tolist() if isinstance(val, np.ndarray) else val)
@@ -473,8 +474,120 @@ def E9():
     return rows
 
 
+# ==========================================================================
+# E10  power audit of the transfer harness, and the signGD grid fix
+# ==========================================================================
+# E4 v2 returned UNDER-POWERED for the signGD width/depth legs (optimum below
+# the grid) and, worse, TWO controls that did not bite: alpha_A = 0 drifted
+# 0.065 dec against the treatment's 0.083, and qk-global drifted 0.122 against
+# derived's 0.283. Per F17 a control that changes nothing is a red flag, so the
+# question is whether the harness has power to see an attention-sector error at
+# all. E10 answers it by mis-scaling, one at a time, quantities of KNOWN
+# exponent: the V/O rate (attention sector, sqrt(D) too large) and the decoder
+# sigma (the paper's own §2.4 typo). If those bite and alpha_A/qk-global do not,
+# the harness is fine and the attention LOGIT sector is genuinely sub-dominant
+# for the optimum; if they do not bite either, the harness is blind.
+
+def E10():
+    print("\n=== E10  power audit + signGD grid fix ===")
+    data = gt.dataset(seed=0, **BASE)
+    out = {}
+    lrs = np.logspace(-4.5, -1.0, 10)
+    sd6 = (0, 1, 2, 3, 4, 5)
+    _leg("signGD width D (alpha_A=1, wide grid)",
+         lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
+         [32, 64, 128, 256], lrs, 60, sd6, data, out)
+    _leg("signGD depth L (alpha_A=1, wide grid)",
+         lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s),
+         [2, 3, 4, 6], lrs, 60, sd6, data, out)
+
+    # POWER CONTROL A -- attention V/O rate too large by sqrt(D). Same sector as
+    # the Q/K control, but on the branch that carries the FEATURE update.
+    class _BadVO(gt.GraphTransformer):
+        def groups(self, eta0, C_ab=1.0):
+            bad = {id(w) for l in range(self.L) for w in (self.WV[l], self.WO[l])}
+            return [(p, lr * (self.D ** 0.5 if id(p) in bad else 1.0))
+                    for p, lr in gt.GraphTransformer.groups(self, eta0, C_ab)]
+    _leg("POWER-CTL V/O rate x sqrt(D), width D (SGD)",
+         lambda D, s: _BadVO(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
+         [32, 64, 128, 256], np.logspace(-3.0, 1.0, 10), 24, (0, 1, 2, 3), data, out)
+
+    # POWER CONTROL B -- the paper's §2.4 typo: sigma_{L+1} = 1 under Adam
+    # instead of 1/sqrt(D). Needed decoder rate is then sqrt(D) too large.
+    class _Typo(gt.GraphTransformer):
+        def __init__(self, **kw):
+            gt.GraphTransformer.__init__(self, **kw)
+            self.sL1 = 1.0
+            g = torch.Generator().manual_seed(kw.get("seed", 0) + 777)
+            self.Wout = (torch.randn(self.D, generator=g, dtype=self.dtype)
+                         * 1.0).requires_grad_(True)
+    _leg("POWER-CTL paper §2.4 sigma_L+1=1, width D (signGD)",
+         lambda D, s: _Typo(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
+         [32, 64, 128, 256], lrs, 60, sd6, data, out)
+
+    dump("E10-power-audit.json", out)
+    return out
+
+
+# ==========================================================================
+# E11  signGD legs, third grid attempt
+# ==========================================================================
+# Attempt 1 (E4 v2, 10^-3..10^-0.3) put some seeds' argmin on the LOW edge;
+# attempt 2 (E10, 10^-4.5..10^-1) put some on the HIGH edge. The median optimum
+# is near 10^-1.5, so the grid has to straddle it with both ends clearly bad.
+# Recorded rather than quietly retried: two under-powered sweeps are part of the
+# record, and `verdict`'s `inside` flag requires EVERY seed interior, which is
+# the strict reading and the right one.
+
+def E11():
+    print("\n=== E11  signGD width/depth, straddling grid ===")
+    data = gt.dataset(seed=0, **BASE)
+    out = {}
+    lrs = np.logspace(-3.5, 0.0, 12)
+    sd = (0, 1, 2, 3, 4, 5)
+    _leg("signGD width D (alpha_A=1, straddling)",
+         lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
+         [32, 64, 128, 256], lrs, 60, sd, data, out)
+    _leg("signGD depth L (alpha_A=1, straddling)",
+         lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s),
+         [2, 3, 4, 6], lrs, 60, sd, data, out)
+    _leg("signGD heads H (alpha_A=1, straddling)",
+         lambda H, s: gt.GraphTransformer(D=128, L=3, H=H, alpha_A=1.0, opt="signgd", seed=s),
+         [1, 2, 4, 8], lrs, 60, sd, data, out)
+    dump("E11-signgd-transfer.json", out)
+    return out
+
+
+# ==========================================================================
+# E12  signGD legs with the FINAL loss instead of the best-so-far loss
+# ==========================================================================
+# E11's signGD curves are bimodal in eta_0 and the per-seed argmin jumps between
+# the two basins, producing a 1.1-decade "drift" that is an artefact of the
+# estimator, not of the parameterisation. The paper reports "the best train loss
+# attained during training"; under signGD that statistic rewards overshooting.
+# E12 repeats the same sweeps with the loss at the horizon.
+
+def E12():
+    print("\n=== E12  signGD transfer, FINAL-loss estimator ===")
+    data = gt.dataset(seed=0, **BASE)
+    out = {}
+    lrs = np.logspace(-3.5, -0.2, 10)
+    sd = (0, 1, 2, 3)
+    for nm, dials, build in (
+        ("signGD width D (final loss)", [32, 64, 128, 256],
+         lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s)),
+        ("signGD depth L (final loss)", [2, 3, 4, 6],
+         lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s)),
+        ("signGD heads H (final loss)", [1, 2, 4, 8],
+         lambda H, s: gt.GraphTransformer(D=128, L=3, H=H, alpha_A=1.0, opt="signgd", seed=s)),
+    ):
+        _leg(nm, build, dials, lrs, 40, sd, data, out, metric="final")
+    dump("E12-signgd-final.json", out)
+    return out
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["all"]
-    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"] if "all" in args else args
+    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12"] if "all" in args else args
     for name in todo:
         globals()[name]()
