@@ -1,11 +1,12 @@
-# Round 016 preregistration draft — Chizat optimizer-by-dataset matrix
+# Round 016 preregistration — Chizat optimizer-by-dataset matrix
 
 ## Provenance status
 
-This is a **draft protocol, not yet a preregistration**.  It must be committed
-together with the product implementation and matrix manifest before any round-
-016 A100 cell begins.  Results produced before that commit are exploratory and
-cannot be relabeled as formal evidence.
+This protocol, the product implementation, and the immutable matrix manifest
+were committed together in `1e3b0fb` before any round-016 A100 cell began.
+Execution used merge commit `1858f2c`, which preserves that protocol and
+manifest while reconciling the already-committed sparse-MoE work.  The results
+therefore satisfy the program's provenance rule.
 
 ## Question
 

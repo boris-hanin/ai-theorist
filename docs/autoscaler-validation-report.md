@@ -41,7 +41,7 @@ relaxing its gates.
 - Deferred: attention, arbitrary graphs, AdamW, Muon outside Chizat, data
   scaling, and horizon scaling.
 
-## Chizat optimizer-by-dataset preparation
+## Round 016 Chizat optimizer-by-dataset result
 
 The product now supports a strict Chizat-only nine-cell matrix: SGD, Adam, and
 Muon crossed with linear, tanh-teacher, and sinusoid-plus-quadratic tasks.
@@ -51,10 +51,18 @@ boundary matrices remain on auxiliary Adam.  Exact optimizer continuation,
 dataset fingerprints, fixed-eta trajectories, and optimizer-specific negative
 controls are part of the persisted result.
 
-This section records implementation readiness, not a result.  Round 013 remains
-strong exploratory evidence because its protocol was not committed before its
-A100 runs.  Round 016 and its immutable manifest are committed before any new
-matrix cell begins; each cell remains an independent claim.
+Round 013 remains strong exploratory evidence because its protocol was not
+committed before its A100 runs.  Round 016 repairs provenance: its protocol,
+implementation, and immutable manifest were committed before execution.
+
+The replicated nine-cell A100 matrix completes 665 finite 600-step trials per
+worker.  Final-loss non-inferiority passes in all nine cells.  Adam passes the
+complete transfer package on all three tasks; Muon passes it on linear and
+sinusoid-plus-quadratic, while Muon/tanh fails trajectory settlement.  SGD
+does not pass a complete package because two controls do not bite and two
+tasks select a boundary eta.  No cell passes every loss-law and held-out gate,
+so the broad claim fails and the product issues no forecast.  See
+`rounds/016-chizat-optimizer-dataset/results.md`.
 
 ## Automated and interactive validation
 
@@ -64,6 +72,7 @@ matrix cell begins; each cell remains an independent claim.
 | New Chizat LR contract | CPU smoke plus two-worker A100 campaigns through 1280 steps and M=2048; fixed-eta transfer passed and omitted-M control was rejected | Pass for Chizat subclaim |
 | Joint `L/M/D` | Pure-axis and joint two-worker A100 campaigns; exact duplicates, wrong-rule controls, and a dedicated `LM/D=8` ladder | Pass; constant `LM/D` preferred |
 | Sparse-MoE A100 | Six `LM/D=4` scales, six seeds, 84 trials, two independent A100 workers, held-out scale, wrong-global-rate control, and routing gate | Pass |
+| Round-016 matrix | Nine optimizer/task cells, 665 trials per worker, 600 steps per trial, two independent A100 replicas | Broad claim fails; transfer subclaims retained |
 | Real local API | 2/2 socket tests: health, strict compilation, disallowed-origin rejection, asynchronous run, polling, persisted result | Pass |
 | Packaging | Wheel build, clean wheel install, installed CLI help, sample-spec generation, and plan compilation | Pass |
 | Web static checks | ESLint, TypeScript, production Vinext build | Pass |
@@ -221,7 +230,7 @@ DMFT.  The historical MLP forecasts likewise remain historical until their
 schema-v2 fixed-eta campaigns are rerun.  No horizon result may be silently
 pooled into another horizon's law.
 
-The Chizat optimizer-by-dataset extension is not yet certified.  It becomes a
-release claim only cell by cell after the fresh, replicated round-016 matrix
-passes its committed transfer, control, trajectory, scaling-law, and held-out
-gates.
+The Chizat optimizer-by-dataset extension is certified only for the retained
+cell-level transfer subclaims above.  It is not certified for automatic loss
+forecasting: zero of nine cells passes every committed transfer, control,
+trajectory, scaling-law, and held-out gate.

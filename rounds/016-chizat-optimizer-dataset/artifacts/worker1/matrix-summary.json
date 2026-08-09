@@ -1,0 +1,230 @@
+{
+  "cell_count": 9,
+  "cells": [
+    {
+      "cell": "sgd__linear",
+      "dataset": "linear",
+      "optimizer": "sgd",
+      "study_fingerprint": "99409cc3be6be304be7d748620b84f24d126cfc87dc0a3d438c0c7240d74ea90",
+      "study_name": "a100-chizat-optimizer-dataset-sgd-linear"
+    },
+    {
+      "cell": "sgd__tanh",
+      "dataset": "tanh_teacher",
+      "optimizer": "sgd",
+      "study_fingerprint": "2c72d99e6f4db0bc15b09d080739c2ff3d656b692a8332f3afa4158f47c41208",
+      "study_name": "a100-chizat-optimizer-dataset-sgd-tanh"
+    },
+    {
+      "cell": "sgd__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "optimizer": "sgd",
+      "study_fingerprint": "ffad6cf35af4ec9946f47505f293bd8e970c82f7591ce4a511b3b7cdbff29629",
+      "study_name": "a100-chizat-optimizer-dataset-sgd-sinquad"
+    },
+    {
+      "cell": "adam__linear",
+      "dataset": "linear",
+      "optimizer": "adam",
+      "study_fingerprint": "03fca1dce44b6f50c0a8a12215128aada1fab527dc98c12f6d07630060d5927c",
+      "study_name": "a100-chizat-optimizer-dataset-adam-linear"
+    },
+    {
+      "cell": "adam__tanh",
+      "dataset": "tanh_teacher",
+      "optimizer": "adam",
+      "study_fingerprint": "3a9dcdc052dd5eb51ba9b85d2cf5033d2efb53e3d91f5f3dc2fb7e122a16017c",
+      "study_name": "a100-chizat-optimizer-dataset-adam-tanh"
+    },
+    {
+      "cell": "adam__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "optimizer": "adam",
+      "study_fingerprint": "f88ccc8e4facc101cb892ec21fe784ff088aacd4603fc509ed8b903ba8248b59",
+      "study_name": "a100-chizat-optimizer-dataset-adam-sinquad"
+    },
+    {
+      "cell": "muon__linear",
+      "dataset": "linear",
+      "optimizer": "muon",
+      "study_fingerprint": "b559bd9fe7f74130a1575fc4016067339b1abba210da1a5c794556aa7d551fc6",
+      "study_name": "a100-chizat-optimizer-dataset-muon-linear"
+    },
+    {
+      "cell": "muon__tanh",
+      "dataset": "tanh_teacher",
+      "optimizer": "muon",
+      "study_fingerprint": "5ff4cba6766c9738cd2a6b580385b6ca6e78405e26e6a3de03be77b5b41c1d8d",
+      "study_name": "a100-chizat-optimizer-dataset-muon-tanh"
+    },
+    {
+      "cell": "muon__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "optimizer": "muon",
+      "study_fingerprint": "288918fad224bdc18072cc89ad9cd74c566f76fc52b7c3169510b02967f5fe48",
+      "study_name": "a100-chizat-optimizer-dataset-muon-sinquad"
+    }
+  ],
+  "completed_cells": 9,
+  "device": "cuda",
+  "execution_policy": "sequential_no_gpu_overlap",
+  "matrix_schema_version": 1,
+  "name": "a100-chizat-optimizer-dataset",
+  "summaries": [
+    {
+      "cell": "sgd__linear",
+      "dataset": "linear",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": false,
+      "optimizer": "sgd",
+      "refusal_reasons": [
+        "negative-control transfer could not be distinguished from the proposed rule"
+      ],
+      "selected_normalized_eta": 0.09,
+      "study_fingerprint": "99409cc3be6be304be7d748620b84f24d126cfc87dc0a3d438c0c7240d74ea90",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "sgd__tanh",
+      "dataset": "tanh_teacher",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": false,
+      "optimizer": "sgd",
+      "refusal_reasons": [
+        "loss improvement is too small relative to noise",
+        "power law fit quality is below the calibration threshold",
+        "reference learning-rate optimum is on the tested boundary",
+        "negative-control transfer could not be distinguished from the proposed rule"
+      ],
+      "selected_normalized_eta": 0.27,
+      "study_fingerprint": "2c72d99e6f4db0bc15b09d080739c2ff3d656b692a8332f3afa4158f47c41208",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "sgd__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "sgd",
+      "refusal_reasons": [
+        "loss improvement is too small relative to noise",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation",
+        "reference learning-rate optimum is on the tested boundary"
+      ],
+      "selected_normalized_eta": 0.27,
+      "study_fingerprint": "ffad6cf35af4ec9946f47505f293bd8e970c82f7591ce4a511b3b7cdbff29629",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "adam__linear",
+      "dataset": "linear",
+      "forecastable": false,
+      "heldout_accepted": false,
+      "negative_control_rejected": true,
+      "optimizer": "adam",
+      "refusal_reasons": [
+        "loss is not consistently decreasing with compute",
+        "floor and exponent are not identifiable",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation",
+        "exponent is pinned to an optimization boundary",
+        "scaling law missed a held-out largest scale"
+      ],
+      "selected_normalized_eta": 0.01,
+      "study_fingerprint": "03fca1dce44b6f50c0a8a12215128aada1fab527dc98c12f6d07630060d5927c",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "adam__tanh",
+      "dataset": "tanh_teacher",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "adam",
+      "refusal_reasons": [
+        "loss is not consistently decreasing with compute",
+        "floor and exponent are not identifiable",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation",
+        "exponent is pinned to an optimization boundary"
+      ],
+      "selected_normalized_eta": 0.01,
+      "study_fingerprint": "3a9dcdc052dd5eb51ba9b85d2cf5033d2efb53e3d91f5f3dc2fb7e122a16017c",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "adam__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "adam",
+      "refusal_reasons": [
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation"
+      ],
+      "selected_normalized_eta": 0.003,
+      "study_fingerprint": "f88ccc8e4facc101cb892ec21fe784ff088aacd4603fc509ed8b903ba8248b59",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "muon__linear",
+      "dataset": "linear",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "muon",
+      "refusal_reasons": [
+        "loss is not consistently decreasing with compute",
+        "floor and exponent are not identifiable",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation",
+        "exponent is pinned to an optimization boundary"
+      ],
+      "selected_normalized_eta": 0.03,
+      "study_fingerprint": "b559bd9fe7f74130a1575fc4016067339b1abba210da1a5c794556aa7d551fc6",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "muon__tanh",
+      "dataset": "tanh_teacher",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "muon",
+      "refusal_reasons": [
+        "loss is not consistently decreasing with compute",
+        "loss improvement is too small relative to noise",
+        "floor and exponent are not identifiable",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation",
+        "exponent is pinned to an optimization boundary",
+        "fixed-eta validation trajectories did not settle across the scale ladder"
+      ],
+      "selected_normalized_eta": 0.01,
+      "study_fingerprint": "5ff4cba6766c9738cd2a6b580385b6ca6e78405e26e6a3de03be77b5b41c1d8d",
+      "transfer_accepted": true
+    },
+    {
+      "cell": "muon__sinquad",
+      "dataset": "sinusoid_quadratic",
+      "forecastable": false,
+      "heldout_accepted": true,
+      "negative_control_rejected": true,
+      "optimizer": "muon",
+      "refusal_reasons": [
+        "loss is not consistently decreasing with compute",
+        "loss improvement is too small relative to noise",
+        "power law fit quality is below the calibration threshold",
+        "estimated loss floor is pinned to the smallest observation"
+      ],
+      "selected_normalized_eta": 0.03,
+      "study_fingerprint": "288918fad224bdc18072cc89ad9cd74c566f76fc52b7c3169510b02967f5fe48",
+      "transfer_accepted": true
+    }
+  ]
+}

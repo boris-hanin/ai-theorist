@@ -1,0 +1,25 @@
+{
+  "all_trials_finite_and_complete": true,
+  "commit": "1858f2cecdc66606f6b63cfb338948926f84d1c6",
+  "condition_number_differences": {
+    "adam__sinquad": [205954507.72879153, 205954507.72890255],
+    "muon__linear": [1.461865868279904e+20, 1.4620371026672294e+20],
+    "muon__tanh": [4.6795799525752026e+20, 4.679587647219799e+20]
+  },
+  "cuda_smoke_identical": true,
+  "full_tests_per_worker": 81,
+  "matrix_manifest_sha256": "508201acde3943b2d1614d7a03a39892734c71e5b1463a6e2188c5eb27c23cf3",
+  "matrix_summary_sha256": "4ed18d7a520d792c1e6e9cd4bea6ac6b1ddd83903850f62dcaab17c225b76305",
+  "optimizer_steps_per_worker": 399000,
+  "replica_fields_excluded_from_equality": [
+    "started_at",
+    "completed_at",
+    "duration_seconds",
+    "scaling_law.condition_number"
+  ],
+  "scientific_fields_identical": true,
+  "trials_per_worker": 665,
+  "verdict_fields_identical": true,
+  "worker1": "ready-buzzard-1",
+  "worker2": "satisfied-alpaca-1"
+}

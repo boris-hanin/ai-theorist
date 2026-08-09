@@ -133,7 +133,10 @@ with three versioned datasets.  It uses five common seeds, six `LM/D=8` scales,
 16,384 fixed training examples, 4,096 validation examples, 600 updates, batch
 size 256, 400 bootstrap fits, optimizer-specific negative controls, and a
 sealed sixth scale.  Cells execute sequentially per accelerator.  Adam and
-Muon semantic-rate rules are hypotheses to test, not certified conclusions.
+Muon semantic-rate rules were preregistered hypotheses at launch.  Round 016
+retains Adam transfer on all three tasks and Muon transfer on linear and
+sinusoid-plus-quadratic; Muon/tanh fails trajectory settlement, and no cell
+earns a validation-loss forecast.
 
 The Adam ladder grows depth more aggressively.  The first SGD screen showed
 that the same 2/3/4/6/8/12 depth ladder becomes optimization-limited at the
