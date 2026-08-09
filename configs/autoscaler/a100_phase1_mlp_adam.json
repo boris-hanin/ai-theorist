@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "name": "a100-phase1-mlp-adam-fixed-data",
+  "run_profile": "pilot",
+  "architecture": {
+    "block_type": "pre_norm_mlp",
+    "activation": "gelu",
+    "input_dim": 32,
+    "output_dim": 1,
+    "residual_multiplier": 1.0
+  },
+  "optimizer": {
+    "name": "adam",
+    "momentum": 0.0,
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "epsilon": 1e-8
+  },
+  "dataset": {
+    "task_type": "nonlinear_regression",
+    "difficulty": "scaling",
+    "n_train": 16384,
+    "n_validation": 4096,
+    "noise_std": 0.01,
+    "seed": 1729,
+    "teacher_width": 128,
+    "teacher_depth": 4,
+    "markov_order": 3,
+    "markov_states": 16
+  },
+  "horizon": {
+    "steps": 600,
+    "batch_size": 256,
+    "microbatch_size": 64
+  },
+  "data_scaling": {
+    "mode": "fixed",
+    "growth_factor": 1.0,
+    "horizon_policy": "fixed_updates"
+  },
+  "scales": [
+    {"name": "S1", "width": 64, "repeats": 2},
+    {"name": "S2", "width": 96, "repeats": 3},
+    {"name": "S3", "width": 144, "repeats": 4},
+    {"name": "S4", "width": 216, "repeats": 6},
+    {"name": "S5", "width": 324, "repeats": 8},
+    {"name": "S6", "width": 486, "repeats": 12}
+  ],
+  "tuning": {
+    "normalized_learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01],
+    "max_expansion_rounds": 2,
+    "expansion_factor": 3.0
+  },
+  "validation": {
+    "transfer_probe_decades": 0.3,
+    "run_negative_control": true,
+    "bootstrap_samples": 400,
+    "routing_load_tolerance": 0.25
+  },
+  "seeds": [11, 29, 47],
+  "holdout_count": 1
+}
