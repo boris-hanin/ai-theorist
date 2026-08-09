@@ -16,11 +16,13 @@ Entry schema for new modes: **mechanism → detection signature → fix → guar
 The reconstructed entries mostly lost their detection signatures; that is the
 field that makes an entry actionable, so supply it for anything new.
 
-- **F1 — equal-time response diagonal.** B̄(t,t) = ⟨φ̈·backward⟩ ≠ 0 for
-  nonlinear φ (and for gain-modulated linear structures). Masking response
-  kernels with strict lower-triangular masks silently drops it (was worth
-  20–50% kernel error in the deep-MLP round). Corollary F1b: linear
-  cross-checks are blind to this — they pass with the bug present.
+- **F1 — equal-time response diagonal.** B̄(t,t) can be nonzero for nonlinear
+  φ (and for gain-modulated linear structures), with a measured `1/dt`
+  representative in round 003.  Its existence does **not** by itself fix its
+  weight in a causal memory sum: the exact discrete update order does.  Round
+  003 favours a strict-past, weight-zero endpoint in the tested L=2 solver and
+  did not reproduce the historical 20–50% error. Corollary F1b: linear
+  cross-checks are blind to the nonlinear diagonal term.
   *Refinement (from `dmft-master/references/algorithm.md` Step 1b): the rule is
   set by computation order, not by nonlinearity alone — a field read BEFORE the
   backward pass has Ā(t,t) = 0; a drive that sees the SAME step's forward pass

@@ -44,7 +44,11 @@ dropped explains the recorded 20–50% kernel error; and because it carries
 `phi_ddot` it vanishes identically for linear `phi`, which is precisely F1b.
 The minimal detector is nonlinear `L = 2`.
 
-**Status: theory only.** Phase 4 must measure it.
+**Historical status at the end of round 002: theory only.** Round 003 then
+measured the `1/dt` structure and **falsified** the claimed O(1), unit-weight
+endpoint contribution: strict-past weight zero fit and weight one did not. See
+`rounds/003-onsager/results.md`; do not cite the paragraph above without this
+follow-up.
 
 ## Part B — deep linear closure derived and certified
 

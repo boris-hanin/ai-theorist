@@ -19,9 +19,9 @@ Reference files (load as needed):
   tables and the richness dial γ₀.
 - `references/validation-checks.md` — mandatory sanity checks and known
   reproduction targets with exact settings.
-- `scripts/` — runnable two-layer solver, matched finite-width simulator, and
-  `validate.py` (the Phase 5 battery). Certified against the exactly-solvable
-  cases; see `scripts/README.md` for what is and is not covered.
+- `scripts/` — runnable two-layer, deep-linear, and general-depth nonlinear P=1
+  solvers; matched finite-width simulators; and four validation batteries.
+  See `scripts/README.md` for the distinct certification and coverage bounds.
 
 ## Phase 0 — Scope check (mandatory)
 
@@ -158,11 +158,11 @@ numbers; extend it rather than re-deriving the battery by hand.
 Full entries in `registry/failure-modes.md` (repo-level, canonical).
 
 - Applying the theory at P or t that scale with N (silently wrong) — Phase 0.
-- **F1 — equal-time response diagonals are generically NONZERO.** Do not mask
-  Ā, B̄ with a strict lower-triangular mask. Computation order sets the rule: a
-  field read before the backward pass has Ā(t,t)=0; a drive that sees the same
-  step's forward pass has B̄(t,t)≠0. Worth 20–50% kernel error when dropped, and
-  linear cross-checks pass with the bug present (F1b) — they do not certify it.
+- **F1 — equal-time response diagonals can be nonzero and scale as `1/dt`.**
+  Record them, but do not automatically include the endpoint in a causal memory
+  sum. Computation order fixes both the diagonal and its integration weight; in
+  round 003's L=2 solver the strict-past (weight-zero) endpoint fits and weight
+  one is falsified. Linear cross-checks are blind to the nonlinear term (F1b).
 - Dropping the response functions A, B for L ≥ 2 (they are O(1) and matter;
   only L=1 kills them). Corollary: L=1 agreement cannot certify response code.
 - **F4 — never Euler-march theory prediction curves.** Correlator rule; see

@@ -1,57 +1,79 @@
 # ai-theorist
 
-Skills and infrastructure for a validated "mathematical assistant" that
-derives dynamical mean-field theory (DMFT) descriptions of neural network
-training dynamics (Bordelon–Pehlevan program), built and certified through
-an iterative validate-then-extend process.
+An executable research record for deriving and testing dynamical mean-field
+theory (DMFT) and hyperparameter-scaling claims for neural networks.
 
-Validation bar used throughout: **derivation + independent numerics +
-finite-size simulations** — never symbolic plausibility alone. Plans are
-pre-registered before computing; paper transcriptions are treated as hints
-(simulations are ground truth); failures are reported honestly and
-registered as named failure modes.
+The standard used here is **derivation + independent numerics + matched
+finite-size simulations**, with explicit uncertainty and controls.  The record
+also includes failed and inconclusive rounds.  Formal preregistration was adopted
+during the project; it is not retroactively claimed for early rounds.
 
-## Contents
+## What is in the repository
 
-- `skills/dmft-derivation/` — the core skill (**certified**): phased recipe
-  (scope check → parameterization → single-site derivation → closure →
-  numerics → mandatory checks) with complete reference equation systems,
-  numerical algorithms, muP/depth-muP tables, validation targets, and a
-  runnable two-layer solver + Phase 5 check battery under `scripts/`.
-- `skills/dmft-master/` — the 9-step zero-shot algorithm for deriving the
-  limit of a NOVEL architecture, with long-form steps, instance traces, and
-  the solver-pattern library. **Reconstructed, pending re-validation.**
-- `skills/dmft-{resnet-depth,attention,moe}/` — per-instance deltas.
-  **Reconstructed, pending re-validation.**
-- `registry/failure-modes.md` — canonical failure-mode registry (F1–F17)
-  accumulated across all validation rounds.
-- `rounds/` — one directory per validation round: pre-registration committed
-  before results, then results and raw numbers beside it.
-- `PROGRAM.md` — program history, per-skill certification status, and the
-  method invariants.
+- `skills/dmft-derivation/`: the core derivation workflow and runnable solvers
+  for two-layer, deep-linear, and general-depth nonlinear P=1 cases.
+- `skills/dmft-master/`: a reconstructed nine-step synthesis.  It remains a
+  specification, not a certified package.
+- `skills/dmft-{resnet-depth,attention,moe,graph}/`: architecture-specific
+  derivations, simulators, sweeps, and stated coverage limits.
+- `derivations/`: long-form derivations and corrections.
+- `rounds/`: eleven validation rounds with results and, where retained, raw
+  data and preregistrations.
+- `registry/failure-modes.md`: the canonical F1–F22 registry (F7, F9, and F13
+  are intentionally marked lost and are never reused).
+- `PROGRAM.md`: certification policy and current skill status.
 
-## Validated instances (chronological)
+## Current status
 
-1. Deep MLPs (arXiv 2205.09653) — exact limiting equations reproduced;
-   solver vs sims across widths. Origin of F1, F4, F5, F6.
-2. Depth-muP ResNets (arXiv 2309.16620) — depthwise hyperparameter
-   transfer. Origin of F14.
-3. Multi-head attention (arXiv 2405.15712) — concentration-vs-freezing
-   dichotomy corrected against data. Origin of F3.
-4. Mixture-of-Experts (arXiv 2601.20205) — routing-aware scaling audit.
-5. Synthesis: one master algorithm from which all completed computations
-   are derivable as traces.
-6. Hyperbolic Busemann networks (novel, rounds 1–3) — executed AFTER the
-   synthesis, from the algorithm alone, as a **zero-shot test** of it.
-   Origin of F15, F16, F17. See `skills/dmft-master/references/instances.md`;
-   the round's solver code was lost and is not being recovered.
+- The L=1 solver is certified against exact reductions (`rounds/001`).
+- Deep-linear response dynamics and a general-depth nonlinear P=1 response
+  solver are implemented; the quick battery checks L=1–3 (`rounds/002–003`).
+  The equal-time response has a
+  measured `1/dt` representative, but the previously claimed unit endpoint
+  weight was falsified; the tested causal sum uses strict past.
+- Attention, residual, and MoE scaling claims have executable measurements,
+  with each round's failed or under-powered bars retained in its `results.md`.
+- The Round 010 `C^-1/6` rate is supported by a large A100 artifact.  Its v2
+  source had not been committed;
+  `skills/dmft-moe/scripts/overnight_suite_v2.py` reconstructs the exact
+  effective settings from the log, and the historical susceptibility table is
+  explicitly labeled summary-only until rerun.
+- Round 011's graph-transformer validation **failed** its preregistered rule.
+  Several subclaims pass, but the full parameterisation is not certified.
+- No claim here establishes production performance, broad task generality, or
+  a graph-transformer DMFT dynamics solver.
 
-## Status, honestly
+## Reproduce the checks
 
-Instances 1–6 were validated in sessions whose artifacts were largely lost to
-workspace recycling. What survives here is the *method*: the recipe, the
-algorithm, the registry. Of the numerical work, only the two-layer solver in
-`skills/dmft-derivation/scripts/` is present and re-certified against the
-exactly-solvable cases — everything in the response sector (L ≥ 2) is specified
-but unimplemented. Claims about instances 1–6 rest on the program record, not
-on anything runnable in this repo. Treat them accordingly.
+Python 3.11 is the CI target.
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[test]'
+pytest
+python skills/dmft-derivation/scripts/validate.py --quick
+```
+
+The deep-linear and nonlinear suites are more expensive:
+
+```bash
+python skills/dmft-derivation/scripts/validate_deep_linear.py --quick
+python skills/dmft-derivation/scripts/validate_deep_nonlinear.py --quick
+```
+
+Large Round 010 jobs require a CUDA GPU.  Every new runner accepts a portable
+output path; historical files with fixed remote paths are retained only when
+needed for provenance and are labeled as such.
+
+## Research and provenance policy
+
+Raw results are never silently promoted after a failed bar.  Shared-seed
+comparisons use paired uncertainty.  Expensive artifacts whose original source
+was lost are described as reconstructions rather than original code.  See
+`rounds/README.md` for the lifecycle and per-round preregistration status.
+
+## License and citation
+
+Copyright (c) 2026 Boris Hanin.  All rights reserved; no open-source license has
+been granted.  Citation metadata is in `CITATION.cff`.

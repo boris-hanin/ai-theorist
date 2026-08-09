@@ -9,7 +9,8 @@ description: The master DMFT algorithm — a single zero-shot procedure for deri
 > program record — including its reference files, under `references/`.
 > Faithful in substance, NOT verbatim; pending re-validation as a package.
 > Failure modes live ONCE, at the repo-level `registry/failure-modes.md`
-> (F1–F17, canonical); the index below is the loadable summary.
+> (F1–F22, with F7/F9/F13 intentionally unrecoverable); the index below is the
+> loadable summary.
 
 # The master algorithm (9 steps)
 
@@ -86,7 +87,9 @@ response ablation must matter or the test is reported under-powered.
 - **Multi-head attention** (2405.15712): per-axis Step-0; class-(d)
   logits; F3 dichotomy corrected against data.
 - **MoE** (2601.20205): routing-conditioned populations; √α movement-
-  collapse audit; η_up ∝ α; F2-flavor bookkeeping fix.
+  collapse audit; the historical `eta_up ∝ alpha` claim was falsified and
+  replaced by Table 1 (`W_up` blind to expert width; the factor belongs to
+  `W_down`); F2-flavor bookkeeping fix.
 - **Hyperbolic Busemann MLPs + horospherical residual** (novel, rounds
   1–3 of the hyperbolic program): centered hyperbolic μP invented via
   Step 0; L=1 McKean–Vlasov (Step 6 ladder); L=2 response sector; the
@@ -105,7 +108,7 @@ the session archives and are permanent holes.
 
 | # | Trigger |
 |---|---|
-| F1 | Equal-time response diagonals are generically nonzero; computation order sets Ā(t,t)=0 vs B̄(t,t)≠0. Strict-tril masks silently drop them. Linear checks are blind (F1b). |
+| F1 | Equal-time response diagonals can be nonzero and scale as `1/dt`; the exact update order fixes whether the causal sum includes the endpoint. Round 003 favours strict past. Linear checks are blind (F1b). |
 | F2 | Transposed-carrier backward field has its own scale; mis-bookkeeping shows up as movement collapse under the right rescaling. |
 | F3 | "Stops moving as N grows" = concentration OR freezing. Name which, and test the discriminating observable. |
 | F4 | Never Euler-march theory prediction curves. Correlator rule + control variates. |

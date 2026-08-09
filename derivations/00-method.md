@@ -107,7 +107,7 @@ These two zeros are what make `L = 1` collapse to a response-free
 McKean–Vlasov system. **They are the only reason L=1 is easy**, and they are
 why L=1 can never certify response-sector code.
 
-## The equal-time subtlety (F1, sharpened)
+## The equal-time subtlety (F1, corrected by round 003)
 
 `h(t) = u(t) + gamma_0 * (memory over [0,t])`, so `u` enters `h` **directly**:
 
@@ -118,24 +118,21 @@ Therefore the response `B(t,s) = gamma_0^{-1} <d g(t) / d u(s)>` with
 
     B(t,s) ⊃ gamma_0^{-1} < phi_ddot(h(t)) z(t) > delta(t-s)
 
-**In discrete time the delta becomes 1/dt**, so the diagonal entry of the
-response kernel is larger than its off-diagonal neighbours by a factor `1/dt`.
-It looks like an outlier. It is not — after the `gamma_0 * dt * B` weighting it
-contributes at `O(1)` to the field:
-
-    gamma_0 * dt * (gamma_0^{-1} <phi_ddot z> / dt) * phi(h(t)) = <phi_ddot(h(t)) z(t)> phi(h(t))
-
-This is the precise content of F1, and it explains both halves of that entry:
-masking the diagonal drops an `O(1)` term (hence 20–50% kernel error), and
-"cleaning" an anomalously large diagonal is the natural wrong instinct.
+**In discrete time the delta becomes `1/dt`**, so the diagonal entry is larger
+than its neighbours by that factor.  Round 003 measured this scaling directly.
+It also falsified the tempting next step: assigning the endpoint weight one in
+the causal memory sum.  In the tested L=2 solver, coefficient zero fits the
+finite-width extrapolation and coefficient one does not.  The correct rule is
+therefore: retain and inspect the diagonal, but set the memory-sum endpoint by
+the exact discrete update graph.  For this solver the integral is strict-past.
 
 It also explains **F1b**: the term carries `phi_ddot`, so it vanishes identically
 for linear `phi`. A linear cross-check cannot see this bug. The minimal
 architecture that *can* is a nonlinear network with `L = 2`.
 
-*Status: derived here, not yet confirmed numerically. See
-`03-deep-linear.md` and the L=2 experiment planned for the nonlinear solver —
-until that measurement exists, this section is theory only.*
+*Status: the `1/dt` structure is confirmed and the unit endpoint coefficient is
+falsified in `rounds/003-onsager/`; scope is L=2, P=1, erf,
+`gamma_0=1`, horizon 1.0.*
 
 ## Checklist before believing a derivation
 

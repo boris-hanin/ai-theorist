@@ -114,12 +114,10 @@ NOT COVERED:
     cannot establish that -- only that it is small over the range tested.
   * gamma_0 transfer: only eta_0 is swept.
   * Real tasks. The target is a fixed random teacher on synthetic inputs.
-  * NONLINEAR DMFT beyond L=2. The solver side of the program covers deeper
-    MLPs only for LINEAR phi (dmft_deep_linear, certified to L=4); the
-    nonlinear solver is L=2 by construction. So "the theory matches sims at
-    depth" is established for linear activations only. Leg C (this battery)
-    is nonlinear at every depth it tests, but it tests the parameterisation,
-    not the limiting equations.
+  * This battery does not exercise DMFT dynamics. General-depth nonlinear P=1
+    DMFT is covered separately by validate_deep_nonlinear.py (quick checks L=1
+    through L=3); multi-datapoint coupling and residual architectures remain
+    outside that solver. Leg C here tests parameterisation, not the limit.
 """
 
 

@@ -1,4 +1,10 @@
-"""Overnight suite for the MoE Mean-ODE limit. Self-contained (no local imports).
+"""Historical Round 010 v1 runner (kept for provenance).
+
+The published ``big_out.json`` came from a larger v2 runner whose source was
+not committed.  Its effective settings have been reconstructed from
+``big.log`` in ``overnight_suite_v2.py``; use that file for new runs.
+
+Overnight suite for the MoE Mean-ODE limit. Self-contained (no local imports).
 
 Robustness: every experiment is wrapped, results are written to JSON after EVERY
 sub-result, and the driver runs experiments in descending order of value so that
@@ -11,8 +17,8 @@ a spot preemption still leaves the important ones done.
   E4  lazy branch alpha* = (ML)^{1/4} against a large linearised reference.
 """
 import torch, numpy as np, math, json, time, os, sys, traceback
-dev='cuda'; torch.set_default_dtype(torch.float64)
-OUT='/home/ubuntu/big_out.json'; RES={}
+dev=os.environ.get('AI_THEORIST_DEVICE','cuda'); torch.set_default_dtype(torch.float64)
+OUT=os.environ.get('AI_THEORIST_OUTPUT',os.path.abspath('big_out_v1_rerun.json')); RES={}
 def save():
     tmp=OUT+'.tmp'; json.dump(RES,open(tmp,'w'),indent=1); os.replace(tmp,OUT)
 def log(*a):

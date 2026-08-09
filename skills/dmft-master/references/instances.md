@@ -9,9 +9,10 @@
 
 - Step 0: standard μP table; γ = γ₀√N; LR γ²-scaled.
 - Step 1: input/hidden matrices class (b) per layer (forward χ, backward
-  ξ, responses Aˡ, Bˡ with NONZERO equal-time diagonal for nonlinear φ —
-  F1 discovered here, was masked by strict-tril and cost 20–50% kernel
-  error; linear cross-checks blind to it, F1b); readout class (c).
+  ξ, responses Aˡ, Bˡ).  The equal-time diagonal has measured `1/dt`
+  structure, while round 003 falsified a unit endpoint weight in the tested
+  L=2 causal sum; derive the endpoint from update order (F1/F1b). Readout is
+  class (c).
 - Steps 5–7: alternating MC fixed point with damping; response noise
   rectification fixed by slow response damping (F6); Δ-map stiffness
   needs inner damped loop (F5); exact discrete-time correlator
@@ -42,13 +43,14 @@
 
 ## 4. Mixture-of-Experts (Jiang–Bordelon–Pehlevan–Hanin, arXiv 2601.20205)
 
-- Step 0: routing/sparsity dial α; movement-collapse audit in √α exposed
-  an α_ffn bookkeeping error — the backward carrier through the expert
-  stream is scale α^{−1} (sum over active stream neurons), so η_up ∝ α
-  (F2-flavor: transposed-carrier scale).
+- Step 0: routing/sparsity audit exposed a reconstructed bookkeeping error:
+  `W_up` is blind to `alpha_ffn`; the width factor belongs to `W_down`'s init
+  and rate (F2/F14).
 - Step 2: router-conditioned expert populations (quenched conditioning —
   match theory and sims, F11).
-- Step 8: MoE μP table reproduced incl. η_up ∝ α; transfer across dials.
+- Step 8: MoE Table 1 was re-derived and measured in round 006; several
+  collapse/control bars remained inconclusive or failed and are not promoted
+  to certification.
 
 ## 5. Hyperbolic Busemann networks (novel; rounds 1–3)
 

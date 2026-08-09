@@ -2,7 +2,9 @@
 
 ```
 python3 validate.py                  # L=1 battery, ~30 s, 20 checks
-python3 validate_deep_linear.py      # deep linear battery, ~160 s, 14 checks
+python3 validate_deep_linear.py      # deep linear battery, 13 checks in quick mode
+python3 validate_deep_nonlinear.py   # general-depth nonlinear P=1 battery
+python3 validate_scaling.py          # scaling and transfer battery
 #   --quick on either for a smaller/shorter run
 ```
 
@@ -13,10 +15,12 @@ next to its bar.
 |---|---|
 | `dmft_two_layer.py` | L=1 solver: exact causal co-integration, correlator-rule predictions, antithetic readout pairs, optional joint-Sobol QMC |
 | `dmft_deep_linear.py` | Deep **linear** solver: algebraic closure, live response sector, damped fixed point with γ₀-annealing (F5). No sampling floor |
+| `dmft_deep_nonlinear.py` | General-depth **nonlinear**, P=1 single-site Monte Carlo solver with exact response sensitivities; strict-past endpoint by the round 003 measurement |
+| `dmft_l2_nonlinear.py` | Independent L=2 nonlinear implementation retained as a cross-check and endpoint-coefficient instrument |
 | `sim_two_layer.py` | Finite-width L=1 net in the matched parameterisation; updates `W0` explicitly rather than using the reduced `h`-recursion, so it is an independent implementation path |
 | `sim_deep.py` | Finite-width depth-L net, same conventions, any activation |
 | `exact.py` | Closed forms and Gauss-Hermite quadrature — the independent ground truth. Uses nothing from the solver |
-| `validate.py`, `validate_deep_linear.py` | The Phase 5 batteries |
+| `validate.py`, `validate_deep_linear.py`, `validate_deep_nonlinear.py`, `validate_scaling.py` | Validation batteries |
 | `activations.py` | `linear`, `tanh`, `relu`, `erf` with derivatives |
 
 **Two floors, one discipline.** Neither battery judges a theory-vs-simulation
@@ -123,14 +127,13 @@ floor. Measured: ablating the interior responses makes the simulation gap
 at L=1 where `A^0 = B^1 = 0`. F5 stiffness is mapped and handled by
 `solve_annealed()`.
 
-What remains is the **nonlinear** case, and specifically the equal-time Onsager
-term derived in `derivations/01-deep-mlp.md` §7. It carries `phi_ddot`, so it
-is identically absent from everything implemented so far — F1b exactly. It
-needs single-site Monte Carlo with exact forward-mode sensitivities, and the
-minimal architecture that can detect it is nonlinear `L = 2`.
+The nonlinear response sector is now implemented for general depth at P=1 in
+`dmft_deep_nonlinear.py`. Its quick battery checks L=1–3, compares an independent
+L=2 implementation, verifies response ablations at L=2/3, and reaches the
+measured simulation/MC floor. The equal-time `1/dt` structure was measured in
+round 003; the unit endpoint coefficient was falsified, so strict past is the
+default. It has not been re-measured at L>=3.
 
-When building that: the discriminators in these batteries will not transfer.
-Build new ones and mutation-test them. Both existing batteries had blind spots
-that only mutation testing revealed (each prints its own at the end of a run),
-and in both cases the fix was to judge against a *measured* floor rather than a
-chosen constant.
+Still missing: P>1 nonlinear coupling, residual/attention/MoE dynamics in this
+core solver, real-data checks, and a general nonlinear fixed-point convergence
+theory. New batteries still require mutation tests and measured floors.

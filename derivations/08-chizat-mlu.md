@@ -187,7 +187,11 @@ which is their `O(P^{-1/6})`. The *shape* is the checkable part: at a fixed
 budget the optimum is `M >> D >> L`, i.e. **wide blocks, moderate embedding,
 shallow depth** — the opposite of the "make it deeper" instinct.
 
-## 6. Registered predictions (`rounds/007-mean-ode/prereg.md`)
+## 6. Prediction set
+
+These questions were written before measurement but committed only after the
+first run, so they are not a clean preregistration. See
+`rounds/007-mean-ode/results.md` for the provenance note and outcomes.
 
 Ordered by what the down-projection init actually buys.
 

@@ -50,7 +50,7 @@ floor (F8).
   asymptotic labelling. P5 is measured at init (a pure geometry claim about
   order statistics) and is unaffected.
 - I have **not** read Appendix E. The DMFT-proper check is a separate,
-  genuinely blind comparison recorded in `07-moe-dmft.md`.
+  genuinely blind comparison recorded in `derivations/07-moe-dmft.md`.
 
 ## Known-suspect prior artifact
 

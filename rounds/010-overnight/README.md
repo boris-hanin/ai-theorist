@@ -1,8 +1,11 @@
 # Round 010 — overnight A100 suite
 
-Script: `skills/dmft-moe/scripts/overnight_suite.py`. Results stream to
-`big_out.json` / `big.log`; a local poller (`poll.sh`) pulls them back every 10
-minutes so a **spot preemption** cannot lose more than one interval.
+Historical v1 script: `skills/dmft-moe/scripts/overnight_suite.py`.  The v2
+source was not committed; its exact effective settings were recovered from
+`big.log` in `skills/dmft-moe/scripts/overnight_suite_v2.py`. This is a
+reconstruction, not the missing
+original source. Results stream to `big_out.json` / `big.log`; the portable
+poller (`poll.sh`) can copy them from a configured remote host.
 
 ## v1 (completed, ~2 min) — `big_out_v1.json`, `big_v1.log`
 
@@ -113,7 +116,8 @@ Both are `1/sqrt(D)` **at fixed susceptibility**. `dK/dDelta` is the F5
 `Delta`-loop gain, and it *accumulates with training*. So the prediction is that
 the law is exact at init and degrades with elapsed training.
 
-**Measured (`diag_sqrtD.py`, `D` = 32…4096, 512 seeds).** The horizon dependence
+**Measured (`skills/dmft-moe/scripts/diag_sqrtD.py`, `D` = 32…4096, 512
+seeds).** The horizon dependence
 is unambiguous:
 
 | horizon | 0 | 2 | 4 | 8 | 16 | 32 | 64 |
@@ -135,13 +139,13 @@ tests this, and it **only partly holds**:
 | 0.30 | 37–44 | -0.4454 — not restored |
 | 0.20 | 47–57 | -0.3743 — not restored |
 
-These track the *fixed-step* values at the same step counts. So the controlling
-variable is **elapsed training, not training progress**, and the hypothesis is
-**falsified beyond ~20 steps**. The surviving statement is the weaker,
-measured one: the shared-`Delta` channel's susceptibility grows with elapsed
-time and carries its own `D`-dependence, so past ~20 steps the kernel
-fluctuation is no longer a pure site-CLT. *Why* that susceptibility is
-`D`-dependent is not established.
+**Historical interpretation, withdrawn pending a corrected P3 rerun:** these
+appeared to track fixed-step values at the same step counts, leading to the
+claim that elapsed training rather than progress controlled the deviation.
+The audit below found that stopping was performed on width-dependent memory
+chunks rather than per seed, so this table cannot distinguish those hypotheses.
+P1/P2 still establish that the deviation grows with elapsed training; the
+loss-matching conclusion is open.
 
 **Consequence for `C^{-1/6}`: the rate result stands.** The rate test runs at
 8 (v1) and 24 (v2) steps, where the `1/sqrt(D)` deviation is `<= 0.001` and
@@ -150,6 +154,12 @@ test uses*, which is why the rate landed on `-0.1668`. The caveat is real but it
 does not reach the headline — and it now has a bound rather than being open-ended.
 
 ### The proposed mechanism is FALSIFIED (second A100, B2)
+
+> **Provenance limit.** The table below is the only surviving historical B2
+> record: no raw JSON or original runner was committed or found in the working
+> copy. `skills/dmft-moe/scripts/susceptibility_sqrtD.py` now defines a
+> reproducible paired rerun, whose
+> output must be labeled a new rerun rather than the missing historical data.
 
 The diagnosis above predicted the exponent shift comes from the shared-`Delta`
 channel, `dK = [site-CLT] + chi*dDelta` with `chi = dK/dDelta`. Since
@@ -186,3 +196,15 @@ post-training `1/sqrt(D)` failure. Remaining candidates, untested:
 Recorded as **open**, with one hypothesis explicitly killed. The bound on the
 `C^{-1/6}` result is unaffected: the deviation is still `<= 0.04` at the
 horizons the rate test uses.
+
+### Audit correction: loss matching
+
+The historical P3 runner stopped an entire CUDA memory chunk when the chunk's
+mean loss crossed the target. Chunk sizes shrink with `D`, so this was a
+width-dependent stopping rule, and the recorded mean step count was also
+unweighted across chunks. `skills/dmft-moe/scripts/diag_sqrtD.py` now uses
+chunk-invariant per-seed
+initialisation, freezes each seed at its own target crossing, and records every
+seed's step count. The historical P3 table above remains provenance, not a
+validated loss-matched comparison; it must be rerun before drawing a corrected
+P3 conclusion.

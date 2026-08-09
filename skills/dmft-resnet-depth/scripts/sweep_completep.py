@@ -12,7 +12,6 @@ Optimiser is Adam with weight decay 0 throughout.
 """
 
 import argparse
-import json
 import os
 import sys
 
@@ -22,6 +21,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "dmft-derivation", "scripts"))
 import transfer as T                                        # noqa: E402
+import jsonio as J                                          # noqa: E402
 import completep as C                                       # noqa: E402
 
 
@@ -105,7 +105,7 @@ Expected, from derivations/04-completep.md:
   width  -- CompleteP transfers, SP does not (D1/D3/D4); removing the width-LR
             factor must break it.""")
     if a.json:
-        json.dump(dump, open(a.json, "w"))
+        J.dump(dump, a.json)
         print("wrote " + a.json)
 
 

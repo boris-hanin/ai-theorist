@@ -29,7 +29,7 @@ MPNN + MLP only. So this round tests:
 |---|---|---|
 | MNIST-Superpixels, PascalVOC-SP, QM9, Cora/Citeseer/PubMed | synthetic random-geometric graphs, `N = 24`, `B = 12`, teacher-generated scalar targets | CPU only, float64, and these are *scaling* tests, not performance tests |
 | `D` up to 1024, `L` up to 8, 400–800 epochs | `D` 32–512, `L` 2–8, 12–24 full-batch steps | same reason |
-| Adam with `eps = 1e-14` | **signGD** as the Adam proxy (this repo's convention, `06-moe.md` §1), with `adam` available | signGD is what the derivation assumes; Adam adds a moment transient that is not the object under test |
+| Adam with `eps = 1e-14` | **signGD** as the Adam proxy (this repo's convention, `derivations/06-moe.md` §1), with `adam` available | signGD is what the derivation assumes; Adam adds a moment transient that is not the object under test |
 | real sparse bag-of-words features | a `sparsity` dial on synthetic features | E6 only needs the *mechanism* of `C_ab`, not their numbers |
 | graph classification / node classification / regression | graph-level scalar regression | one task type; see "coverage" below |
 | no `gamma` on the attention branch (it has none) | `gamma_A = 1` by default, and measured | the derived claim is that this is *correct*, §4 of derivation 10 |
@@ -59,8 +59,9 @@ learning rate. Therefore:
 
 The discriminating comparison is run at `alpha_A = 1/2`, where they differ by
 `D_h`. `gt.GraphTransformer.qk_correction_is_identity()` is asserted against in
-`experiments.py` before that leg runs. Two further identity hazards are guarded
-in `gt.py`: a degree-regular graph makes "degree-normalised" and
+`skills/dmft-graph/scripts/experiments.py` before that leg runs. Two further
+identity hazards are guarded in `skills/dmft-graph/scripts/gt.py`: a
+degree-regular graph makes "degree-normalised" and
 "constant-gamma" the same operator (`_assert_graph_ok` refuses), and `D_h = 1`
 makes every `D_h^k` correction equal 1 (the constructor refuses).
 

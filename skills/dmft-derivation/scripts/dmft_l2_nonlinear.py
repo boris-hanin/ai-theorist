@@ -23,11 +23,10 @@ Rather than pick, the coefficient is exposed as `onsager` and MEASURED:
 
     z^1(t) += onsager * <phi_ddot(h^2(t)) z^2(t)> * phi(h^1(t))
 
-`onsager = 0` is the F1 bug (strict lower-triangular masking); `onsager = 1` is
-the full O(1) Onsager term. `validate_l2_nonlinear.py` sweeps it against
-finite-width simulations and reports which value the data selects. That
-measurement is the point of this module -- the derivation is not settled until
-it happens.
+Round 003 swept this coefficient against finite-width extrapolations. It found
+that `onsager = 0` (strict-past endpoint) fits and `onsager = 1` does not. Zero
+is therefore the default; the parameter remains exposed so the endpoint can be
+retested in other depths and regimes.
 
 Note the write-order (F17): the Onsager contribution to z^1(t) reads h^1(t),
 computed earlier in the same step. Writing it after the read would silently
@@ -45,7 +44,7 @@ def _psd_root(cov):
 
 
 def solve(y, gamma0, dt, T, S=2000, act="tanh", seed=0, Kx=1.0,
-          onsager=1.0, damping=0.5, n_iter=60, tol=1e-6,
+          onsager=0.0, damping=0.5, n_iter=60, tol=1e-6,
           no_response=False, verbose=False, S_resp=None):
     """Solve the L=2, P=1 DMFT. Returns f(t), kernels, responses, diagnostics.
 
@@ -55,7 +54,7 @@ def solve(y, gamma0, dt, T, S=2000, act="tanh", seed=0, Kx=1.0,
     else; at S=32000, T=30 the sensitivity arrays alone are ~1 GB. The
     responses are population averages of smooth quantities and converge on far
     fewer samples than the kernels do, so they are estimated on a subsample.
-    `validate_l2_nonlinear.py` checks that doubling S_resp does not move the
+    `validate_deep_nonlinear.py` checks that doubling S_resp does not move the
     answer -- if it does, this shortcut is not safe at those settings.
     """
     phi, phidot = activations.get(act)
