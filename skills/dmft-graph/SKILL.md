@@ -106,8 +106,15 @@ depends on is width-dependent and learning-rate transfer in `D` must break.
 Measured at `alpha_A = 0`: `d_eff` `2.33 -> 1.21` and `gamma_A` `0.807 -> 0.952`
 over `D = 32 -> 512`, both still moving at the largest width.
 
-The choice between `1/2` and `1` is **not settled by this round**, and the
-honest statement is that they are *different limits*, both stable:
+**Round 011 measured the choice between `1/2` and `1`, and it does not come out
+where `10` §5 predicted.** With the Q/K backward contraction incoherent (below),
+at `alpha_A = 1` *every* channel of `Delta A` vanishes as `D_h^{-1/2}` and so
+does `A_init`, so the attention matrix converges to uniform-over-neighbourhood
+**at all times** — the MHSA branch's limit is a mean-aggregation MPNN branch with
+a learned value/output projection. It is stable and it transfers; it just has no
+learned attention. `alpha_A = 1/2` is the only tested exponent whose attention
+limit is non-degenerate. But theory pulls the other way — see the last row — so
+this is a **named open problem, not a recommendation**:
 
 | | `alpha_A = 1/2` | `alpha_A = 1` |
 |---|---|---|

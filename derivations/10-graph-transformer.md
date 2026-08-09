@@ -387,6 +387,11 @@ model code.
 
 ## 5. The derived parameterisation
 
+> **Read §9 before using this table.** Round 011 falsified the coherence label
+> that fixes the `W_Q, W_K` row, found a second `Delta A` channel this section
+> never counted, and reversed the `alpha_A = 1` recommendation. The rows the
+> paper also states are unaffected.
+
 `D_h = D/H`. `eta_0` is the single tuned base rate; `lambda_0` the base weight
 decay. Rows the paper states are marked ✓; rows this file derives are marked
 **NEW**.
