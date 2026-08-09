@@ -10,11 +10,12 @@
 > specification awaiting an implementation, not as documentation of running
 > code.
 >
-> The one executable implementation in this repo is
-> `skills/dmft-derivation/scripts/`, which covers patterns 1, 3, 7, 10 and the
-> §Guards for the L=1 (no-response) case. Patterns 2, 4, 5, 6, 8, 9 —
-> everything in the response sector — are currently UNIMPLEMENTED. Implement
-> against the checks in `scripts/validate.py` and extend it.
+> Executable implementations now live in `skills/dmft-derivation/scripts/`:
+> L=1 causal co-integration, deep-linear algebraic closure, and general-depth
+> nonlinear P=1 single-site Monte Carlo with exact response sensitivities.
+> Their batteries are `validate.py`, `validate_deep_linear.py`, and
+> `validate_deep_nonlinear.py`. QMC/stratified patterns remain only partially
+> represented, and no general P>1 nonlinear solver exists.
 
 ## Integration schemes
 

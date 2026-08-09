@@ -590,14 +590,15 @@ two routes disagree, and this file does not resolve it.
 The inconsistency is real (Table 1 and Prop. 3 say `1/sqrt(D)`, §2.4 says `1`).
 I claimed it "looks exactly like a failure of width transfer". Measured: drift
 0.110 dec, TRANSFERS (E10). Both conventions leave the forward pass unchanged
-(`z = Theta(D^{-1/2})` either way); only the decoder's needed rate moves, so the
-decoder under-trains by `sqrt(D)` without destabilising anything. The typo is
+(`z = Theta(D^{-1/2})` either way); only the nominal decoder scale moves by
+`sqrt(D)`, without producing the preregistered transfer failure. The typo is
 worth fixing; it is not a transfer failure.
 
 ### 9e. What survived unchanged
 
 §1 (all of the paper's own rows), §2 (`W_V`, `W_O` take the residual rate and are
-head-blind), §4 (formula (G), verified to 1%, and `alpha_A >= 1/2` forced by
+head-blind), §4 (formula (G), verified exactly on matched equal-norm inputs and
+at its decorrelated/aligned endpoints, and `alpha_A >= 1/2` forced by
 softmax saturation), §5's encoder/MPNN/MLP/decoder/AdamW rows, and §6a/6b (the
 alignment assumptions). §7's ranked list of likely errors put the C2 label first
 and the missing-channel problem nowhere — the ranking was right about *where* to

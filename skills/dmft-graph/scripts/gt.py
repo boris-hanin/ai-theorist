@@ -223,12 +223,13 @@ class GraphTransformer:
         logits = logits.masked_fill(~mask[:, None], float("-inf"))
         S = torch.softmax(logits, dim=-1)
         o = torch.einsum("bhnm,bmhd->bnhd", S, v).reshape(B, N, D)
-        return S, logits, o
+        return S, logits, v, o
 
     def forward(self, batch, record=False):
         X, P, mask = batch["X"], batch["P"], batch["mask"]
         D, L = self.D, self.L
-        rec = {"stream": [], "d_mp": [], "d_at": [], "d_mlp": [], "A": [], "S": []}
+        rec = {"stream": [], "attn_input": [], "value": [], "attn_output": [],
+               "d_mp": [], "d_at": [], "d_mlp": [], "A": [], "S": []}
         Xl = (X @ self.W0) / (self.s0 * math.sqrt(self.n0))
         for l in range(L):
             if self.mpnn:
@@ -237,10 +238,10 @@ class GraphTransformer:
                 dmp = torch.zeros_like(Xl)
             Xt = Xl + dmp
             if self.attn:
-                S, logits, o = self.attention(Xt, l, mask)
+                S, logits, v, o = self.attention(Xt, l, mask)
                 dat = (o @ self.WO[l]) / (self.gamma_A * math.sqrt(D)) / L
             else:
-                S = logits = None
+                S = logits = v = o = None
                 dat = torch.zeros_like(Xt)
             Xh = Xt + dat
             dmlp = (((Xh @ self.W1[l]) / math.sqrt(D)) @ self.W2[l]
@@ -252,6 +253,9 @@ class GraphTransformer:
                 rec["d_at"].append(dat.detach())
                 rec["d_mlp"].append(dmlp.detach())
                 if S is not None:
+                    rec["attn_input"].append(Xt.detach())
+                    rec["value"].append(v.detach())
+                    rec["attn_output"].append(o.detach())
                     rec["A"].append(logits.detach())
                     rec["S"].append(S.detach())
         z = (Xl.mean(1) @ self.Wout) / (self.sL1 * D)
@@ -338,10 +342,12 @@ def attention_stats(net, batch):
             # S: (B,H,N,N) row-stochastic on the mask
             d_eff = 1.0 / S.pow(2).sum(-1)                    # participation ratio
             A = rec["A"][l].masked_fill(~batch["mask"][:, None], float("nan"))
-            Xl = rec["stream"][l]
-            # gamma_A per head, averaged
-            num = torch.einsum("bhnm,bmd->bhnd", S, Xl).pow(2).sum()
-            gam = float((num / (net.H * Xl.pow(2).sum())).sqrt())
+            # Measure the operator on the tensor it actually aggregates.  The
+            # old probe paired S with the post-MLP stream, a different layer
+            # and representation, so it was not a gamma estimate.
+            V = rec["value"][l]                          # (B,N,H,D_h)
+            num = rec["attn_output"][l].pow(2).sum()
+            gam = float((num / V.pow(2).sum()).sqrt())
             out.append({"layer": l, "gamma_A": gam,
                         "d_eff": float(d_eff.mean()),
                         "A_std": float(A[~A.isnan()].std()),

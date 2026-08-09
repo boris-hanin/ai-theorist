@@ -49,9 +49,19 @@ def fit(xs, ys):
 
 
 def dump(name, obj):
+    def safe(value):
+        if isinstance(value, dict):
+            return {key: safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [safe(item) for item in value]
+        if isinstance(value, np.ndarray):
+            return safe(value.tolist())
+        if isinstance(value, (float, np.floating)) and not math.isfinite(float(value)):
+            return None
+        return value
     os.makedirs(OUT, exist_ok=True)
     with open(os.path.join(OUT, name), "w") as f:
-        json.dump(obj, f, indent=1, default=float)
+        json.dump(safe(obj), f, indent=1, default=float, allow_nan=False)
     print("  -> wrote", name)
 
 
@@ -437,18 +447,17 @@ def E9():
         net = gt.GraphTransformer(D=256, L=2, H=4, alpha_A=a, seed=0)
         with torch.no_grad():
             _, rec = net.forward(data, record=True)
-            X, S = rec["stream"][0], rec["S"][0]           # (B,N,D), (B,H,N,N)
-            Xn = X / X.pow(2).sum(-1, keepdim=True).sqrt()
-            rho = (Xn @ Xn.transpose(1, 2))[:, None]        # (B,1,N,N)
-            diag = torch.eye(X.shape[1], dtype=torch.bool)
-            g2_pred = float((S[..., None, :].squeeze(-2) * 0 + 0).sum()) if False else \
-                float((S.unsqueeze(-1) * S.unsqueeze(-2) * rho.unsqueeze(-3).squeeze(-3)
-                       ).sum(dim=(-1, -2)).mean()) if False else None
+            S = rec["S"][0]                                # (B,H,N,N)
+            V = rec["value"][0].permute(0, 2, 1, 3)        # (B,H,N,D_h)
+            # Formula (G) assumes equal node norms.  Enforce that assumption
+            # on the SAME value vectors that S aggregates; the old check used
+            # a heterogeneous post-block stream from the wrong layer.
+            Vn = V / V.pow(2).sum(-1, keepdim=True).sqrt() * math.sqrt(net.Dh)
+            rho = torch.einsum("bhuq,bhvq->bhuv", Vn, Vn) / net.Dh
             # explicit double sum: sum_{v,v'} S_uv S_uv' rho_vv'
-            num = torch.einsum("bhuv,bhuw,bvw->bhu", S, S, rho[:, 0])
+            num = torch.einsum("bhuv,bhuw,bhvw->bhu", S, S, rho)
             g2_pred = float(num.mean())
-            g2_meas = float(torch.einsum("bhnm,bmd->bhnd", S, X).pow(2).sum()
-                            / (net.H * X.pow(2).sum()))
+            g2_meas = float(torch.einsum("bhuv,bhvq->bhuq", S, Vn).pow(2).mean())
         rows.append({"op": tag, "gamma_pred": g2_pred ** 0.5,
                      "gamma_meas": g2_meas ** 0.5,
                      "ratio": (g2_pred / g2_meas) ** 0.5})
@@ -459,12 +468,12 @@ def E9():
         net = gt.GraphTransformer(D=256, L=2, H=4, alpha_A=1.0, seed=0)
         with torch.no_grad():
             _, rec = net.forward(d, record=True)
-            X = rec["stream"][0]
-            Xn = X / X.pow(2).sum(-1, keepdim=True).sqrt()
-            rho = Xn @ Xn.transpose(1, 2)
+            X = rec["attn_input"][0]
+            Xn = X / X.pow(2).sum(-1, keepdim=True).sqrt() * math.sqrt(net.D)
+            rho = (Xn @ Xn.transpose(1, 2)) / net.D
             P = d["P"]
             g2_pred = float(torch.einsum("buv,buw,bvw->bu", P, P, rho).mean())
-            g2_meas = float((P @ X).pow(2).sum() / X.pow(2).sum())
+            g2_meas = float((P @ Xn).pow(2).mean())
         rows.append({"op": tag, "gamma_pred": g2_pred ** 0.5,
                      "gamma_meas": g2_meas ** 0.5,
                      "ratio": (g2_pred / g2_meas) ** 0.5})
@@ -478,9 +487,10 @@ def E9():
 # E10  power audit of the transfer harness, and the signGD grid fix
 # ==========================================================================
 # E4 v2 returned UNDER-POWERED for the signGD width/depth legs (optimum below
-# the grid) and, worse, TWO controls that did not bite: alpha_A = 0 drifted
-# 0.065 dec against the treatment's 0.083, and qk-global drifted 0.122 against
-# derived's 0.283. Per F17 a control that changes nothing is a red flag, so the
+# the grid) and exposed weak controls: alpha_A = 0 met its literal SUSPECT bar
+# but drifted only 0.065 dec against the treatment's 0.083, while qk-global
+# anti-bit at 0.122 against derived's 0.283. Per F17, a control that changes
+# nothing is a red flag, so the
 # question is whether the harness has power to see an attention-sector error at
 # all. E10 answers it by mis-scaling, one at a time, quantities of KNOWN
 # exponent: the V/O rate (attention sector, sqrt(D) too large) and the decoder
@@ -489,43 +499,51 @@ def E9():
 # for the optimum; if they do not bite either, the harness is blind.
 
 def E10():
+    """Controls that deliberately mis-scale known parameter groups.
+
+    This completed unpublished run was recovered from the original working
+    copy.  It shows the harness can detect a V/O-sector error even though the
+    preregistered alpha_A control was weak and qk-global did not bite.
+    """
     print("\n=== E10  power audit + signGD grid fix ===")
     data = gt.dataset(seed=0, **BASE)
     out = {}
     lrs = np.logspace(-4.5, -1.0, 10)
-    sd6 = (0, 1, 2, 3, 4, 5)
+    seeds = (0, 1, 2, 3, 4, 5)
     _leg("signGD width D (alpha_A=1, wide grid)",
-         lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [32, 64, 128, 256], lrs, 60, sd6, data, out)
+         lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0,
+                                          opt="signgd", seed=s),
+         [32, 64, 128, 256], lrs, 60, seeds, data, out)
     _leg("signGD depth L (alpha_A=1, wide grid)",
-         lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [2, 3, 4, 6], lrs, 60, sd6, data, out)
+         lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0,
+                                          opt="signgd", seed=s),
+         [2, 3, 4, 6], lrs, 60, seeds, data, out)
 
-    # POWER CONTROL A -- attention V/O rate too large by sqrt(D). Same sector as
-    # the Q/K control, but on the branch that carries the FEATURE update.
-    class _BadVO(gt.GraphTransformer):
+    class BadVO(gt.GraphTransformer):
         def groups(self, eta0, C_ab=1.0):
-            bad = {id(w) for l in range(self.L) for w in (self.WV[l], self.WO[l])}
+            bad = {id(w) for layer in range(self.L)
+                   for w in (self.WV[layer], self.WO[layer])}
             return [(p, lr * (self.D ** 0.5 if id(p) in bad else 1.0))
-                    for p, lr in gt.GraphTransformer.groups(self, eta0, C_ab)]
+                    for p, lr in super().groups(eta0, C_ab)]
+
     _leg("POWER-CTL V/O rate x sqrt(D), width D (SGD)",
-         lambda D, s: _BadVO(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
-         [32, 64, 128, 256], np.logspace(-3.0, 1.0, 10), 24, (0, 1, 2, 3), data, out)
+         lambda D, s: BadVO(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
+         [32, 64, 128, 256], np.logspace(-3.0, 1.0, 10), 24,
+         (0, 1, 2, 3), data, out)
 
-    # POWER CONTROL B -- the paper's §2.4 typo: sigma_{L+1} = 1 under Adam
-    # instead of 1/sqrt(D). Needed decoder rate is then sqrt(D) too large.
-    class _Typo(gt.GraphTransformer):
-        def __init__(self, **kw):
-            gt.GraphTransformer.__init__(self, **kw)
+    class PaperDecoderTypo(gt.GraphTransformer):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
             self.sL1 = 1.0
-            g = torch.Generator().manual_seed(kw.get("seed", 0) + 777)
-            self.Wout = (torch.randn(self.D, generator=g, dtype=self.dtype)
-                         * 1.0).requires_grad_(True)
-    _leg("POWER-CTL paper §2.4 sigma_L+1=1, width D (signGD)",
-         lambda D, s: _Typo(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [32, 64, 128, 256], lrs, 60, sd6, data, out)
+            generator = torch.Generator().manual_seed(kwargs.get("seed", 0) + 777)
+            self.Wout = torch.randn(self.D, generator=generator, dtype=self.dtype) \
+                .requires_grad_(True)
 
-    dump("E10-power-audit.json", out)
+    _leg("POWER-CTL paper section 2.4 sigma_L+1=1, width D (signGD)",
+         lambda D, s: PaperDecoderTypo(D=D, L=3, H=4, alpha_A=1.0,
+                                       opt="signgd", seed=s),
+         [32, 64, 128, 256], lrs, 60, seeds, data, out)
+    dump("E10-power-audit-rerun.json", out)
     return out
 
 
@@ -540,20 +558,20 @@ def E10():
 # the strict reading and the right one.
 
 def E11():
-    print("\n=== E11  signGD width/depth, straddling grid ===")
+    print("\n=== E11  signGD width/depth/heads, straddling grid ===")
     data = gt.dataset(seed=0, **BASE)
     out = {}
     lrs = np.logspace(-3.5, 0.0, 12)
-    sd = (0, 1, 2, 3, 4, 5)
+    seeds = (0, 1, 2, 3, 4, 5)
     _leg("signGD width D (alpha_A=1, straddling)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [32, 64, 128, 256], lrs, 60, sd, data, out)
+         [32, 64, 128, 256], lrs, 60, seeds, data, out)
     _leg("signGD depth L (alpha_A=1, straddling)",
          lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [2, 3, 4, 6], lrs, 60, sd, data, out)
+         [2, 3, 4, 6], lrs, 60, seeds, data, out)
     _leg("signGD heads H (alpha_A=1, straddling)",
          lambda H, s: gt.GraphTransformer(D=128, L=3, H=H, alpha_A=1.0, opt="signgd", seed=s),
-         [1, 2, 4, 8], lrs, 60, sd, data, out)
+         [1, 2, 4, 8], lrs, 60, seeds, data, out)
     dump("E11-signgd-transfer.json", out)
     return out
 
@@ -588,6 +606,7 @@ def E12():
 
 if __name__ == "__main__":
     args = sys.argv[1:] or ["all"]
-    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11", "E12"] if "all" in args else args
+    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9",
+            "E10", "E11", "E12"] if "all" in args else args
     for name in todo:
         globals()[name]()

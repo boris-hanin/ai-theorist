@@ -61,17 +61,20 @@ Response functions (causal; zero for $s>t$):
 $$A^\ell_{\mu\alpha}(t,s)=\gamma_0^{-1}\Big\langle\frac{\delta\phi(h^\ell_\mu(t))}{\delta r^\ell_\alpha(s)}\Big\rangle,\qquad
 B^\ell_{\mu\alpha}(t,s)=\gamma_0^{-1}\Big\langle\frac{\delta g^{\ell+1}_\mu(t)}{\delta u^{\ell+1}_\alpha(s)}\Big\rangle$$
 
-**Equal-time structure (F1).** Since $h^\ell(t)=u^\ell(t)+\gamma_0(\text{memory})$,
-the source enters $h$ directly, so $\delta h(t)/\delta u(s)$ contains
-$\delta(t-s)$ and the response carries an instantaneous Onsager piece
+**Equal-time structure (F1, corrected by round 003).** Since
+$h^\ell(t)=u^\ell(t)+\gamma_0(\text{memory})$, the source enters $h$ directly,
+so $\delta h(t)/\delta u(s)$ contains $\delta(t-s)$ and the measured response
+contains an instantaneous piece
 $$B^\ell_{\mu\alpha}(t,s)\ \supset\ \gamma_0^{-1}\big\langle\ddot\phi(h^{\ell+1}_\mu(t))\,z^{\ell+1}_\mu(t)\big\rangle\,\delta_{\mu\alpha}\,\delta(t-s).$$
 In discrete time the delta becomes $1/dt$: the kernel diagonal exceeds its
-neighbours by that factor and looks like an outlier, but after the
-$\gamma_0\,dt\,B$ weighting it contributes at $O(1)$. Masking it with a strict
-lower-triangular mask drops an $O(1)$ term. It carries $\ddot\phi$, so it
-vanishes for linear $\phi$ — no linear check can detect the bug (F1b); the
-minimal detector is nonlinear $L=2$. Derived in `derivations/01-deep-mlp.md` §7;
-**not yet measured**.
+neighbours by that factor and looks like an outlier.  That structure is
+measured, but the inference that the endpoint should receive weight one in the
+causal memory integral is falsified: in the tested L=2 solver, strict-past
+weight zero fits finite-width extrapolations and weight one does not.  Record
+the diagonal for diagnostics, then determine its integration weight from the
+discrete update order; do not infer the weight from its magnitude.  The term
+carries $\ddot\phi$, so linear checks remain blind (F1b).  Full measurement and
+scope: `derivations/01-deep-mlp.md` §7 and `rounds/003-onsager/results.md`.
 
 Boundary conditions: $\Phi^0=K^x$, $G^{L+1}=\bm1\bm1^\top$, $A^0=0$, $B^L=0$.
 Readout identity: $r^L_\mu(t)=w(0)\sim\mathcal N(0,1)$ and $z^L_\mu(t)=w(t)$ with

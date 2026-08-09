@@ -23,12 +23,12 @@ in this repo rests on the program record alone; those artifacts are gone.
 
 | Skill | Status | Files |
 |---|---|---|
-| dmft-derivation | **PARTIAL** — L=1 branch certified (`rounds/001`); L≥2 response sector specified but unimplemented | `skills/dmft-derivation/` |
+| dmft-derivation | **PARTIAL** — L=1 certified; deep-linear and general-depth nonlinear P=1 response solvers implemented (quick battery L=1–3); P>1 nonlinear coupling not certified | `skills/dmft-derivation/`, `rounds/001–003` |
 | dmft-master | RECONSTRUCTED | `skills/dmft-master/` |
 | dmft-resnet-depth | RECONSTRUCTED | `skills/dmft-resnet-depth/` |
-| dmft-attention | RECONSTRUCTED | `skills/dmft-attention/` |
-| dmft-moe | RECONSTRUCTED | `skills/dmft-moe/` |
-| dmft-graph | **PARTIAL** — static sector certified (`rounds/011`: formula (G) to 1%, `A_init` exponent, LLN/CLT concentration, SGD `D`-exponent to `+1.041`); Q/K logit sector NOT resolvable by the transfer harness; no solver | `skills/dmft-graph/` |
+| dmft-attention | RECONSTRUCTED — round 005 measured four transfer claims, but did not complete its own certification bar | `skills/dmft-attention/`, `rounds/005` |
+| dmft-moe | **PARTIAL** — rewritten from round 006; sharp scaling subclaims pass, collapse/control bars are mixed; full DMFT absent | `skills/dmft-moe/`, `rounds/006–010` |
+| dmft-graph | **FAILED VALIDATION** — round 011 failed its preregistered rule (P3, P4/P4b, P7, and controls P3c2/P3c3); static/scaling subclaims remain useful, but neither the full parameterisation nor a dynamics solver is certified | `skills/dmft-graph/`, `rounds/011` |
 
 The four companion skills were originally delivered as downloadable archives
 whose copies were lost (cloud-workspace recycling). Each carries a provenance
@@ -68,9 +68,9 @@ postdated the synthesis; those artifacts are gone.
 - Response functions by exact forward-mode sensitivity — never finite
   differences in production (FD is for TESTING the sensitivity code; correct
   agreement is ε-independent and O(1/S)).
-- Equal-time response diagonals are generically nonzero (F1), and computation
-  order decides which: Ā(t,t)=0 for fields read before the backward pass,
-  B̄(t,t)≠0 for drives that see the same step's forward pass.
+- Equal-time response diagonals can be nonzero and scale as `1/dt` (F1), but
+  their endpoint weight in a causal sum comes from the exact update order.
+  Round 003 falsified unit weight and favoured strict past in its L=2 solver.
 - Seed-average before comparing (F10); check MC floors by sample-halving (F8)
   and report the floor beside every gap; ablations that change nothing are red
   flags, not passes (F17).
@@ -91,8 +91,9 @@ postdated the synthesis; those artifacts are gone.
 
 ## Where the program actually is
 
-Stage 2 (validate on known results) is complete only for the L=1 branch of
-`dmft-derivation`. Stages 3 and 4 — assess solvability of new problems, then
-solve — have no defined methodology: there is no solvability rubric and no
-worked example. That is the largest remaining gap, and it is where the research
-value is.
+Stage 2 now has executable evidence beyond L=1 (deep-linear and nonlinear P=1,
+plus several scaling rounds), but only the L=1 subcase meets the stated
+certification definition cleanly.  Stages 3 and 4 still lack a general
+solvability rubric.  Round 009 is a worked novel scaling example, not a general
+methodology; Round 011 is a worked example of the method correctly refusing to
+certify a derivation after failed bars.

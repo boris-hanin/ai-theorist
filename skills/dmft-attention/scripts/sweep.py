@@ -30,6 +30,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "..", "..", "dmft-derivation", "scripts"))
 import transfer as T                                            # noqa: E402
+import jsonio as J                                              # noqa: E402
 import attention as at                                          # noqa: E402
 
 
@@ -128,9 +129,8 @@ success. At alpha_L = 1/2 the depth factor L^(2aL-1) = L^0 is the identity, so
 its control is EXPECTED to be inert; that row is a consistency check on the
 harness, not evidence.""")
     if a.json:
-        import json
         DUMP["_lr_grid"] = [float(x) for x in grid]
-        json.dump(DUMP, open(a.json, "w"))
+        J.dump(DUMP, a.json)
         print("wrote " + a.json)
 
 

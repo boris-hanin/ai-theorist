@@ -271,7 +271,7 @@ each block's output concentrates and the evolution is deterministic — while `m
 finite means each expert's internal init still matters, so the limit depends on
 `m` and **not** on `nu = E/n`, which never appears. ✓
 
-## 5. Registered predictions (see `rounds/006-moe/PREREG.md`)
+## 5. Registered predictions (see `rounds/006-moe/prereg.md`)
 
 Everything above is scale counting, so by F18 it claims the `t -> large`
 labelling, not `t = 1`. The falsifiable content:

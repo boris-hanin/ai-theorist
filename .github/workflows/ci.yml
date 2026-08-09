@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: python -m pip install -e '.[test]'
+      - name: Compile
+        run: python -m compileall -q skills
+      - name: Unit and artifact tests
+        run: pytest -q
+      - name: Reconstructed runner smoke tests
+        run: |
+          python skills/dmft-moe/scripts/overnight_suite_v2.py E1 E3 E2 --smoke --device cpu --output /tmp/v2.json
+          python skills/dmft-moe/scripts/diag_sqrtD.py --smoke --device cpu --output /tmp/diag.json
+          python skills/dmft-moe/scripts/susceptibility_sqrtD.py --smoke --device cpu --output /tmp/b2.json
+      - name: Certified L=1 quick battery
+        run: python skills/dmft-derivation/scripts/validate.py --quick

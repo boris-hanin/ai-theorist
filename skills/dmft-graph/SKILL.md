@@ -3,12 +3,13 @@ name: dmft-graph
 description: Parameterisation and scaling limits for GNNs and GRAPH TRANSFORMERS (DeZoort-Hanin, arXiv 2607.05017, extended to attention) — width/depth/head scaling, the message-passing normaliser gamma and where it comes from, the attention exponent alpha_A, the first-layer data-dependent correction C_ab, and what the node index does to a DMFT. Use for GNN/GT hyperparameter transfer and graph scaling limits.
 ---
 
-> **Status: DERIVED IN ROUND 011, PARTIALLY MEASURED.** Derivations:
+> **Status: DERIVED, BUT ROUND 011 FAILED ITS PREREGISTERED VALIDATION.** Derivations:
 > `derivations/10-graph-transformer.md` (heuristic one-step),
 > `derivations/11-graph-transformer-dmft.md` (cavity). Measured:
 > `rounds/011-graph-transformer/results.md`. Not a reconstruction — every claim
 > below points at either a derivation section or a measured number, and the ones
-> that are neither say so.
+> that are neither say so. Do not present the full parameterisation as
+> validated: P3, two controls, P4/P4b, and P7 failed (`results.md`).
 
 # Graph transformers (delta on `dmft-derivation` and `dmft-attention`)
 
@@ -67,11 +68,10 @@ prefactor.
   `alpha_A = 1/2`. `gt.py` has `qk_correction_is_identity()` for this.
 - **The paper's §2.4 says `sigma_{L+1} = 1` for Adam. That is a typo** — its own
   Table 1 and the closing line of its Prop. 3 both say `1/sqrt(D)`, and
-  `eta^{(L+1)} = eta_0 sigma_{L+1}` forces `1/sqrt(D)`. Worth fixing, but
-  **measured consequence is mild**: implementing the typo gives drift 0.110 dec
-  and still TRANSFERS. Both conventions leave the forward pass unchanged
-  (`z = Theta(D^{-1/2})`); only the decoder's needed rate moves, so it
-  under-trains by `sqrt(D)` without destabilising anything.
+  `eta^{(L+1)} = eta_0 sigma_{L+1}` forces `1/sqrt(D)`. Following §2.4 changes
+  the nominal decoder scale by `sqrt(D)`. The mismatch is real, but its measured
+  consequence is mild: drift `0.110` decades, still TRANSFERS, below the
+  registered `0.3`-decade transfer-failure bar.
 
 ## `gamma`: what it is, and why it must be scanned
 
@@ -81,25 +81,29 @@ scanning it. Derivation `10` §4 computes it. With `|x_v|^2 = D` and
 
     gamma^2 = < sum_v P_uv^2 + sum_{v != v'} P_uv P_uv' rho_{vv'} >              (G)
 
-**Verified to within 1%** for `P = A~`, `P = D^-1 A`, and softmax attention at
-three `alpha_A` (round 011 E9); ~9% for the unnormalised `P = A`, where node-norm
-heterogeneity (which (G) assumes away) is amplified. Consequences:
+**Verified as an algebraic identity** after E9 was corrected to use the same
+value/input tensor on both sides and enforce (G)'s equal-node-norm assumption:
+all six predicted/measured ratios are `1.0000`, including unnormalised `P=A`.
+The old 1–9% gaps came from a mismatched post-block stream. Consequences:
 
 - **Row-stochastic operators are self-normalising**: `gamma^2` lies in
   `[<1/d_eff>, 1]` with `d_eff = (sum_v P_uv^2)^{-1}` the participation ratio of
   the row. Softmax attention is row-stochastic *by construction*, so **the
   attention branch needs no `gamma` hyperparameter**. Sum aggregation (`P = A`,
-  GIN-style) does: `gamma -> d_bar`. Measured `gamma = 6.6` at mean degree 7.8,
+  GIN-style) does: `gamma -> d_bar`. Measured `gamma = 5.8` at mean degree 7.8,
   bracketing the paper's own `gamma = 7` (Pascal) and `17` (MNIST).
 - **`gamma` is a depth-dependent order parameter, not a constant.** `rho`
   rises with depth — that is oversmoothing — so `gamma_l` rises toward the
   row-sum value. This is why the paper's Eqn 19 carries a layer index and why
   collapsing to one scanned `gamma` (their Eqn 15) is an approximation. (G) says
   the size of the approximation: a factor `d_eff` across the network.
-- **Degree-normalisation does not give `gamma = 1`.** The paper takes `gamma = 1`
-  with `P = A~`; (G) gives `gamma ~ <1/d_eff>^{1/2} ~ 0.42` at mean degree 7.8.
-  That is a *constant* — `D`- and `L`-independent — so it only rescales `eta_0`
-  and does not break transfer. But it is not 1.
+- **Degree-normalised `gamma` is correlation-regime dependent.** For a
+  row-normalised operator, decorrelated neighbours give
+  `gamma = <1/d_eff>^{1/2}` (about `0.42` in E9's graph ensemble), while perfectly
+  aligned neighbours give `gamma = 1` exactly. An independent correlation scan
+  confirms both endpoints (`gamma-verification.md`). The paper's `gamma = 1`
+  describes the aligned regime; the earlier claim that it disagreed with (G)
+  is withdrawn.
 
 ## `alpha_A`: the graph-specific constraint
 
@@ -110,7 +114,7 @@ heterogeneity (which (G) assumes away) is amplified. Consequences:
 Below `1/2` the logits diverge with width, the softmax saturates, `d_eff -> 1`,
 and `gamma_A` drifts with `D` — so the branch normalisation the architecture
 depends on is width-dependent and learning-rate transfer in `D` must break.
-Measured at `alpha_A = 0`: `d_eff` `2.33 -> 1.21` and `gamma_A` `0.807 -> 0.952`
+Measured at `alpha_A = 0`: `d_eff` `2.33 -> 1.21` and `gamma_A` `0.811 -> 0.951`
 over `D = 32 -> 512`, both still moving at the largest width.
 
 **Round 011 measured the choice between `1/2` and `1`, and it does not come out
@@ -187,6 +191,10 @@ for, and "the sweep transferred" does not rule it out.
   floor for one.
 - **No real datasets**, no edge features, no positional encodings, no LayerNorm,
   no AdamW leg, no real Adam in the transfer sweeps (signGD proxy only).
+- **No successful end-to-end transfer validation.** P3 failed, the Q/K and
+  unnormalised-message controls did not bite as registered, and the final-loss
+  signGD follow-up left the width leg under-powered even though depth and heads
+  transferred within the stated resolution.
 - The `C_ab` first-layer correction is verified only in *mechanism* on synthetic
   sparse features, not against the paper's Cora/Citeseer/PubMed numbers.
 - Everything in `10` is one-step counting, so by F18 it claims the `t -> large`

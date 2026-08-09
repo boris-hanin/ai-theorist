@@ -48,11 +48,20 @@ downloadable archive has produced nothing.
 
 ## Existing rounds
 
-| Round | What | Pre-registered |
-|---|---|---|
-| `001-two-layer-rebuild` | Rebuild the L=1 solver from the reconstructed docs; make Phase 5 runnable | No — retrospective, see its `results.md` |
-| `011-graph-transformer` | Extend 2607.05017 to graph transformers: parameterisation, DMFT, HP transfer | Yes — `9435a39`, before any measurement |
+| Round | What | Preregistration status | Outcome |
+|---|---|---|---|
+| `001-two-layer-rebuild` | L=1 solver rebuild and mutation-tested battery | none; retrospective | L=1 certified |
+| `002-deep-linear` | deep-linear response sector | none | L=2/L=3 solver evidence |
+| `003-onsager` | nonlinear L=2 and equal-time endpoint | prediction committed before solver, but no formal prereg | `1/dt` confirmed; unit endpoint weight falsified |
+| `004-depth-alpha` | residual branch exponent | none | inconclusive instrument |
+| `005-attention-limits` | attention transfer across N/H/L | formal prereg committed before run | transfer subclaims pass; skill remains uncertified |
+| `006-moe` | MoE Table 1 and hierarchy | formal prereg committed before run | mixed: sharp exponents pass; collapse/control bars mixed |
+| `007-mean-ode` | down-projection init | questions written before measurement but committed after first run | informative, not a clean prereg |
+| `008-mean-ode-rates` | mean-ODE rate measurements | no separate formal prereg retained | measured rate audit |
+| `009-moe-mean-ode` | novel residual-MoE mean-ODE scaling | derivation/prereg committed before measurement | headline rate/shape evidence |
+| `010-overnight` | large A100 rate/transfer follow-up | no formal prereg retained | v2 data retained; v2 source reconstructed from log |
+| `011-graph-transformer` | graph-transformer derivation and transfer | formal prereg committed before measurement | **FAILED overall**; static/scaling subclaims retained, signGD transfer unresolved after follow-ups |
 
-Rounds 1–6 of the original program (deep MLP, depth-muP ResNet, attention, MoE,
-synthesis, hyperbolic) predate this directory and their artifacts were lost.
-`skills/dmft-master/references/instances.md` holds what survives of them.
+The older pre-directory program (including the hyperbolic work) still has lost
+artifacts. `skills/dmft-master/references/instances.md` is a reconstructed
+record of those claims, not executable evidence.

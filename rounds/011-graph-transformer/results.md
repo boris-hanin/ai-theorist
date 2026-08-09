@@ -6,13 +6,23 @@ Derivations: `derivations/10-graph-transformer.md` (heuristic),
 Model: `skills/dmft-graph/scripts/gt.py`. Runner: `.../experiments.py`.
 Raw: `E1..E12-*.json` in this directory, with the console logs beside them.
 
+## Overall verdict: FAILED
+
+The preregistration makes any P1–P7 failure or any control that does not bite a
+round failure. P3 was not established on all six legs; P3c2 and P3c3 did not
+bite; P4, P4b, and P7 missed their bars. Later E8–E12 follow-ups sharpen the
+mechanism and remove one signGD estimator artefact, but they do not retroactively
+change that preregistered verdict. The static/scaling subclaims below remain
+useful evidence; the full graph-transformer parameterisation is not certified.
+
 ## Headline
 
 Three things happened, and only the first is a confirmation.
 
 1. **The static sector is confirmed, sharply.** Feature and branch scales are
-   flat in `D` and `H` and go as `1/L`; the `gamma` formula (G) derived in `10`
-   §4 is right to **1%**; `A_init ~ D_h^{1/2-alpha_A}` is right to `0.01`; the
+   flat in `D` and `H` and go as `1/L`; the corrected E9 probe verifies the
+   `gamma` formula (G) as an algebraic identity on all six operators;
+   `A_init ~ D_h^{1/2-alpha_A}` is right to `0.01`; the
    DMFT's LLN-vs-CLT prediction (S1/S2) is right to `0.03`; and the SGD width
    exponent is confirmed to `+1.041` against a predicted `+1` by a control that
    moves the optimum `0.94` decades.
@@ -43,17 +53,17 @@ unresolved. §4 is the honest accounting.
 | P1 | branch/feature RMS flat in `D` | ±0.10 | stream `+0.004`, MPNN `+0.004`, attn `−0.039`, MLP `+0.003` | **PASS** |
 | P1 | flat in `H` | ±0.10 | `+0.001`, `0.000`, `+0.016`, `+0.001` | **PASS** |
 | P1b | branch `~ 1/L` | `−1 ± 0.15` | MPNN `−1.065`, attn `−1.111`, MLP `−1.063` | **PASS** |
-| P2 | `gamma_A` flat in `D` at `alpha_A = 1/2, 1` | \|slope\| ≤ 0.05 | `−0.006`, `−0.018` | **PASS** |
-| P2c | control `alpha_A = 0`: `d_eff` slope ≤ −0.15, `gamma_A` slope ≥ +0.05 | — | `−0.230`, `+0.058` | **PASS — control bites** |
+| P2 | `gamma_A` flat in `D` at `alpha_A = 1/2, 1` | \|slope\| ≤ 0.05 | `−0.010`, `−0.019` | **PASS** |
+| P2c | control `alpha_A = 0`: `d_eff` slope ≤ −0.15, `gamma_A` slope ≥ +0.05 | — | `−0.230`, `+0.056` | **PASS — control bites** |
 | P3 | `eta_0` transfers, SGD, `D` / `L` / `H` | TRANSFERS | **SUSPECT** (0.083, not settling) / TRANSFERS (0.103) / TRANSFERS (0.035) | **PARTIAL** |
-| P3 | `eta_0` transfers, signGD, `D` / `L` / `H` | TRANSFERS | UNDER-POWERED / TRANSFERS (0.390) / TRANSFERS (0.547) | **NOT ESTABLISHED** |
-| P3c1 | control `alpha_A = 0` breaks width transfer | FAILS/SUSPECT | SUSPECT, drift **0.065** — *less* than the treatment's 0.083 | **FAIL — control does not bite** |
+| P3 | `eta_0` transfers, signGD, `D` / `L` / `H` | TRANSFERS | final-loss follow-up: UNDER-POWERED / TRANSFERS (0.390) / TRANSFERS (0.547) | **NOT ESTABLISHED; P3 FAILS AS A SIX-LEG CLAIM** |
+| P3c1 | control `alpha_A = 0` breaks width transfer | FAILS/SUSPECT | SUSPECT, drift **0.065** — *less* than the treatment's 0.083 | **PASS by the literal bar, weak control** |
 | P3c2 | control drift(qk-global) ≥ 2× drift(derived) | ≥ 2× | 0.122 vs 0.283 → **0.43×** | **FAIL — control anti-bites** |
 | P3c3 | control `P = A` breaks width transfer | FAILS/SUSPECT | TRANSFERS, drift 0.144 | **FAIL — and my own §4 predicted this null** |
 | P3c4 | control: SGD rate without `D` breaks transfer | FAILS | **FAILS**, drift 0.940 dec, implied exponent **+1.041** vs predicted `+1` | **PASS — control bites hard** |
 | P4 | `Delta A\|_{t=1} ~ D_h^{-1/2}` (SGD) | `−0.5 ± 0.15` | `−0.456` | **PASS, but see §3 — right answer, wrong mechanism** |
 | P4 | `Delta A\|_{t=1} ~ D_h^{0}` (signGD) | `0 ± 0.15` | `−0.323` | **FAIL** |
-| P4b | `\|slope(t=8)\| < \|slope(t=1)\|` (SGD) | — | 0.459 vs 0.465 | **PASS but vacuous** (Δ = 0.006) |
+| P4b | `\|slope(t=8)\| < \|slope(t=1)\|` (SGD) | — | `0.4585` at `t=8` vs `0.4562` at `t=1` | **FAIL** |
 | P5 | `A_init ~ D_h^{1/2-alpha_A}` | ±0.10 | `+0.499` / `−0.013` / `−0.513` at `alpha_A = 0, 1/2, 1` | **PASS** |
 | P6 | `rho_l` rises with `l`; `gamma_P^l` rises with it | monotone | `rho` `0.003 → 0.023`; `gamma_P` `0.377 → 0.400`, monotone | **PASS, weak** (control does not bite; see §5) |
 | P7 | pooled `C_ab` blows up with sparsity, node-level does not | ≥3× / ≤1.5× | `2.06×` / `0.40×` | **FAIL on the `C_ab` bar; PASS on the node-level bar** |
@@ -67,35 +77,43 @@ are reported as follow-ups, not as predictions.
 
 ## 1. What was confirmed sharply
 
-**Formula (G), to 1%.** `10` §4 derives
-`gamma^2 = <sum_v P_uv^2 + sum_{v!=v'} P_uv P_uv' rho_{vv'}>`. Predicted vs
-measured `gamma` (E9, `D = 256`):
+**Formula (G), exactly on its stated inputs.** `10` §4 derives
+`gamma^2 = <sum_v P_uv^2 + sum_{v!=v'} P_uv P_uv' rho_{vv'}>`. The original E9
+paired each operator with a mismatched post-block stream and attributed its
+1–9% gaps to node-norm heterogeneity. The audited probe now uses the actual
+value/input tensor and enforces the formula's equal-node-norm assumption:
 
 | operator | predicted | measured | ratio |
 |---|---|---|---|
-| softmax attention, `alpha_A = 0` | 0.9084 | 0.9104 | 0.998 |
-| softmax attention, `alpha_A = 1/2` | 0.5487 | 0.5515 | 0.995 |
-| softmax attention, `alpha_A = 1` | 0.4346 | 0.4390 | 0.990 |
-| `P = D^{-1/2} A D^{-1/2}` | 0.4178 | 0.4228 | 0.988 |
-| `P = D^{-1} A` | 0.4330 | 0.4375 | 0.990 |
-| `P = A` (unnormalised) | 6.0140 | 6.5956 | 0.912 |
+| softmax attention, `alpha_A = 0` | 0.9073 | 0.9073 | 1.000 |
+| softmax attention, `alpha_A = 1/2` | 0.5322 | 0.5322 | 1.000 |
+| softmax attention, `alpha_A = 1` | 0.4097 | 0.4097 | 1.000 |
+| `P = D^{-1/2} A D^{-1/2}` | 0.3946 | 0.3946 | 1.000 |
+| `P = D^{-1} A` | 0.4103 | 0.4103 | 1.000 |
+| `P = A` (unnormalised) | 5.7966 | 5.7966 | 1.000 |
 
-The 9% residual on `P = A` is node-norm heterogeneity, which (G) assumes away —
-and it is amplified precisely by the operator with the largest row sums. Two
-consequences worth stating:
+Two consequences worth stating:
 
-- **`P = A` gives `gamma = 6.6` at mean degree 7.8**, bracketing the paper's own
-  scanned values (`gamma = 7` for PascalVOC-SP, `17` for MNIST-Superpixels). So
+- **`P = A` gives `gamma = 5.8` at mean degree 7.8**, on the same scale as the
+  paper's scanned values (`gamma = 7` for PascalVOC-SP, `17` for
+  MNIST-Superpixels). So
   their §2.5 hyperparameter is not free: (G) predicts it from the degree
   distribution and the neighbour correlation.
-- **Degree-normalisation does not give `gamma = 1`.** The paper takes `gamma = 1`
-  with `P = A~`; (G) and the measurement both give `0.42`. It is a *constant* in
-  `D` and `L`, so it only rescales `eta_0` and cannot break transfer — which is
-  exactly what control P3c3 found.
+- **Degree-normalised `gamma` depends on the feature-correlation regime.** For
+  row-normalised `P`, decorrelated neighbours give
+  `gamma = <1/d_eff>^{1/2}` (about `0.42` in E9's graph), while perfectly aligned
+  neighbours give `gamma = 1` exactly. The independent scan in
+  `gamma-verification.md` confirms both endpoints. The earlier framing of
+  `0.42` versus the paper's `1` as a disagreement is withdrawn.
+
+**Probe alignment audit.** `attention_stats` had also paired each layer's
+attention matrix with the post-MLP stream instead of the value tensor it
+actually aggregates. E2 and E5 were rerun after `gt.py` began recording the
+attention input, value, and output separately. P2/P2c/P6 keep the same verdicts.
 
 **`alpha_A < 1/2` is fatal, by the derived mechanism.** At `alpha_A = 0`, over
 `D = 32 → 512`: `d_eff` `2.33 → 1.21` (softmax saturating toward hard argmax) and
-`gamma_A` `0.807 → 0.952` (rising toward the row-sum value 1), both still moving
+`gamma_A` `0.811 → 0.951` (rising toward the row-sum value 1), both still moving
 at the largest width. At `alpha_A = 1/2` and `1`, `d_eff` is `4.5` and `7.8`
 (the latter being essentially the full mean degree of 7.83, i.e. uniform
 aggregation), and both are flat.
@@ -195,14 +213,15 @@ That is not a resolution. It is a named open problem.
 
 ## 3. What the transfer sweeps did and did not establish (§4 of the honest accounting)
 
-**Two controls failed to bite and one anti-bit.** Per F17 that is a red flag
-about the *instrument*, so E10 audited its power by mis-scaling quantities of
-known exponent:
+**Two registered controls failed to bite.** P3c2 anti-bit and P3c3 transferred.
+P3c1 met its literal SUSPECT bar, but its drift was smaller than the treatment,
+so it is weak evidence. Per F17, E10 audited the instrument's power by
+mis-scaling quantities of known exponent:
 
 | leg | verdict | drift (dec) | bites? |
 |---|---|---|---|
 | SGD width, treatment | SUSPECT (not settling) | 0.083 | — |
-| CONTROL `alpha_A = 0` | SUSPECT | 0.065 | **no** (smaller than treatment) |
+| CONTROL `alpha_A = 0` | SUSPECT | 0.065 | **literal bar passes; weak** |
 | derived `alpha_A = 1/2` | TRANSFERS | 0.283 | — |
 | CONTROL `qk-global`, `alpha_A = 1/2` | SUSPECT | 0.122 | **no** (0.43× treatment) |
 | CONTROL `P = A` | TRANSFERS | 0.144 | **no** |
@@ -223,6 +242,11 @@ parameterisation**, and reporting one as if it were would be exactly the
 having to retract. Round 011 does not establish `sigma_QK` empirically in either
 direction.
 
+All shared-seed transfer comparisons were also re-scored with the paired SEM of
+the extrema rather than an unpaired combination of per-dial SEMs. The retained
+analyses are `E4-transfer-paired.json` and `E10-power-audit-paired.json`; no P3
+or control verdict is rescued by the correction.
+
 Two more honest entries:
 
 - **P3c3 (`P = A`) failing was predicted by my own derivation and I
@@ -235,8 +259,8 @@ Two more honest entries:
 - **The paper's §2.4 typo does not present as a width-transfer failure.** `10`
   §1a claimed it would. Measured: drift 0.110 dec, TRANSFERS. The forward pass is
   unchanged (both `sigma_{L+1}` conventions give `z = Theta(D^{-1/2})`); only the
-  decoder's *needed* rate moves, so the decoder under-trains by `sqrt(D)` without
-  destabilising anything. **`10` §1a is corrected accordingly** — the
+  nominal decoder scale moves by `sqrt(D)`, without producing the preregistered
+  transfer failure. **`10` §1a is corrected accordingly** — the
   inconsistency in the paper is real, its consequence is milder than I claimed.
 
 **The Adam/signGD side is not established.** Three grids were tried:

@@ -30,8 +30,8 @@ def sweep(build, dial_values, lr_grid, steps=200, P=32, D=16, seeds=(0, 1, 2),
 
     The optimum is located PER SEED and averaged, so its scatter gives an
     uncertainty. Locating it once on seed-averaged losses would give a number
-    with no error bar, and "the optimum moved by 0.13 decades" is meaningless
-    until you know whether 0.13 is larger than the noise.
+    with no error bar. Because dials reuse seeds, the verdict uses the paired
+    change of those per-seed optima (F20), not their absolute scatter.
     """
     ns = len(seeds)
     per_seed = np.full((len(dial_values), len(lr_grid), ns), np.inf)
@@ -60,14 +60,70 @@ def _refined_argmin(row, lg):
     return lg[k], inside
 
 
+def verdict_from_optima(per_dial, inside, dial_values, n_sigma=2.0,
+                        practical_bar=0.3):
+    """Judge transfer from paired per-seed ``log10(lr*)`` estimates.
+
+    Exposed separately so historical artifacts that retained the per-seed
+    optima can be reanalysed after a verdict-rule correction without rerunning
+    the expensive training sweep.
+    """
+    per_dial = np.asarray(per_dial, dtype=float)
+    inside = np.asarray(inside, dtype=bool)
+    _, n_seed = per_dial.shape
+    mean = np.nanmean(per_dial, axis=1)
+    i_hi, i_lo = int(np.nanargmax(mean)), int(np.nanargmin(mean))
+    paired = per_dial[i_hi] - per_dial[i_lo]
+    paired = paired[np.isfinite(paired)]
+    paired_sem = (float(np.std(paired, ddof=1) / np.sqrt(paired.size))
+                  if paired.size > 1 else 0.0)
+    sem = (np.nanstd(per_dial, axis=1, ddof=1) / np.sqrt(n_seed)
+           if n_seed > 1 else np.zeros(per_dial.shape[0]))
+    unpaired = float(np.sqrt(np.nanmean(sem ** 2))) if n_seed > 1 else 0.0
+    drift = float(np.nanmax(mean) - np.nanmin(mean))
+    thresh = n_sigma * paired_sem
+    resolved = drift > max(thresh, 1e-9)
+
+    m = mean[~np.isnan(mean)]
+    if m.size >= 4:
+        head = float(np.max(m[:3]) - np.min(m[:3]))
+        tail = float(np.max(m[-3:]) - np.min(m[-3:]))
+    else:
+        head = tail = drift
+    settling = bool(tail <= head * 1.3 + 1e-12)
+
+    if not np.all(inside):
+        status = "UNDER-POWERED (optimum on grid edge)"
+    elif paired_sem > 0.25:
+        status = "UNDER-POWERED (paired lr* change too noisy to resolve)"
+    elif drift > practical_bar and resolved:
+        status = "FAILS"
+    elif (not settling) and resolved:
+        status = ("SUSPECT (drift %.2f dec is NOT settling: %.2f over the "
+                  "largest three vs %.2f over the smallest three)"
+                  % (drift, tail, head))
+    elif resolved:
+        status = "TRANSFERS (residual drift resolved but < %.2f dec)" % practical_bar
+    else:
+        status = "TRANSFERS"
+    return {"status": status, "drift_log10": drift, "sem_log10": paired_sem,
+            "paired_sem_log10": paired_sem, "unpaired_sem_log10": unpaired,
+            "tail_drift_log10": tail, "head_drift_log10": head,
+            "settling": settling, "threshold_log10": float(thresh),
+            "resolved": bool(resolved), "refined_log10_lr": mean,
+            "per_seed_log10_lr": per_dial, "interior": inside,
+            "dial": np.asarray(dial_values, dtype=float)}
+
+
 def verdict(losses, per_seed, lr_grid, dial_values, n_sigma=2.0,
             practical_bar=0.3):
     """Transfer verdict, judged on BOTH effect size and statistical resolution.
 
     Two bars, because either alone gives the wrong answer:
 
-      * statistical -- the optimum is located per seed, and its across-seed
-        scatter gives an uncertainty. Drift within noise is not evidence.
+      * statistical -- the optimum is located per seed, and the SEM of the
+        paired change between the extreme dials gives the uncertainty. Drift
+        within that common-random-number floor is not evidence.
         (Same discipline as the solvers: judge against a MEASURED floor.)
       * practical -- `practical_bar` in decades, default 0.3 (a factor of 2 in
         learning rate). With 5 seeds the statistical test alone resolves a
@@ -95,51 +151,8 @@ def verdict(losses, per_seed, lr_grid, dial_values, n_sigma=2.0,
             oks.append(ins)
         inside[i] = all(oks)
 
-    mean = np.nanmean(per_dial, axis=1)
-    sem = np.nanstd(per_dial, axis=1, ddof=1) / np.sqrt(n_seed) if n_seed > 1 \
-        else np.zeros(n_dial)
-    pooled = float(np.sqrt(np.nanmean(sem ** 2))) if n_seed > 1 else 0.0
-    drift = float(np.nanmax(mean) - np.nanmin(mean))
-    thresh = n_sigma * pooled * np.sqrt(2.0)
-
-    resolved = drift > max(thresh, 1e-9)
-
-    # --- SHAPE of the drift, not just its size (F22) -----------------------
-    # max-minus-min is blind to whether a drift is settling or running away.
-    # Transfer is an ASYMPTOTIC claim, so a small drift that is monotone AND
-    # accelerating is worse evidence than a larger one that is flattening: the
-    # first says the exponent is wrong and has not finished showing it.
-    m = mean[~np.isnan(mean)]
-    if m.size >= 4:
-        head = float(np.max(m[:3]) - np.min(m[:3]))
-        tail = float(np.max(m[-3:]) - np.min(m[-3:]))
-    else:
-        head = tail = drift
-    # Transfer is an ASYMPTOTIC claim, so the drift must SHRINK toward the large
-    # end. `settling` is that test, and it is the one `max - min` cannot make.
-    settling = bool(tail <= head * 1.3 + 1e-12)
-
-    if not np.all(inside):
-        status = "UNDER-POWERED (optimum on grid edge)"
-    elif pooled > 0.25:
-        status = "UNDER-POWERED (lr* too noisy to resolve)"
-    elif drift > practical_bar and resolved:
-        status = "FAILS"
-    elif (not settling) and resolved:
-        # Sub-threshold but running away: do NOT read as a pass.
-        status = ("SUSPECT (drift %.2f dec is NOT settling: %.2f over the "
-                  "largest three vs %.2f over the smallest three)"
-                  % (drift, tail, head))
-    elif resolved:
-        status = "TRANSFERS (residual drift resolved but < %.2f dec)" % practical_bar
-    else:
-        status = "TRANSFERS"
-    return {"status": status, "drift_log10": drift, "sem_log10": pooled,
-            "tail_drift_log10": tail, "head_drift_log10": head,
-            "settling": settling,
-            "threshold_log10": float(thresh), "resolved": bool(resolved),
-            "refined_log10_lr": mean, "per_seed_log10_lr": per_dial,
-            "interior": inside, "dial": np.asarray(dial_values, dtype=float)}
+    return verdict_from_optima(per_dial, inside, dial_values, n_sigma,
+                               practical_bar)
 
 
 def width_transfer(param, widths, lr_grid, L=1, D=16, act="tanh", gamma0=1.0, **kw):

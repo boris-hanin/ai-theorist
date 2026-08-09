@@ -285,9 +285,9 @@
     0.02732645724289002,
     0.026306573234840886,
     0.09951217878585562,
-    Infinity,
-    Infinity,
-    Infinity
+    null,
+    null,
+    null
    ],
    [
     0.466759709507802,
@@ -296,10 +296,10 @@
     0.23938270483317864,
     0.03245932874409643,
     0.02643252603001132,
-    Infinity,
-    Infinity,
-    Infinity,
-    Infinity
+    null,
+    null,
+    null,
+    null
    ],
    [
     0.45133508015569657,
@@ -308,10 +308,10 @@
     0.04942960987892747,
     0.025702825679009812,
     0.03405042726412463,
-    Infinity,
-    Infinity,
-    Infinity,
-    Infinity
+    null,
+    null,
+    null,
+    null
    ],
    [
     0.44236620217798905,
@@ -319,11 +319,11 @@
     0.30246696666410466,
     0.03243009046256007,
     0.033826500910618965,
-    Infinity,
-    Infinity,
-    Infinity,
-    Infinity,
-    Infinity
+    null,
+    null,
+    null,
+    null,
+    null
    ]
   ]
  },
