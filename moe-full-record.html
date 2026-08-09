@@ -1,0 +1,445 @@
+<title>Residual MoE in the Neural Mean ODE limit — full technical record</title>
+<style>
+:root{--bg:#fbfaf8;--panel:#fff;--ink:#191b1e;--ink2:#464b53;--ink3:#7a808a;--rule:#e4e1db;
+ --accent:#0072B2;--s1:#0072B2;--s2:#D55E00;--s3:#009E73;--s4:#CC79A7;--good:#2f7a52;--warn:#a8701a;--bad:#b3402c;
+ --code:#f4f2ee}
+@media (prefers-color-scheme:dark){:root{--bg:#131519;--panel:#1a1d22;--ink:#eef0f3;--ink2:#b0b6c0;--ink3:#7f8794;
+ --rule:#2a2f37;--accent:#4aa3e0;--s1:#4aa3e0;--s2:#f08a44;--s3:#38c39b;--s4:#e29ac2;--good:#5fb98a;--warn:#d9a441;--bad:#e0705a;--code:#20242b}}
+:root[data-theme="dark"]{--bg:#131519;--panel:#1a1d22;--ink:#eef0f3;--ink2:#b0b6c0;--ink3:#7f8794;--rule:#2a2f37;
+ --accent:#4aa3e0;--s1:#4aa3e0;--s2:#f08a44;--s3:#38c39b;--s4:#e29ac2;--good:#5fb98a;--warn:#d9a441;--bad:#e0705a;--code:#20242b}
+:root[data-theme="light"]{--bg:#fbfaf8;--panel:#fff;--ink:#191b1e;--ink2:#464b53;--ink3:#7a808a;--rule:#e4e1db;
+ --accent:#0072B2;--s1:#0072B2;--s2:#D55E00;--s3:#009E73;--s4:#CC79A7;--good:#2f7a52;--warn:#a8701a;--bad:#b3402c;--code:#f4f2ee}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.62 ui-sans-serif,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:940px;margin:0 auto;padding:56px 26px 110px}
+header{border-bottom:1px solid var(--rule);padding-bottom:26px}
+.eyebrow{font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink3);margin:0 0 13px}
+h1{font-size:clamp(27px,4vw,39px);line-height:1.13;margin:0 0 14px;letter-spacing:-.021em;text-wrap:balance;font-weight:650}
+.sub{font-size:17.5px;color:var(--ink2);margin:0;max-width:64ch}
+nav{margin:26px 0 0;display:flex;flex-wrap:wrap;gap:7px}
+nav a{font-size:12.5px;color:var(--ink2);text-decoration:none;border:1px solid var(--rule);
+ border-radius:99px;padding:4px 12px;background:var(--panel)}
+nav a:hover{border-color:var(--accent);color:var(--accent)}
+section{margin-top:56px;scroll-margin-top:20px}
+h2{font-size:11.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ink3);margin:0 0 7px;font-weight:600}
+h3{font-size:24px;margin:0 0 12px;letter-spacing:-.012em;font-weight:620;text-wrap:balance}
+h4{font-size:16.5px;margin:28px 0 8px;font-weight:620;letter-spacing:-.006em}
+p{margin:0 0 14px;max-width:70ch;color:var(--ink2)}
+b,strong{color:var(--ink);font-weight:625}
+ul{margin:0 0 14px;padding-left:20px;color:var(--ink2);max-width:70ch}
+li{margin-bottom:6px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em;background:var(--code);
+ padding:1px 5px;border-radius:4px;color:var(--ink)}
+.eq{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13.6px;line-height:1.72;color:var(--ink);
+ background:var(--code);border:1px solid var(--rule);border-radius:8px;padding:15px 18px;margin:16px 0;overflow-x:auto;white-space:pre}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:22px;margin:18px 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums;min-width:460px}
+th,td{text-align:right;padding:7px 11px;border-bottom:1px solid var(--rule);white-space:nowrap}
+th:first-child,td:first-child{text-align:left}
+th{font-size:11px;letter-spacing:.075em;text-transform:uppercase;color:var(--ink3);font-weight:600}
+tbody tr:last-child td{border-bottom:none}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:11.5px;font-weight:640}
+.ok{background:color-mix(in srgb,var(--good) 15%,transparent);color:var(--good)}
+.no{background:color-mix(in srgb,var(--bad) 15%,transparent);color:var(--bad)}
+.warn{background:color-mix(in srgb,var(--warn) 17%,transparent);color:var(--warn)}
+.callout{border-left:3px solid var(--accent);padding:3px 0 3px 17px;margin:20px 0;color:var(--ink2)}
+.callout.red{border-color:var(--bad)}
+.callout.amber{border-color:var(--warn)}
+svg{display:block;width:100%;height:auto;overflow:visible}
+figcaption{font-size:12.5px;color:var(--ink3);margin-top:9px;line-height:1.5}
+.legend{display:flex;gap:15px;flex-wrap:wrap;font-size:12.5px;color:var(--ink2);margin-top:9px}
+.legend i{width:12px;height:3px;border-radius:2px;display:inline-block;vertical-align:middle;margin-right:5px}
+footer{margin-top:70px;padding-top:22px;border-top:1px solid var(--rule);font-size:13px;color:var(--ink3)}
+</style>
+
+<div class="wrap">
+<header>
+<p class="eyebrow">ai-theorist &middot; rounds 009&ndash;010 &middot; full technical record</p>
+<h1>Residual Mixture-of-Experts in the Neural&nbsp;Mean&nbsp;ODE limit</h1>
+<p class="sub">Architecture, parameterization, the heuristic derivation, and every transfer
+experiment &mdash; including what failed and what remains open.</p>
+<nav>
+<a href="#arch">1 &middot; Architecture</a><a href="#param">2 &middot; Parameterization</a>
+<a href="#deriv">3 &middot; Derivation</a><a href="#transfer">4 &middot; Transfer</a>
+<a href="#rate">5 &middot; Rate</a><a href="#open">6 &middot; Open</a>
+</nav>
+</header>
+
+<section id="arch">
+<h2>Section 1</h2><h3>Architecture</h3>
+<p>Five independent scale dimensions: depth <code>L</code>, embedding <code>D</code>, expert count
+<code>E</code>, active experts per token <code>a</code>, and expert hidden width <code>M</code>.
+Sparsity <code>&kappa; = a/E</code> is <b>held fixed</b>, following 2601.20205 &sect;3.2 &mdash; scaling
+<code>E</code> at fixed <code>a</code> takes <code>&kappa; &rarr; 0</code> and is a different problem.</p>
+<div class="eq">h&sup0;      = W_embed x                                    x &isin; R^d&#8320;,  d&#8320; = 8
+
+h&#737;&#8314;&sup1;    = h&#737;  +  c_L &middot; (1/a) &middot; &sum;_{i &isin; A(h&#737;)} g_i(h&#737;) &middot; E_i(h&#737;)
+
+E_i(h)  = &sum;_{j=1}^{M} w^{ij} &middot; tanh( &lang;u^{ij}, h&rang; )        a 2-layer perceptron, M units
+
+g_i(h)  = &sigma;( &lang;r_i, h&rang; )                              mixing coefficient
+A(h)    = top_a( { g_i(h) + b_i } )                   hard routing, no-grad
+
+f(x)    = &lang;w_out, h^L&rang;                              scalar readout</div>
+<p>The expert biases <code>b_i</code> enter <b>only</b> the hard top-<code>a</code> and receive no
+gradient. They are updated by the auxiliary-loss-free load-balancing rule of 2601.20205 Eq.&nbsp;(2):</p>
+<div class="eq">b_i  &larr;  b_i  &minus;  &eta;_bias &middot; ( Load_i &minus; &kappa; )        &eta;_bias = &Theta;(1)</div>
+<p>Measured over 25 steps, this genuinely balances and has a finite stable range: max
+imbalance <code>max_i|Load_i&minus;&kappa;|</code> goes 0.750&rarr;0.750 at <code>&eta;_bias=0</code>
+(control), 0.750&rarr;<b>0.250</b> at 0.3 and 1.0, and back to 0.750 at 3.0 (overshoot).</p>
+
+<h4>Fidelity &mdash; what this is, and what it is not</h4>
+<div class="callout amber"><b>This is the reduced MoE-only model of 2601.20205 &sect;4, not the &sect;3.1
+transformer, and not Chizat&rsquo;s model unmodified.</b> Every deviation, stated in full:
+<ul style="margin-top:9px">
+<li><b>No multi-head self-attention and no LayerNorm.</b></li>
+<li><b>Plain gradient descent</b>, not Adam or its SignGD proxy.</li>
+<li>Linear readout <code>&lang;w,h^L&rang;</code> rather than <code>W_unembd &phi;(h^L)</code>.</li>
+<li>From Chizat: an <b>embedding and scalar readout were added</b> (his model is
+<code>R^D &rarr; R^D</code>), because the rate test needs a <code>D</code>-comparable observable;
+and <b>per-group learning rates</b> replace his single global one &mdash; forced by convention,
+since he bounds <code>&#8214;h&#8214;=&Theta;(1)</code> while this program uses per-coordinate
+<code>&Theta;(1)</code>, under which one global LR is provably wrong in <code>D</code>.</li>
+</ul>
+What is validated is the <b>scaling structure of the merged limit</b> on this reduced
+architecture &mdash; not a transformer with attention, LayerNorm and Adam.</div>
+</section>
+
+<section id="param">
+<h2>Section 2</h2><h3>Parameterization</h3>
+<p>All weights are drawn <code>N(0, &sigma;&sup2;)</code> with the scales below, in the convention
+<code>&#8214;h&#8214; = &Theta;(&radic;D)</code> (per-coordinate <code>&Theta;(1)</code>).</p>
+<div class="scroll panel"><table>
+<thead><tr><th>Group</th><th>Shape</th><th>Init &sigma;</th><th>Learning rate</th><th>Fixes</th></tr></thead>
+<tbody>
+<tr><td>branch <code>c_L</code></td><td>scalar</td><td>&mdash;</td><td><code>1/(LM)</code></td><td>drift <code>c_L&middot;M = &Theta;(1/L)</code></td></tr>
+<tr><td>up <code>u^{ij}</code></td><td><code>D&times;M</code> per expert</td><td><code>D^&minus;&frac12;</code></td><td><code>L M a / D &middot; &eta;</code></td><td><code>&lang;u,h&rang; = &Theta;(1)</code></td></tr>
+<tr><td>down <code>w^{ij}</code></td><td><code>M&times;D</code> per expert</td><td><b><code>1</code></b></td><td><b><code>L M a D &middot; &eta;</code></b></td><td>MLU residual scale</td></tr>
+<tr><td>router <code>r_i</code></td><td><code>D&times;E</code></td><td><code>D^&minus;&frac12;</code></td><td><code>L a &radic;M / D &middot; &eta;</code></td><td>logit <code>= &Theta;(1)</code></td></tr>
+<tr><td>bias <code>b_i</code></td><td><code>E</code></td><td><b><code>1</code>, nonzero</b></td><td><code>&eta;_bias = &Theta;(1)</code>, load rule</td><td>init diversity (F21)</td></tr>
+<tr><td>embed / readout</td><td><code>d&#8320;&times;D</code> / <code>D</code></td><td><code>d&#8320;^&minus;&frac12;</code> / <code><b>D^&minus;&sup1;</b></code></td><td><code>&eta;/D</code></td><td>&mu;P: <code>f(init)&rarr;0</code></td></tr>
+</tbody></table></div>
+
+<h4>The two entries that are not standard</h4>
+<p><b>The down-projection.</b> With <code>c_L = 1/(LM)</code> and <code>&sigma;_w = 1</code>, the
+<em>residual scale</em> &mdash; branch multiplier times output-layer norm &mdash; is
+<code>&radic;D/(LM)</code>, which is Chizat&rsquo;s necessary-and-sufficient condition for maximal
+local feature updates. Written instead with a <code>1/L</code> branch, it is
+<code>&sigma;_down = &radic;D/M</code>, which is exactly 2601.20205&rsquo;s Table&nbsp;1 entry
+<code>&alpha;_ffn&#8315;&sup1; n&#8315;&#189;</code>. <b>The two papers&rsquo; conditions coincide</b>, by
+two independent routes. Against ordinary fan-in <code>M^&minus;&frac12;</code> the ratio is</p>
+<div class="eq">&sigma;_down(MLU) / &sigma;_down(fan-in)  =  &radic;(D/M)      &rarr;  identical iff M = &Theta;(D)</div>
+<p>so CompleteP is the <code>M = &Theta;(D)</code> slice and says nothing off it. Real FFNs run
+<code>M = 4D</code>; MoE expert-width multipliers push far further.</p>
+<div class="callout"><b>What the init actually buys &mdash; and what it does not.</b> It does <em>not</em>
+change the update: under this parameterization the block&rsquo;s absolute update is
+<code>M&middot;(base/M)&middot;&Theta;(1)</code>, free of <code>&sigma;_down</code>. It changes the
+<b>initial</b> contribution: <code>&sigma;_down&radic;M</code> is <code>1</code> under fan-in
+(<code>M</code>-independent) but <code>&radic;(D/M)</code> under MLU (vanishing in <code>M</code>).
+Accumulated over <code>L</code> blocks the init deviation is <code>1/&radic;L</code> versus
+<code>&radic;(D/(LaM))</code>. <b>So the MLU init is precisely what makes block width enter the
+mean-field average at all.</b> Under fan-in the effective width is <code>L</code>; under MLU it is
+<code>L&middot;a&middot;M</code>. Measured: at fixed <code>LaM</code>, MLU spread across ten splits is
+<b>1.10&times;</b>, fan-in <b>3.90&times;</b>.</div>
+
+<h4>Why a single global learning rate is wrong</h4>
+<p>The three parameter groups have different <code>D</code>-counting. Under one global
+<code>lr = LMaD&eta;</code>, the induced change in each group&rsquo;s own observable scales as</p>
+<div class="scroll panel"><table>
+<thead><tr><th>Group</th><th>Observable</th><th>Measured</th><th>Required</th></tr></thead>
+<tbody>
+<tr><td>down <code>W</code></td><td>block output</td><td>D<sup>&minus;0.18</sup></td><td>D<sup>0</sup></td></tr>
+<tr><td>up <code>U</code></td><td><code>z = &lang;u,h&rang;</code></td><td><b>D<sup>+1.28</sup></b></td><td>D<sup>0</sup></td></tr>
+<tr><td>router <code>R</code></td><td>logit <code>&lang;r,h&rang;</code></td><td><b>D<sup>+1.37</sup></b></td><td>D<sup>0</sup></td></tr>
+</tbody></table></div>
+<p>The router and up-projection updates blow up with embedding dimension. Deriving each group
+under the coherent (LLN-alignment) labelling that governs the trained regime gives the table
+above, a spread of <b>D&sup2;</b> between up and down. Every link was then verified separately
+&mdash; <code>h</code> +0.004, <code>b</code> &minus;0.995, <code>z</code> +0.006,
+<code>&lang;w,b&rang;</code> &minus;0.490, <code>&lang;E,b&rang;</code> &minus;0.478, and gradients
+&minus;0.572 / &minus;1.068 / &minus;0.499 &mdash; and the residual composite discrepancy is
+finite-<code>D</code>, settling to &minus;0.029 / &minus;0.526 / &minus;0.452 on a larger window.</p>
+</section>
+
+<section id="deriv">
+<h2>Section 3</h2><h3>Heuristic derivation</h3>
+<h4>3.1 &nbsp;What the mean-field average runs over</h4>
+<p>Units are indexed by the <b>triple</b> <code>(i,j,l) &isin; [E]&times;[M]&times;[L]</code>. But an
+inactive expert contributes <em>exactly zero</em> to a token&rsquo;s forward pass, so it cannot
+enter that token&rsquo;s central limit theorem. Per layer <code>a&middot;M</code> units fire, so</p>
+<div class="eq">effective width   W_eff  =  L &middot; a &middot; M          &mdash; with a, NOT E</div>
+<p><b>The expert count <code>E</code> does not appear in the rate at all.</b> It changes the
+<em>limit object</em> &mdash; capacity &mdash; not the rate of approach to it.</p>
+
+<h4>3.2 &nbsp;Splitting the block into drift and fluctuation</h4>
+<div class="eq">c_L (1/a) &sum;_{i&isin;A} g_i E_i
+   =  c_L &middot; M &middot; E&#772;(h,s)                                &larr; coherent: the drift
+    + c_L (1/a) &sum;_{i&isin;A, j} [ g_i w^{ij} &phi;_ij &minus; mean ]     &larr; a&middot;M-term CLT
+
+where E&#772;(h,s) = E[ g w &phi; | active ] is a CONDITIONAL expectation,
+the conditioning being the routing event q &ge; q*(&kappa;).</div>
+<ul>
+<li><b>Drift.</b> The <code>M</code> units inside one expert share a mean, so they add coherently:
+<code>c_L&middot;M&middot;E&#772;</code>. A nontrivial <code>L&rarr;&infin;</code> ODE needs this
+<code>&Theta;(1/L)</code>, giving <code>c_L = 1/(LM)</code>.</li>
+<li><b>Fluctuation.</b> <code>(1/a)&radic;(aM)&middot;s_w&radic;D</code>, times <code>c_L</code>,
+accumulated incoherently over <code>L</code> layers, gives <code>&radic;(D/(LaM))</code>.</li>
+</ul>
+
+<h4>3.3 &nbsp;The rate</h4>
+<div class="eq">&#8214; ResNet-MoE &minus; limit &#8214;  =  O( 1/L  +  &radic;(D/(L a M))  +  1/&radic;D )
+                                  &uarr;         &uarr;              &uarr;
+                            Euler       a&middot;M&middot;L site-CLT   D-coordinate mean-field</div>
+<p>Only two combinations enter, <code>L</code> and <code>LaM</code>. Consequences: <b>a and M are
+exchangeable</b> (the MoE analogue of Chizat&rsquo;s depth/width exchange); <b>E is absent</b>;
+and <b>depth is special</b>, appearing in both terms, so it buys discretization <em>and</em>
+averaging while <code>a</code> and <code>M</code> buy only averaging.</p>
+
+<h4>3.4 &nbsp;Two budgets, and the optimal shape</h4>
+<p>MoE stores all experts but computes only the active ones:</p>
+<div class="eq">parameters  P = &Theta;(L E M D)        FLOPs  C = &Theta;(L a M D)</div>
+<p>The rate tracks the <b>FLOP</b> budget. Substituting <code>aM = C/(LD)</code>, the CLT term
+becomes <code>D/&radic;C</code> &mdash; <b>independent of L</b>, because fixing <code>C</code> and
+<code>D</code> pins the product <code>L&middot;aM</code>. So the three terms are</p>
+<div class="eq">T&#8321; = a/L       T&#8322; = b&middot;D/&radic;C       T&#8323; = c/&radic;D</div>
+<div class="callout red"><b>A correction the experiment forced.</b> An earlier version balanced all
+three terms and reported <code>L = C^(1/6)</code> as <em>the</em> optimum. That is wrong:
+<code>T&#8322;</code> does not depend on <code>L</code> at all. Measured directly &mdash; at
+<code>C = 8192</code>, <code>D = 16</code>, sweeping <code>L</code> = 2&rarr;64 with <code>aM</code>
+= 256&rarr;8 &mdash; the CLT term is flat (1.62e-2 &rarr; 1.49e-2). Balancing <code>T&#8322;</code>
+against <code>T&#8323;</code> over <code>D</code> and then requiring <code>T&#8321;</code> not to
+dominate gives the honest statement:</div>
+<div class="eq">D = &Theta;(C^1/3)   binding
+L &ge; &Theta;(C^1/6)   a FLOOR, not an optimum &mdash; deeper is not worse
+a M = C/(L D)        the split between expert count and width is FREE
+error = O(C^&minus;1/6)</div>
+<p><b>Which is why MoE works, in one line:</b> at fixed FLOPs you may raise <code>E</code> at
+fixed <code>a</code> &mdash; buying capacity in the limit object at the cost of parameters, but of
+neither FLOPs nor convergence rate.</p>
+</section>
+
+<section id="transfer">
+<h2>Section 4</h2><h3>Transfer experiments</h3>
+<h4>4.1 &nbsp;How a transfer verdict is judged</h4>
+<p>Three bars, because any one alone gives the wrong answer:</p>
+<ul>
+<li><b>Statistical</b> &mdash; the optimum is located per seed; drift within seed scatter is not evidence.</li>
+<li><b>Practical</b> &mdash; 0.3 decades (a factor 2 in learning rate). Five seeds resolve a
+0.04-decade drift, which is real but is not what anyone means by a transfer failure.</li>
+<li><b>Shape</b> &mdash; <code>max &minus; min</code> cannot tell a drift that is <em>settling</em>
+from one <em>running away</em>, and transfer is an <b>asymptotic</b> claim. A sub-threshold drift
+whose spread over the largest three dial values exceeds its spread over the smallest three
+returns <span class="pill warn">SUSPECT</span>, never a pass.</li>
+</ul>
+<div class="callout red">The shape bar exists because it was learned the hard way. The embedding-<code>D</code>
+dial once read <code>+1.05 +1.13 +1.08 +0.91</code> &mdash; drift 0.22, under the bar, reported as a
+pass &mdash; while its increments were <code>+0.08, &minus;0.05, &minus;0.17</code>, accelerating away.
+The true cause was a genuinely wrong parameterization (one global LR for three groups). In the same
+table the <code>L</code> and <code>a</code> dials were justified as finite-size <em>because they
+flatten</em>, and that verdict was then applied to a curve doing the opposite.</div>
+
+<h4>4.2 &nbsp;Optimal learning rate across all five dials, with load balancing on</h4>
+<p>256 seeds per point, 29-point LR grid, 24 GD steps.</p>
+<div class="scroll panel"><table>
+<thead><tr><th>Dial</th><th>Range</th><th>log&#8321;&#8320; &eta;*</th><th>Drift</th><th>Tail</th><th>Verdict</th></tr></thead>
+<tbody id="tbody-e2"></tbody></table></div>
+<div class="callout amber"><b>The fifth dial is the paper&rsquo;s own caveat, not a new failure.</b>
+It holds <code>a</code> fixed while raising <code>E</code>, i.e. takes
+<code>&kappa; = a/E &rarr; 0</code>, which 2601.20205 &sect;3.2 explicitly excludes: they scale
+<code>n_exp</code> and <code>n_act</code> together <em>preserving</em> <code>&kappa;</code>, and warn
+that HPs will not transfer across different <code>&kappa;</code>. The drift appears precisely when
+the <code>&kappa;</code>-dependent balancing rule is active and precisely in the dial that varies
+<code>&kappa;</code>. Every dial inside their scaling regime transfers.</div>
+
+<h4>4.3 &nbsp;Depth, active experts and expert width are interchangeable</h4>
+<p>If the effective width really is the product <code>LaM</code>, holding it fixed and
+redistributing it among the three must change nothing. Ten splits at <code>LaM = 256</code>
+spanning <code>a</code> = 2&hellip;16 and <code>L</code> = 2&hellip;64, measured at initialization
+(no optimizer confound): <b>MLU spread 1.10&times;</b>, fan-in control <b>3.90&times;</b>.</p>
+<p>This was the <b>preregistered risky step</b>. The <code>a</code> active experts all share the
+routing-conditioning event, which correlates them; had that correlation been order one, the
+averaging would be coherent and the effective width would be <code>LM</code>. It is not. The
+<code>(L=8, a=2, M=16)</code> split has <code>M = D = 16</code>, where the two initializations are
+literally the same model &mdash; an identity control landing inside the sweep, agreeing to every
+printed digit.</p>
+</section>
+
+<section id="rate">
+<h2>Section 5</h2><h3>The C<sup>&minus;1/6</sup> rate, and the three exponents beneath it</h3>
+<p>Reference-free by construction: along the optimal-shape path <b>all three error terms are
+&Theta;(C<sup>&minus;1/6</sup>) regardless of their coefficients</b>, so the distance between the
+<code>C</code> and <code>4C</code> ensembles carries the exponent directly. No limit reference is
+needed &mdash; and none is possible, since a reference 10&times; better than <code>C=10&#8311;</code>
+would need <code>C_ref ~ 10&sup1;&sup3;</code>.</p>
+<div class="panel"><figure><div id="ratechart"></div>
+<figcaption>19 budgets over 5 decades, seeds to 3072, 24 GD steps. Both arms overlay.</figcaption></figure>
+<div class="legend"><span><i style="background:var(--s1)"></i>load balancing on</span>
+<span><i style="background:var(--s2)"></i>frozen-bias control</span></div></div>
+<div class="scroll panel"><table>
+<thead><tr><th>Arm</th><th>slope (all 18)</th><th>tail 8</th><th>tail 4</th></tr></thead>
+<tbody id="tbody-rate"></tbody>
+<tbody><tr><td><b>predicted</b></td><td><b>&minus;0.1667</b></td><td><b>&minus;0.1667</b></td><td><b>&minus;0.1667</b></td></tr></tbody>
+</table></div>
+<p>The tail-4 slope is <b>&minus;0.1668</b> against a predicted &minus;0.1667, and the estimate
+<em>settles</em> onto the prediction as <code>C</code> grows &mdash; the shape criterion of &sect;4.1
+satisfied by the headline result itself.</p>
+
+<h4>5.1 &nbsp;Load balancing demonstrably bites, and the rate is unchanged</h4>
+<p>Max imbalance <code>max_i|Load_i&minus;&kappa;|</code> before &rarr; after 24 steps is flat at
+0.750 up to <code>C ~ 10&#8309;</code>, then falls monotonically to <b>0.52</b> at large
+<code>C</code>; the frozen-bias control stays at 0.750 at all 19 budgets. The rate is identical
+across arms <em>including where the rule is unambiguously active</em>.</p>
+
+<h4>5.2 &nbsp;The three exponents, measured independently</h4>
+<div class="scroll panel"><table>
+<thead><tr><th>Term</th><th>Origin</th><th>Measured</th><th>Predicted</th></tr></thead>
+<tbody>
+<tr><td><code>1/L</code></td><td>Euler discretization</td><td>&minus;0.953, and blind to <code>M</code> at <b>+0.012</b></td><td>&minus;1, 0</td></tr>
+<tr><td><code>&radic;(D/LaM)</code></td><td><code>LaM</code> site-CLT</td><td>&minus;0.505, &minus;0.489, &minus;0.512 in <code>L,a,M</code></td><td>&minus;&frac12; each</td></tr>
+<tr><td><code>1/&radic;D</code></td><td><code>D</code>-coordinate mean-field</td><td><b>&minus;0.4969</b> / &minus;0.5026 at two <code>aM</code></td><td>&minus;&frac12;</td></tr>
+</tbody></table></div>
+<div class="callout"><b>The <code>1/&radic;D</code> term took four attempts, three of which were
+contaminated.</b> All the failures measured it as a <em>bias</em> &mdash; a gap to a reference. That
+is what made them fragile: a bias needs a reference, and any reference at finite
+<code>D_ref</code> carries the <em>same</em> bias, so the gap is
+<code>E_D(1&minus;&radic;(D/D_ref))</code>, biasing the slope steep. With
+<code>D_ref = 512</code> that alone predicts an apparent &minus;0.70, and noise-subtracted the
+measurement gave &minus;0.68 &mdash; consistent with a true &minus;&frac12; while demonstrating
+nothing. The term is <b>not a bias but a fluctuation</b>: the large-<code>D</code> limit is a
+mean-field over the <code>D</code> coordinates, so a coordinate population average
+<em>fluctuates</em> at <code>1/&radic;D</code>. Measuring the <b>seed spread</b> of the stream
+kernel <code>(1/D)&#8214;h^L&#8214;&sup2;</code> needs no reference and cannot suffer reference bias.</div>
+</section>
+
+<section id="open">
+<h2>Section 6</h2><h3>What is open</h3>
+<h4>6.1 &nbsp;<code>1/&radic;D</code> degrades with training time</h4>
+<p>The law is exact at initialization and <code>LaM</code>-independent across an 8&times; change in
+<code>aM</code>, out to <code>D = 16384</code>. It is <b>not</b> exact after long training.</p>
+<div class="panel"><figure><div id="diagchart"></div>
+<figcaption>Kernel-fluctuation exponent against training horizon, <code>D</code> = 32&hellip;4096,
+512 seeds. Dashed line is the predicted &minus;&frac12;.</figcaption></figure></div>
+<p><b>The DMFT mechanism.</b> In the single-site system the kernel
+<code>C_h = (1/D)&lang;h(t),h(s)&rang;</code> is a population average over the <code>D</code>
+coordinate-sites, so <code>1/&radic;D</code> is the site-CLT. Under training the sites are
+<em>not</em> independent: they couple through two <b>shared scalars</b>, the error trajectory
+<code>&Delta;(t) = y &minus; f(t)</code> and the readout <code>w</code>. And <code>&Delta;</code> is
+itself a population average, so it fluctuates at <code>1/&radic;D</code> while entering every site
+<b>coherently</b>:</p>
+<div class="eq">&delta;K  =  [ site-CLT ]  +  (&part;K/&part;&Delta;) &middot; &delta;&Delta;
+        ~ 1/&radic;D        ~ (&part;K/&part;&Delta;)/&radic;D    &larr; shared, rank-1, does NOT average over sites</div>
+<p>Both are <code>1/&radic;D</code> <em>at fixed susceptibility</em>. <code>&part;K/&part;&Delta;</code>
+is the &Delta;-loop gain, and it accumulates with training.</p>
+<div class="callout red"><b>My specific hypothesis was falsified.</b> I predicted the cause was
+<em>mismatched training progress</em> &mdash; at fixed step count larger-<code>D</code> models train
+further (loss 0.3930&rarr;0.3741 across <code>D</code>; loss-matching needs 22&rarr;19 steps).
+Matching by loss instead of step count tests it, and it only holds shallow:
+<b>&minus;0.4980</b> at loss 0.40 (~20 steps), but &minus;0.4454 at 0.30 (~40 steps) and
+&minus;0.3743 at 0.20 (~52 steps) &mdash; tracking the fixed-step values at the same step counts.
+So the controlling variable is <b>elapsed training, not training progress</b>. Why the
+susceptibility is <code>D</code>-dependent is <b>not established</b>.</div>
+<p><b>Consequence for the rate: it stands.</b> The rate test runs at 8 and 24 steps, where the
+deviation is <code>&le; 0.001</code> and <code>~0.01&ndash;0.04</code>. The failure lives at horizons
+longer than the rate test uses &mdash; the caveat is real, but bounded, and does not reach the headline.</p>
+
+<h4>6.2 &nbsp;Not attempted</h4>
+<ul>
+<li><b>No DMFT solver.</b> The single-site system of derivation 09 &sect;5&ndash;&sect;7 &mdash; three
+response pairs per expert-layer, including a router pair with no dense counterpart &mdash; is derived
+but unsolved, so the memoryless-limit claim (response sector <code>O(1/LaM)</code>) is untested.
+Parameterization and limit structure are validated; <b>the dynamics are not</b>.</li>
+<li>The lazy branch <code>&alpha;* = (ML)<sup>1/4</sup></code> remains inconclusive: comparing a
+ResNet to its <em>own</em> linearization cancels the CLT term by shared initialization, and a large
+linearized reference carries its own uncontrolled <code>&alpha;</code>-dependent error.</li>
+<li>Attention, LayerNorm, Adam and a nonlinear unembedding &mdash; the remaining distance to the
+&sect;3.1 transformer.</li>
+</ul>
+</section>
+
+<footer>All figures and numbers from measurements in this repository; GPU runs on a single A100-80GB.
+Series colours are the Okabe&ndash;Ito colourblind-safe set and every series is direct-labelled, as the
+palette validator could not be run in this environment.</footer>
+</div>
+
+<script>
+const D = {"E1_rate_eta_bias_1": {"C": [1000.0, 2000.0, 4000.0, 8000.0, 16000.0, 32000.0, 64000.0, 128000.0, 256000.0, 512000.0, 1024000.0, 2050000.0, 4096000.0, 8190000.0, 16384000.0, 32800000.0, 65536000.0, 131000000.0], "E": [0.2666077761694905, 0.24191927121939485, 0.2200434102845345, 0.1972810690753313, 0.1779346061418641, 0.16094142467372174, 0.14370641877294593, 0.12762013973891623, 0.114735095105518, 0.10224946534603718, 0.08959786632700596, 0.07993790440608076, 0.07289121069348294, 0.06498680319577603, 0.05846151056080296, 0.0525597016810128, 0.04693229951315374, 0.04129972341182276], "imb0": [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75], "imb1": [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.7321428571428571, 0.6919642857142857, 0.7, 0.6676829268292683, 0.6392543859649122, 0.5986328125, 0.5556640625, 0.517578125, 0.5188802083333334, 0.51953125, 0.5247395833333334, 0.5234375], "slope": -0.15932630372452367, "tail": -0.166804169172301}, "E1_rate_eta_bias_0": {"C": [1000.0, 2000.0, 4000.0, 8000.0, 16000.0, 32000.0, 64000.0, 128000.0, 256000.0, 512000.0, 1024000.0, 2050000.0, 4096000.0, 8190000.0, 16384000.0, 32800000.0, 65536000.0, 131000000.0], "E": [0.26445898865143336, 0.23953852454808852, 0.2174814835719296, 0.1947535775422162, 0.17572930085305777, 0.15854363880180142, 0.14142901055771037, 0.12556650736723812, 0.11273065724777735, 0.10045511534605732, 0.08788045631001166, 0.07863909064433464, 0.07168312820889405, 0.06389950678426967, 0.05754164792186837, 0.051625048572080626, 0.04610944674966306, 0.04115318850653954], "imb0": [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75], "imb1": [0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75], "slope": -0.15964866678109077, "tail": -0.161441640091514}, "E3": {"init": {"D": [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384], "s": [0.0873958519365151, 0.061992972022366255, 0.04529406213031911, 0.031318942229185916, 0.022081931262991756, 0.015292497345694302, 0.011074468094895255, 0.00805232953258542, 0.005695950636388049, 0.0038940603446295605], "slope": -0.49691689348745066, "tail": -0.49061826185293694}, "trained": {"D": [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384], "s": [0.08859131828149827, 0.06292142412795321, 0.045811519197428825, 0.031795137481367135, 0.02266709110111463, 0.015670750270058455, 0.011619907025294503, 0.00884669922940708, 0.006698864068615712, 0.006227296577791288], "slope": -0.4475574028287521, "tail": -0.3457402859873204}, "init_wide": {"D": [32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384], "s": [0.08866852567817228, 0.06284513851045738, 0.04185847214687102, 0.03222766151555047, 0.0220345058756436, 0.015845631402821674, 0.010837305487003302, 0.00789166430554497, 0.005137811325976035, 0.003944076132035953], "slope": -0.5026190471217722, "tail": -0.5089431968458298}}, "E2": {"depth L": {"vals": [4, 8, 16, 32, 64], "lr": [0.30680929363781545, 0.3009719447983832, 0.2961469845435638, 0.3033602525592865, 0.3200347870633849], "drift": 0.02388780251982109, "tail": 0.02388780251982109}, "active a": {"vals": [8, 16, 32, 64, 128], "lr": [0.3089439469280393, 0.3009719447983832, 0.30157101774297995, 0.30376120376628013, 0.3023784127432635], "drift": 0.007972002129656097, "tail": 0.002190186023300178}, "expert width M": {"vals": [32, 64, 128, 256, 512], "lr": [0.3058138310209387, 0.31011542127238584, 0.3009719447983832, 0.2916459089730811, 0.2695951959630285], "drift": 0.04052022530935734, "tail": 0.031376748835354684}, "embedding D": {"vals": [16, 32, 64, 128, 256], "lr": [0.2666877622170467, 0.2812349187598781, 0.3009719447983832, 0.3061566171508613, 0.3055432622794473], "drift": 0.03946885493381458, "tail": 0.0051846723524781035}, "expert count E (a=4)": {"vals": [16, 32, 64, 128, 256], "lr": [0.3009719447983832, 0.3404888997862178, 0.3564310830851536, 0.3832371797387407, 0.4287282550645956], "drift": 0.12775631026621243, "tail": 0.07229717197944202}}, "diag": {"h": [0, 2, 4, 8, 16, 32, 64], "slopes": [-0.5021023678675205, -0.5018416101117046, -0.5016253575482742, -0.5010029935730397, -0.49834269619094884, -0.46202914727547256, -0.3468231145968718], "lossmatch": [[0.4, -0.4980141627463596], [0.3, -0.44543581462406967], [0.2, -0.37430175155737044]], "lossD": [0.393040558587056, 0.387212235820136, 0.38252709341107954, 0.38069488305052784, 0.38014010914738483, 0.37896622585870543, 0.37787498849629614, 0.37411537893803587], "D": [32, 64, 128, 256, 512, 1024, 2048, 4096]}};
+const NS="http://www.w3.org/2000/svg";
+const el=(n,a)=>{const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e;};
+const tx=(x,y,s,o)=>{const t=el("text",Object.assign({x,y},o||{}));t.textContent=s;return t;};
+
+// --- E2 table
+const VERD={"depth L":"ok","active a":"ok","expert width M":"ok","embedding D":"ok"};
+const tb=document.getElementById("tbody-e2");
+for(const k in D.E2){const v=D.E2[k];const ls=v.lr.filter(x=>x!==null);
+ const ok=VERD[k]==="ok";
+ const tr=document.createElement("tr");
+ tr.innerHTML=`<td><b>${k}</b></td><td>${v.vals[0]} &rarr; ${v.vals[v.vals.length-1]}</td>`+
+  `<td style="font-size:12.5px">${ls.map(x=>(x>=0?"+":"")+x.toFixed(2)).join(" ")}</td>`+
+  `<td><b>${v.drift.toFixed(3)}</b></td><td>${v.tail.toFixed(3)}</td>`+
+  `<td><span class="pill ${ok?'ok':'warn'}">${ok?'transfers':'SUSPECT'}</span></td>`;
+ tb.appendChild(tr);}
+
+// --- rate table
+const rt=document.getElementById("tbody-rate");
+[["load balancing on","E1_rate_eta_bias_1"],["frozen-bias control","E1_rate_eta_bias_0"]].forEach(([lab,k])=>{
+ const v=D[k];const C=v.C,E=v.E;
+ const sl=(a,b)=>{const x=C.slice(a,b).map(Math.log),y=E.slice(a,b).map(Math.log);
+  const n=x.length,mx=x.reduce((s,t)=>s+t,0)/n,my=y.reduce((s,t)=>s+t,0)/n;
+  let nu=0,de=0;for(let i=0;i<n;i++){nu+=(x[i]-mx)*(y[i]-my);de+=(x[i]-mx)**2;}return nu/de;};
+ const tr=document.createElement("tr");
+ tr.innerHTML=`<td>${lab}</td><td>${sl(0,C.length).toFixed(4)}</td><td>${sl(C.length-8,C.length).toFixed(4)}</td>`+
+   `<td><b>${sl(C.length-4,C.length).toFixed(4)}</b></td>`;
+ rt.appendChild(tr);});
+
+// --- rate chart (log-log)
+(function(){const W=880,H=330,p={l:66,r:24,t:18,b:48};
+ const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img"});
+ const A=D.E1_rate_eta_bias_1,B=D.E1_rate_eta_bias_0;
+ const all=A.E.concat(B.E),Cs=A.C;
+ const lx=v=>Math.log10(v),ly=v=>Math.log10(v);
+ const x0=lx(Math.min(...Cs)),x1=lx(Math.max(...Cs));
+ let y0=Math.min(...all.map(ly))-.08,y1=Math.max(...all.map(ly))+.08;
+ const X=v=>p.l+(lx(v)-x0)/(x1-x0)*(W-p.l-p.r), Y=v=>H-p.b-(ly(v)-y0)/(y1-y0)*(H-p.t-p.b);
+ for(let e=Math.ceil(y0);e<=Math.floor(y1);e++){const yy=Y(10**e);
+  svg.appendChild(el("line",{x1:p.l,x2:W-p.r,y1:yy,y2:yy,stroke:"var(--rule)","stroke-width":1}));
+  svg.appendChild(tx(p.l-9,yy+4,"1e"+e,{"text-anchor":"end","font-size":10,fill:"var(--ink3)"}));}
+ for(let e=3;e<=8;e++){const xx=X(10**e);
+  svg.appendChild(tx(xx,H-p.b+17,"1e"+e,{"text-anchor":"middle","font-size":10,fill:"var(--ink3)"}));}
+ // reference slope -1/6
+ const cx=X(Cs[0]),cy=Y(A.E[0]*1.35);
+ const x2=X(Cs[Cs.length-1]),y2=Y(A.E[0]*1.35*Math.pow(Cs[Cs.length-1]/Cs[0],-1/6));
+ svg.appendChild(el("line",{x1:cx,y1:cy,x2:x2,y2:y2,stroke:"var(--ink3)","stroke-width":1.4,"stroke-dasharray":"5 4"}));
+ svg.appendChild(tx(x2-6,y2-9,"slope −1/6",{"text-anchor":"end","font-size":11,fill:"var(--ink3)"}));
+ [[A,"var(--s1)","balancing on"],[B,"var(--s2)","frozen control"]].forEach(([v,c,lab],i)=>{
+  let d="";v.C.forEach((cc,k)=>{d+=(k?"L":"M")+X(cc).toFixed(1)+" "+Y(v.E[k]).toFixed(1)+" ";});
+  svg.appendChild(el("path",{d,fill:"none",stroke:c,"stroke-width":2.2,"stroke-linejoin":"round"}));
+  v.C.forEach((cc,k)=>svg.appendChild(el("circle",{cx:X(cc),cy:Y(v.E[k]),r:3.4,fill:c,stroke:"var(--panel)","stroke-width":1.5})));
+  svg.appendChild(tx(X(v.C[2])+6,Y(v.E[2])+(i?16:-9),lab,{"font-size":11.5,fill:c,"font-weight":600}));});
+ svg.appendChild(tx(p.l,p.t-3,"E_diff  (distance between the C and 4C ensembles)",{"font-size":11,fill:"var(--ink3)"}));
+ svg.appendChild(tx((p.l+W-p.r)/2,H-6,"FLOP budget C",{"text-anchor":"middle","font-size":11,fill:"var(--ink3)"}));
+ document.getElementById("ratechart").appendChild(svg);})();
+
+// --- diagnostic chart: exponent vs horizon
+(function(){const W=880,H=300,p={l:64,r:120,t:20,b:48};
+ const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,role:"img"});
+ const h=D.diag.h.map(v=>Math.max(v,1)),s=D.diag.slopes;
+ const x0=Math.log2(1),x1=Math.log2(64);
+ const y0=-0.53,y1=-0.32;
+ const X=v=>p.l+(Math.log2(v)-x0)/(x1-x0)*(W-p.l-p.r), Y=v=>H-p.b-(v-y0)/(y1-y0)*(H-p.t-p.b);
+ [-0.5,-0.45,-0.4,-0.35].forEach(g=>{
+  svg.appendChild(el("line",{x1:p.l,x2:W-p.r,y1:Y(g),y2:Y(g),stroke:"var(--rule)","stroke-width":1}));
+  svg.appendChild(tx(p.l-9,Y(g)+4,g.toFixed(2),{"text-anchor":"end","font-size":10,fill:"var(--ink3)"}));});
+ svg.appendChild(el("line",{x1:p.l,x2:W-p.r,y1:Y(-0.5),y2:Y(-0.5),stroke:"var(--ink3)","stroke-width":1.5,"stroke-dasharray":"5 4"}));
+ let d="";h.forEach((v,k)=>{d+=(k?"L":"M")+X(v).toFixed(1)+" "+Y(s[k]).toFixed(1)+" ";});
+ svg.appendChild(el("path",{d,fill:"none",stroke:"var(--s2)","stroke-width":2.4,"stroke-linejoin":"round"}));
+ h.forEach((v,k)=>{svg.appendChild(el("circle",{cx:X(v),cy:Y(s[k]),r:4.4,fill:"var(--s2)",stroke:"var(--panel)","stroke-width":2}));
+  svg.appendChild(tx(X(v),H-p.b+17,D.diag.h[k],{"text-anchor":"middle","font-size":10.5,fill:"var(--ink2)"}));});
+ svg.appendChild(tx(X(64)+9,Y(s[s.length-1])+4,"trained",{"font-size":11.5,fill:"var(--s2)","font-weight":600}));
+ D.diag.lossmatch.forEach(([t,v],i)=>{
+  svg.appendChild(el("circle",{cx:X([20,40,52][i]),cy:Y(v),r:4.4,fill:"var(--s3)",stroke:"var(--panel)","stroke-width":2}));});
+ svg.appendChild(tx(X(52)+9,Y(D.diag.lossmatch[2][1])+4,"loss-matched",{"font-size":11.5,fill:"var(--s3)","font-weight":600}));
+ svg.appendChild(tx(p.l,p.t-4,"fitted exponent of the kernel fluctuation vs D",{"font-size":11,fill:"var(--ink3)"}));
+ svg.appendChild(tx((p.l+W-p.r)/2,H-6,"training horizon (GD steps)",{"text-anchor":"middle","font-size":11,fill:"var(--ink3)"}));
+ document.getElementById("diagchart").appendChild(svg);})();
+</script>
