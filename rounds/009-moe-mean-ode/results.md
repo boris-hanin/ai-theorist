@@ -217,8 +217,42 @@ were found.** This is the exponent the `C^{-1/6}` shape rests on, so it matters.
 | reference-free pairwise `\|f_D - f_2D\|` | `+2.17` | **below the seed floor** (ratios 0.6–1.2x, two points zeroed by subtraction) |
 | pairwise at `L a M` = 2048 to cut CLT noise | `+3.15` | **the seed variance is not the CLT term.** Widening `LaM` 8x barely moved the floor, because the variance is dominated by the per-seed *embedding and readout init*, which `LaM` does not suppress |
 
-**Status: the `-1/2` exponent is consistent with every measurement and
-demonstrated by none of them.** The first two were reported as results before
+### DEMONSTRATED — the instrument was the problem, not the exponent
+
+The four failures above all tried to measure the `1/sqrt(D)` term as a **bias**
+(a gap to some reference). That is what made them fragile: a bias needs a
+reference, and any reference at finite `D_ref` carries the same bias.
+
+**The term is not a bias — it is a fluctuation.** The large-`D` limit of the
+Mean ODE is a mean-field over the `D` embedding coordinates, so a *coordinate
+population average* fluctuates about its limit at `1/sqrt(D)`. Measuring the
+**seed spread** of such an average needs no reference at all, and therefore
+cannot suffer reference bias. Observable: the stream kernel `(1/D)||h^L||^2`.
+
+Run on an A100, `D` = 16 → 4096, **256 seeds** per point
+(`skills/dmft-moe/scripts/dfit_gpu.py`, data in `dfit-1oversqrtD.json`):
+
+| configuration | slope, all `D` | slope, `D >= 256` |
+|---|---|---|
+| at init, `aM = 512` | **-0.4999** | **-0.5022** |
+| at init, `aM = 4096` | -0.5077 | **-0.5003** |
+| trained, `aM = 512` | -0.4990 | **-0.5013** |
+| trained, `aM = 4096` | -0.5068 | **-0.4995** |
+
+against a predicted `-0.5000`. Two controls come free and both hold:
+**`L a M`-independence** (512 vs 4096 agree, so this is the `D`-coordinate
+mean-field and not the `LaM` CLT) and **train ≈ init** (the rate is a property
+of the limit, not of the optimiser).
+
+*A bug caught on the way, which had produced a confident wrong answer.* The GPU
+run chunks seeds to fit memory, and the per-chunk generator was seeded with a
+constant — so every chunk drew **identical** randomness. Chunk size depends on
+`D` and `M`, so the duplication varied along exactly the axes being measured,
+giving slopes of `-0.53` to `-0.87` with a spurious `aM` dependence. Fixed by
+offsetting the seed per chunk.
+
+**Superseded:** the "not established" verdict below is the pre-A100 state, kept
+for the record of how the instrument was wrong. The first two were reported as results before
 this audit; both were wrong, in different ways, and the second was wrong *by
 construction* — a bias cannot be measured against a reference that carries the
 same bias.
@@ -229,10 +263,11 @@ per-seed spread is `~0.12`–`0.24` and falls only weakly with `D`. A 3x margin 
 the honest cost, and it is the first thing to spend GPU time on — before any
 `C^{-1/6}` fit, which would otherwise rest on an unmeasured exponent.
 
-**Consequence.** `C^{-1/6}` depends on three exponents. Two are clean
-(`1/L`: `-0.953`, `M`-independent `+0.012`; and `sqrt(D/(LaM))`: `-0.505`,
-`-0.489`, `-0.512`). The third is **not measured**. The shape claim is derived,
-with two of three legs empirically grounded.
+**Consequence.** `C^{-1/6}` depends on three exponents and **all three are now
+measured**: `1/L` (`-0.953`, and `M`-independent at `+0.012`),
+`sqrt(D/(LaM))` (`-0.505`, `-0.489`, `-0.512`), and `1/sqrt(D)` (`-0.4999`).
+The shape claim is now empirically grounded in every leg, and the `C^{-1/6}`
+rate test is worth running.
 
 A bug found on the way: the readout LR was written `eta * D` when the counting
 gives `eta / D` (`f = <w,h>` is coherent over `D`, so `df = D dw` and `dw` must
