@@ -52,6 +52,7 @@ class MoEMeanODE:
         self.W = [rn(E, M, D) * self.s_w for _ in range(L)]      # w^{ij}
         self.R = [rn(D, E) * D ** -0.5 for _ in range(L)]        # routers
         self.b = [rn(E) * b_std for _ in range(L)]               # nonzero (F21)
+        self._load = [None] * L
 
     def params(self):
         return self.U + self.W + self.R
@@ -62,6 +63,8 @@ class MoEMeanODE:
             q = gate + self.b[l]
             idx = q.topk(self.a, dim=-1).indices
             mask = torch.zeros_like(q).scatter_(-1, idx, 1.0)
+            self._load[l] = mask.mean(0)          # (E,) batch load, for the
+                                                  # auxiliary-loss-free rule
             if stats is not None:
                 stats["spread"] = float(q.std(-1).mean())
                 stats["load"] = mask.mean(0)
@@ -113,7 +116,33 @@ def group_lrs(net, eta):
             [L * a * math.sqrt(M) / D * eta] * L) # R
 
 
-def gd(net, X, Y, eta, steps):
+
+def balance_biases(net, eta_bias):
+    """The auxiliary-loss-free load-balancing rule of 2601.20205 Eq. (2):
+
+        b_i  <-  b_i  -  eta_bias * (Load_i - kappa)
+
+    NOT a gradient step. The biases participate ONLY in the hard top-k, receive
+    no gradient (the paper treats the activated set as a no-grad quantity), and
+    are driven purely by the measured batch load. Scaling Rule 2 puts
+    eta_bias = Theta(1).
+
+    Omitting this was the largest fidelity gap between this program's model and
+    the paper: without it there is no load balancing in the dynamics at all.
+    """
+    with torch.no_grad():
+        for l in range(net.L):
+            if net._load[l] is not None:
+                net.b[l] -= eta_bias * (net._load[l] - net.kappa)
+
+
+def load_imbalance(net):
+    """max_i |Load_i - kappa|, the paper's Figure 17 metric."""
+    with torch.no_grad():
+        return max(float((L_ - net.kappa).abs().max()) for L_ in net._load if L_ is not None)
+
+
+def gd(net, X, Y, eta, steps, eta_bias=1.0):
     """LR scaled so the per-unit update is Theta(eta).
 
     grad_w = (c_L/a) * g * phi * b  with c_L = 1/(LM) and, since the loss is
@@ -137,6 +166,7 @@ def gd(net, X, Y, eta, steps):
         with torch.no_grad():
             for p, gr, lr in zip(ps, gs, lrs):
                 p -= lr * gr
+        balance_biases(net, eta_bias)
         hist.append(float(loss))
     for p in ps:
         p.requires_grad_(False)
@@ -183,7 +213,7 @@ class MoEFixedTask(MoEMeanODE):
         return 0.5 * (self.forward_scalar(X) - Y).pow(2).mean()
 
 
-def gd_fixed(net, X, Y, eta, steps):
+def gd_fixed(net, X, Y, eta, steps, eta_bias=1.0):
     # Readout: f = <w, h^L> is a COHERENT sum over D, so df = D * dw and dw must
     # be Theta(1/D). grad_w = (f-y) h is Theta(1) per coordinate, hence lr = eta/D.
     # (An earlier version had eta*D -- inverted -- and every run diverged.)
@@ -199,6 +229,7 @@ def gd_fixed(net, X, Y, eta, steps):
         with torch.no_grad():
             for p, gr, lr in zip(ps, gs, lrs):
                 p -= lr * gr
+        balance_biases(net, eta_bias)
     for p in ps:
         p.requires_grad_(False)
     return net

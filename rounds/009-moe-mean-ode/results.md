@@ -198,6 +198,47 @@ increases (the F22 criterion, applied to itself).
 
 Data: `rate-C-one-sixth.json`; code `skills/dmft-moe/scripts/rate_gpu.py`.
 
+## Trainable expert biases — the load-balancing rule, added
+
+The largest fidelity gap has been closed. 2601.20205 Eq. (2):
+
+    b_i  <-  b_i  -  eta_bias * (Load_i - kappa)
+
+**Not a gradient step.** The biases enter only the hard top-`a`, receive no
+gradient (the paper treats the activated set as no-grad), and are driven purely
+by the measured batch load. Scaling Rule 2 sets `eta_bias = Theta(1)`.
+Implemented in `moe_ode.py::balance_biases` and in the GPU rate script.
+
+**It works, and it has a stability edge** — `max_i |Load_i - kappa|` over 25 steps:
+
+| `eta_bias` | imbalance | |
+|---|---|---|
+| 0.0 | 0.750 → 0.750 | unchanged (control) |
+| 0.3 | 0.750 → **0.250** | balances |
+| 1.0 | 0.750 → **0.250** | balances |
+| 3.0 | 0.750 → 0.750 | overshoots |
+
+consistent with `eta_bias = Theta(1)` having a finite stable range.
+
+**The `C^{-1/6}` rate is unchanged by it**, on the matched 7-point range
+`C` = 1e3 → 1.6e7, 192 seeds:
+
+| | slope (all) | slope (last 4) |
+|---|---|---|
+| balancing ON (`eta_bias = 1`) | **-0.1583** | **-0.1619** |
+| frozen biases (control) | -0.1571 | -0.1597 |
+| predicted | -0.1667 | -0.1667 |
+
+The per-point `E_diff` values agree between the two arms to **~1% at every `C`**.
+
+**Caveat, stated rather than glossed.** That near-identity is strong evidence the
+rate is robust to balancing, but it is *also* consistent with balancing barely
+biting over the 8 GD steps the rate test uses — the imbalance table above was
+measured over 25 steps. What is **not** yet checked is how much the load actually
+moves within the rate test's own horizon. Until that is measured, the honest
+claim is "the rate is unchanged with the rule enabled", not "load balancing is
+irrelevant to the rate".
+
 ## FIDELITY — what architecture this actually is
 
 **Not the transformer of 2601.20205 §3.1, and not Chizat's model unmodified.**
@@ -217,10 +258,10 @@ model of 2601.20205 §4**. Deviations, in full:
 - **no MHSA and no LayerNorm** — this is their §4 reduced model
 - **plain GD**, not Adam / SignGD
 - linear readout `<w, h^L>`, not `W_unembd phi(h^L)`
-- **the expert biases are FROZEN at their random init**, not updated by the
-  auxiliary-loss-free rule `b_i <- b_i - eta_bias (Load_i - kappa)`. **There is no
-  load balancing in these dynamics.** This is the deviation most likely to matter
-  for anything routing-dependent, and it is untested here.
+- ~~the expert biases are frozen~~ **RESOLVED** — the auxiliary-loss-free rule is
+  now implemented and the rate re-measured with it on (see above). Remaining
+  caveat: whether the rule bites within the rate test's 8-step horizon is
+  unverified.
 - the parameterisation is written in Chizat's convention (`1/(LM)` branch,
   `Theta(1)` weights) rather than theirs (`1/L` branch,
   `sigma_down = sqrt(D)/M`); algebraically identical, shown in `09` §2
