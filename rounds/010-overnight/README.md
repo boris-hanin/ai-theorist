@@ -95,3 +95,56 @@ the kernel) lands on `-0.1668`. Candidates not yet separated: a genuine
 trained-regime correction to the coordinate mean-field; or the fixed `eta` and
 24-step horizon interacting with `D`. Next step is to re-run the trained arm at
 two horizons and two `eta`, which distinguishes them.
+
+## The `1/sqrt(D)` post-training failure — diagnosed
+
+**DMFT reading.** In `09` §5 the stream kernel `C_h = (1/D)<h(t),h(s)>` is a
+population average over the `D` coordinate-sites, and its `1/sqrt(D)`
+fluctuation is the site-CLT. But under training the sites are **not**
+independent: they are coupled through two *shared scalars*, the error trajectory
+`Delta(t) = y - f(t)` and the readout `w`. `Delta` is itself a population
+average, so it fluctuates at `1/sqrt(D)` — and it enters **every site
+coherently**. Hence
+
+    dK  =  [site-CLT]  +  (dK/dDelta) * dDelta
+           ~ 1/sqrt(D)    ~ (dK/dDelta) / sqrt(D)   <- shared, rank-1
+
+Both are `1/sqrt(D)` **at fixed susceptibility**. `dK/dDelta` is the F5
+`Delta`-loop gain, and it *accumulates with training*. So the prediction is that
+the law is exact at init and degrades with elapsed training.
+
+**Measured (`diag_sqrtD.py`, `D` = 32…4096, 512 seeds).** The horizon dependence
+is unambiguous:
+
+| horizon | 0 | 2 | 4 | 8 | 16 | 32 | 64 |
+|---|---|---|---|---|---|---|---|
+| slope | -0.5021 | -0.5018 | -0.5016 | -0.5010 | -0.4983 | -0.4620 | **-0.3468** |
+
+`h = 64` reproduces the overnight tail (`-0.3457`). **The deviation is a
+training-time effect, absent at init and growing monotonically.**
+
+**What it is NOT.** I predicted the cause was *mismatched training progress* —
+at a fixed step count larger-`D` models train further (loss `0.3930 -> 0.3741`
+across `D` at 24 steps, and loss-matching needs `22 -> 19` steps), so they would
+sit at different susceptibilities. Matching by **loss** instead of step count
+tests this, and it **only partly holds**:
+
+| matched loss | steps used | slope |
+|---|---|---|
+| 0.40 | 19–22 | **-0.4980** — restored |
+| 0.30 | 37–44 | -0.4454 — not restored |
+| 0.20 | 47–57 | -0.3743 — not restored |
+
+These track the *fixed-step* values at the same step counts. So the controlling
+variable is **elapsed training, not training progress**, and the hypothesis is
+**falsified beyond ~20 steps**. The surviving statement is the weaker,
+measured one: the shared-`Delta` channel's susceptibility grows with elapsed
+time and carries its own `D`-dependence, so past ~20 steps the kernel
+fluctuation is no longer a pure site-CLT. *Why* that susceptibility is
+`D`-dependent is not established.
+
+**Consequence for `C^{-1/6}`: the rate result stands.** The rate test runs at
+8 (v1) and 24 (v2) steps, where the `1/sqrt(D)` deviation is `<= 0.001` and
+`~0.01–0.04` respectively. The failure lives at horizons *longer than the rate
+test uses*, which is why the rate landed on `-0.1668`. The caveat is real but it
+does not reach the headline — and it now has a bound rather than being open-ended.
