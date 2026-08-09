@@ -17,6 +17,11 @@ correction and the taxonomy.
 | `07-moe-dmft.md` | **comparison only** | what `06` got right/wrong against their Appendix E, and what a real MoE DMFT still needs |
 | `09-moe-mean-ode.md` | **NEW** — heuristic + DMFT structure | residual MoE in the joint `(L,M,D,E,a)` Mean-ODE limit: effective width `L a M`, `E` absent from the rate, two budgets and the `C^{1/6}` FLOP-optimal shape; measured in `rounds/009-moe-mean-ode` |
 | `08-chizat-mlu.md` | **heuristic + CLT accounting** | the MLU down-projection init (2509.10167, 2603.18168), why it makes block width enter the mean-field average, and the `P^{-1/6}` optimal shape; measured in `rounds/007-mean-ode` |
+| `10-graph-transformer.md` | **heuristic one-step scale analysis** | graph-transformer parameterization; measured and partly falsified in `rounds/011-graph-transformer` |
+| `11-graph-transformer-dmft.md` | **DMFT (cavity), not solver-validated** | candidate graph-transformer dynamics and reductions; no certified solver |
+| `11-chizat-width-lr-transfer.md` | **heuristic + measurement** | fixed-eta Chizat width coordinate; measured in `rounds/012-chizat-width-transfer` |
+| `12-chizat-trained-boundaries-muon.md` | **heuristic + exploratory measurement** | trained-boundary and Muon coordinates; exploratory evidence in `rounds/013-chizat-muon` |
+| `13-chizat-joint-lmd-transfer.md` | **heuristic + measurement** | coherent joint `L/M/D` rates and the preferred `LM/D` invariant path; measured in `rounds/014-chizat-lmd-transfer` |
 
 ## The two methods
 

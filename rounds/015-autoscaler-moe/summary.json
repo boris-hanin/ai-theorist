@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "architecture": "pre_norm_moe",
+  "shape_path": "L*M/D=4",
+  "optimizer_parameterization": "moe_table1_adam",
+  "router_balance_rate": 0.1,
+  "worker_reproducibility": {
+    "workers": 2,
+    "gpu": "A100-SXM4-80GB",
+    "trials_per_worker": 84,
+    "normalized_results_exact": true,
+    "trial_losses_traces_and_routing_exact": true,
+    "excluded_non_scientific_fields": [
+      "timestamps",
+      "durations",
+      "floating_condition_number_roundoff"
+    ]
+  },
+  "tuning": {
+    "selected_normalized_eta": 0.1,
+    "interior": true,
+    "flat_minimum": false
+  },
+  "transfer": {
+    "accepted": true,
+    "paired_penalty_vs_conservative": 0.015264255305131277,
+    "paired_penalty_sem": 0.008296102749696376,
+    "noninferiority_tolerance": 0.01659220549939275
+  },
+  "negative_control": {
+    "rule": "incorrect_single_global_reference_up_rate",
+    "rejected": true,
+    "paired_loss_increase": 0.0780782699584961,
+    "paired_loss_increase_sem": 0.008454132210189048
+  },
+  "routing": {
+    "accepted": true,
+    "mean_worst_expert_tolerance": 0.25,
+    "individual_run_hard_limit": 0.5,
+    "maximum_mean_worst_expert_deviation": 0.20703125,
+    "maximum_individual_run_deviation": 0.33203125
+  },
+  "heldout": {
+    "scale": "S6",
+    "predicted_final_validation_loss": 0.16702785453197722,
+    "observed_final_validation_loss": 0.17649540801843008,
+    "relative_error": 0.05364192526450457,
+    "accepted": true
+  },
+  "scaling_law": {
+    "fit_only_r_squared": 0.9880987423703,
+    "all_scales_r_squared": 0.9894842395152141
+  },
+  "next_scale_forecast": {
+    "compute_ratio": 1.8385360914219588,
+    "predicted_final_validation_loss": 0.17008754223983868,
+    "prediction_interval_95": [
+      0.15992782576815562,
+      0.17748023766994145
+    ]
+  },
+  "forecastable": true
+}

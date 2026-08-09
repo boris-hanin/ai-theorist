@@ -1,0 +1,8 @@
+[16:58:14] DENSE  E=1  a=1  (Chizat)    h=1024  L=4   lr* -0.095  [60s]
+[17:00:04] DENSE  E=1  a=1  (Chizat)    h=1024  L=8   lr* +0.330  [110s]
+[17:03:28] DENSE  E=1  a=1  (Chizat)    h=1024  L=16  lr* +0.330  [204s]
+[17:10:51] DENSE  E=1  a=1  (Chizat)    h=1024  L=32  lr* +0.245  [444s]
+[17:25:18] DENSE  E=1  a=1  (Chizat)    h=1024  L=64  lr* -0.095  [866s]
+[17:25:18] >>> DENSE  E=1  a=1  (Chizat)    h=1024  DRIFT 0.425  head 0.425  tail 0.425
+[17:26:27] sparse E=4  a=1              h=1024  L=4   lr* +0.410  [69s]
+[17:28:32] sparse E=4  a=1              h=1024  L=8   lr* +0.249  [126s]

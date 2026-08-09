@@ -1,0 +1,40 @@
+{
+  "normalized_eta": 0.1,
+  "routing_gate": {
+    "mean_worst_expert_tolerance": 0.25,
+    "individual_run_hard_limit": 0.5
+  },
+  "settings": [
+    {
+      "router_balance_rate": 0.01,
+      "scope": "36-trial one-worker fixed-eta screen",
+      "maximum_deviation_by_scale": [0.36328125, 0.69921875, 0.4140625, 0.28515625, 0.29296875, 0.71484375],
+      "routing_verdict": "fail"
+    },
+    {
+      "router_balance_rate": 0.03,
+      "scope": "36-trial one-worker fixed-eta screen",
+      "maximum_deviation_by_scale": [0.24609375, 0.1328125, 0.18359375, 0.31640625, 0.1640625, 0.40234375],
+      "routing_verdict": "fail"
+    },
+    {
+      "router_balance_rate": 0.1,
+      "scope": "84-trial two-worker full campaign",
+      "maximum_deviation_by_scale": [0.21875, 0.20703125, 0.22265625, 0.25, 0.33203125, 0.296875],
+      "mean_deviation_by_scale": [0.146484375, 0.12565104166666666, 0.10481770833333333, 0.18033854166666666, 0.18359375, 0.20703125],
+      "routing_verdict": "pass"
+    },
+    {
+      "router_balance_rate": 0.3,
+      "scope": "84-trial two-worker full campaign",
+      "maximum_deviation_by_scale": [0.22265625, 0.33984375, 0.34375, 0.49609375, 0.25, 0.28125],
+      "routing_verdict": "fail"
+    },
+    {
+      "router_balance_rate": 1.0,
+      "scope": "84-trial two-worker full campaign",
+      "maximum_deviation_by_scale": [0.44921875, 0.51953125, 0.5546875, 0.58984375, 0.60546875, 0.42578125],
+      "routing_verdict": "fail"
+    }
+  ]
+}

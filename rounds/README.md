@@ -63,7 +63,9 @@ downloadable archive has produced nothing.
 | `011-graph-transformer` | graph-transformer derivation and transfer | formal prereg committed before measurement | **FAILED overall**; static/scaling subclaims retained, signGD transfer unresolved after follow-ups |
 | `012-chizat-width-transfer` | non-MoE Chizat block-only fixed-eta width transfer | none; retrospective user-directed follow-up | block eta passes through 1280 steps/M=2048; embed/unembed were not trained |
 | `013-chizat-muon` | end-to-end Chizat Muon transfer with trained embed/unembed | prereg drafted/amended before A100 execution but not committed; exploratory only | **exploratory pass** on CPU joint/pure-axis screens, 160-step follow-up, and two identical A100 replicas; not certified |
-| `016-chizat-optimizer-dataset` | Chizat SGD/Adam/Muon across three versioned tasks | **draft only; must be committed before execution** | pending; nine-cell manifest prepared, no A100 result |
+| `014-chizat-lmd-transfer` | joint Chizat transfer in depth `L`, particle width `M`, and stream width `D` | none; retrospective user-directed follow-up | all three pure axes and both joint ladders pass; `LM/D=8` is the flattest joint path |
+| `015-autoscaler-moe` | reduced-product top-k MoE Adam transfer and loss prediction | fixed gates declared in schema and validation contract; controller-rate failures retained | **pass** in the declared regime: exact two-worker A100 reproduction, held-out error 5.36%, routing healthy, adjacent forecast issued |
+| `016-chizat-optimizer-dataset` | Chizat SGD/Adam/Muon across three versioned tasks | protocol and immutable manifest committed before execution | pending replicated nine-cell A100 matrix |
 
 The older pre-directory program (including the hyperbolic work) still has lost
 artifacts. `skills/dmft-master/references/instances.md` is a reconstructed

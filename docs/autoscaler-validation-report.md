@@ -2,14 +2,15 @@
 
 Date: 2026-08-09
 
-## Decision after the normalized-eta correction
+## Decision
 
-The reduced-scope product and corrected learning-rate contract are implemented.
-The local regression suite passes, but the previous A100 transfer verdicts used
-proximity to a width-wise local LR optimum.  That quantity mixes transfer with
-the moving edge of discrete-time stability, so those verdicts are retained
-below as historical evidence and are **not** a certification of the corrected
-contract.  The checked-in A100 campaigns must be rerun before release.
+The reduced-scope product, corrected normalized-learning-rate contract, joint
+`L/M/D` studies, and sparse-MoE Adam path are implemented.  The sparse-MoE path
+passes its two-worker A100 campaign, including fixed-eta transfer, routing
+health, a wrong-global-rate control, and held-out validation-loss prediction.
+The earlier standard-MLP A100 results remain historical because their original
+verdict used proximity to a width-wise local LR optimum; they have not been
+silently promoted under the corrected fixed-eta contract.
 
 This is not a claim that every optimizer/architecture/horizon combination has
 a usable scaling law.  A forecast is a measured privilege: the product emits a
@@ -20,48 +21,55 @@ relaxing its gates.
 
 ## Validated product boundary
 
-- Graph: `Embed -> repeat(pre-norm residual MLP) -> Unembed`.
-- Blocks: GELU or ReLU residual MLP.
-- Optimizers: actual PyTorch SGD and Adam.
-- Scaling axes: width and repeat count only.
+- Graph: `Embed -> repeat(pre-norm residual {MLP or top-k MoE}) -> Unembed`.
+- Blocks: GELU or ReLU residual MLP; fixed-sparsity top-k MoE.
+- Optimizers: actual PyTorch SGD and Adam for MLP; Adam for MoE.
+- Scaling axes: MLP width/depth; independent MoE `L`, `M`, and `D`.
 - Constant within a study: dataset, examples, batch size, and update horizon.
 - Tuned value: one normalized learning-rate coordinate `eta`.
 - Transfer: the current residual MLP converts to `lr_raw = eta` for Adam and
   `lr_raw = eta / sqrt(D)` for SGD.  Chizat mean-field SGD uses
-  `lr_raw = L M eta / alpha^2`.
+  `lr_raw = L M eta / alpha^2`.  MoE Adam uses the Table-1 group rates
+  `eta`, `eta/D`, and `eta/M` according to parameter role.
 - Verdict: fixed-`eta` non-inferiority/trajectory convergence.  The local
   optimum and largest stable probe are separate diagnostics and cannot fail
   transfer merely because a larger model has more stability headroom.
 - Target: final validation loss at the declared horizon.
-- Deferred: attention, arbitrary graphs, AdamW, data scaling, and horizon
-  scaling.
+- Shape policy: the default MoE ladder grows all three axes with `LM/D=4`.
+- Prepared extension: bias-free Chizat particles with trained embed/unembed,
+  semantic SGD/Adam rates, and Muon on U/W with auxiliary Adam on boundaries.
+- Deferred: attention, arbitrary graphs, AdamW, Muon outside Chizat, data
+  scaling, and horizon scaling.
 
-## Parallel Chizat-Muon product preparation
+## Chizat optimizer-by-dataset preparation
 
-Muon is now integrated locally for the bias-free Chizat architecture only.
-The product trains embed and unembed in every trial, routes U/W through Muon
-and the boundary maps through auxiliary Adam, records all four raw rates, and
-persists exact optimizer state for continuation.  Three versioned deterministic
-task families and a strict nine-cell optimizer-by-dataset matrix are present.
+The product now supports a strict Chizat-only nine-cell matrix: SGD, Adam, and
+Muon crossed with linear, tanh-teacher, and sinusoid-plus-quadratic tasks.
+Every trial trains embed and unembed and records the raw rates for embed, U, W,
+and unembed.  Muon routing is semantic rather than rank-based, so trained
+boundary matrices remain on auxiliary Adam.  Exact optimizer continuation,
+dataset fingerprints, fixed-eta trajectories, and optimizer-specific negative
+controls are part of the persisted result.
 
-This is implementation readiness, not a new release claim.  Round 013 provides
-strong exploratory CPU and duplicated-A100 transfer evidence, but its
-preregistration was not committed before execution.  The round-016 matrix
-protocol must be committed before its fresh A100 cells begin.
+This section records implementation readiness, not a result.  Round 013 remains
+strong exploratory evidence because its protocol was not committed before its
+A100 runs.  Round 016 and its immutable manifest are committed before any new
+matrix cell begins; each cell remains an independent claim.
 
 ## Automated and interactive validation
 
 | Layer | Evidence | Result |
 | --- | --- | --- |
-| Python unit/e2e | 80 passed and 1 socket-restricted test skipped locally; includes Muon numerics/routing, trained boundaries, three datasets, matrix expansion, normalized/raw conversion, fixed-`eta` settling, replay, checkpoints, scaling, and persistence | Pass |
+| Python unit/e2e | 80 passed and 1 socket-restricted test skipped locally; includes MLP/MoE/Chizat schema, Muon numerics and routing, trained boundaries, three datasets, matrix expansion, fixed-`eta` gates, replay, checkpoints, scaling, and persistence | Pass |
 | New Chizat LR contract | CPU smoke plus two-worker A100 campaigns through 1280 steps and M=2048; fixed-eta transfer passed and omitted-M control was rejected | Pass for Chizat subclaim |
-| A100 code regression | The prior isolated suite passed 26/26 on both workers, before the transfer-verdict correction | Historical; rerun required |
+| Joint `L/M/D` | Pure-axis and joint two-worker A100 campaigns; exact duplicates, wrong-rule controls, and a dedicated `LM/D=8` ladder | Pass; constant `LM/D` preferred |
+| Sparse-MoE A100 | Six `LM/D=4` scales, six seeds, 84 trials, two independent A100 workers, held-out scale, wrong-global-rate control, and routing gate | Pass |
 | Real local API | 2/2 socket tests: health, strict compilation, disallowed-origin rejection, asynchronous run, polling, persisted result | Pass |
 | Packaging | Wheel build, clean wheel install, installed CLI help, sample-spec generation, and plan compilation | Pass |
 | Web static checks | ESLint, TypeScript, production Vinext build | Pass |
 | Rendered web tests | Product shell and fixed-horizon contract | Pass |
-| Desktop browser | Component click/drag, fixed-node inspection, invalid-plan blocking, immutable running plan, live result/refusal | Pass |
-| Mobile browser | 390 px viewport with no horizontal overflow | Pass |
+| Desktop browser | MLP/MoE selection, fixed-node inspection, invalid-plan blocking, optimizer restriction, `LM/D` warning, immutable running plan, live result/refusal | Pass |
+| Mobile browser | Narrow viewport with the MoE `D/L/M` editor visible and no horizontal overflow | Pass |
 | Browser diagnostics | No warning- or error-level console entries | Pass |
 
 The browser run deliberately used a tiny local study.  It refused a 14.2%
@@ -83,6 +91,26 @@ This validates the result schema and verdict mechanism for the Chizat
 parameterization.  It does not replace rerunning the separate standard-MLP
 Adam/SGD product campaigns under schema v2.
 
+## Joint `L`, `M`, and `D` transfer
+
+Round 014 tests each pure axis and two simultaneous joint ladders with the
+coherent Chizat group rates
+
+```text
+lr_U = L M eta / D
+lr_W = L M D eta
+```
+
+Pure `L`, pure `M`, and coupled pure `D` pass at 80 steps.  A general joint
+ladder also passes at 80 and 320 steps.  The user-proposed invariant path with
+`LM/D=8` is the cleanest: its log-progress slope is `+0.00473`, versus
+`-0.0503` on the changing-ratio joint ladder.  Removing `L`, removing `M`, and
+using the incoherent square-root-`D` surrogate are rejected.  Every merged
+campaign contains 20 or 30 exact duplicate trials across the two workers.
+
+This is why the product's MoE defaults keep `LM/D` constant.  It is a preferred
+shape path, not a substitute for the optimizer's separate group-rate rules.
+
 ## Hardware reproducibility
 
 Both independent A100-SXM4-80GB workers reported PyTorch 2.6.0 with CUDA 12.4.
@@ -90,6 +118,29 @@ The same deterministic CUDA canary produced final loss
 `0.5159386396408081` on each worker and on repeat execution.  The CPU value was
 `0.5158814191818237`, a relative CPU/GPU drift of approximately 0.011%.  Peak
 allocated GPU memory for the canary was 18,381,824 bytes.
+
+## Sparse-MoE Adam calibration
+
+The release-evidence campaign uses six scales
+`(D,L,M) = (8,2,16), (18,3,24), (32,4,32), (50,5,40), (72,6,48),
+(98,7,56)`.  Every scale has `LM/D=4`.  It holds 1,024 training examples,
+256 validation examples, batch size 64, and 320 updates fixed while tuning one
+normalized eta over six common seeds.
+
+The final run selected `eta=0.1`, an interior and non-flat optimum.  Fixed eta
+passes at the held-out S6 scale.  The deliberately wrong single global raw
+rate, matched to the reference router/up rate, is rejected by a paired loss
+increase.  The fit-only law has `R^2` above 0.98, and the completely held-out
+largest scale is predicted within 6% of its observed final validation loss.
+The full numerical values and the final adjacent-scale forecast are recorded
+in `rounds/015-autoscaler-moe/results.md` and its canonical result artifact.
+
+Routing is part of the verdict.  The accepted controller rate is 0.1.  Rates
+0.01 and 0.03 allowed isolated collapse; 0.3 and 1.0 produced oscillation and
+failed the routing gate.  The final gate requires, at every scale, mean
+worst-expert deviation across seeds at most 0.25 and an individual-run hard
+limit of 0.50.  These failed settings remain in the round record rather than
+being discarded after the successful choice.
 
 ## Historical Adam calibration
 
@@ -155,15 +206,22 @@ a different training regime.
 - Local write endpoints reject untrusted browser origins.
 - The SSH private key and worker addresses are not stored in the repository or
   result manifests.
-- Raw A100 campaign directories remain runtime evidence; the checked-in
-  configurations and this acceptance record are the durable reproducibility
-  surface.
+- Raw scratch campaign directories remain runtime evidence.  Rounds 014 and
+  015 deliberately promote merged or canonical JSON artifacts alongside the
+  checked-in configurations and acceptance decisions.
 
 ## Release conclusion
 
-The implementation is ready for corrected A100 revalidation, not for a new
-release claim.  No prior local-optimum result may be relabeled as fixed-`eta`
-transfer.  A release requires common-seed fixed-`eta` trajectories, the
-separate stability-edge report, optimizer-specific negative controls, and
-held-out validation-loss calibration under the new result schema.  No horizon
-result may be silently pooled into another horizon's law.
+The sparse-MoE MVP is ready for the next fixed-data, fixed-horizon research
+phase in the tested regime.  Its A100 evidence validates the implementation,
+the `LM/D` default path, Table-1 Adam group transfer, router-load refusal, and
+one adjacent-scale validation-loss forecast.  It does not certify arbitrary
+expert counts, sparsity fractions, tasks, horizons, optimizers, or full MoE
+DMFT.  The historical MLP forecasts likewise remain historical until their
+schema-v2 fixed-eta campaigns are rerun.  No horizon result may be silently
+pooled into another horizon's law.
+
+The Chizat optimizer-by-dataset extension is not yet certified.  It becomes a
+release claim only cell by cell after the fresh, replicated round-016 matrix
+passes its committed transfer, control, trajectory, scaling-law, and held-out
+gates.

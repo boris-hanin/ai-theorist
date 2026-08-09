@@ -7,7 +7,7 @@ screen was run before the round-013 preregistration was committed and therefore
 cannot satisfy the program's provenance rule.  The subsequent A100 runs are
 strong replication evidence, but they do not repair that provenance gap.
 
-Artifact: `runs/chizat-muon/exploratory-cpu-h80.json`.
+Artifact: `rounds/013-chizat-muon/artifacts/exploratory-cpu-h80.json`.
 
 ## Design
 
@@ -74,8 +74,8 @@ run independently on two NVIDIA A100-SXM4-80GB workers after each worker had
 been idle for a 60-second safety window.  Both used the same five seeds and eta
 grid as the CPU screen.  The local copies are:
 
-- `runs/chizat-muon/a100-h80-worker1.json`
-- `runs/chizat-muon/a100-h80-worker2.json`
+- `rounds/013-chizat-muon/artifacts/a100-h80-worker1.json`
+- `rounds/013-chizat-muon/artifacts/a100-h80-worker2.json`
 
 Both workers selected `eta=0.10`, placed the numerical optimum at the same
 interior grid point, passed every primary transfer gate, and rejected all three
@@ -117,10 +117,10 @@ Before A100 execution, the control battery was amended to add a common-seed
 paired largest-shape final-loss test with tolerance
 `max(2 SEM, 1% of primary loss)`.  The expanded 160-step eta bracket must be
 rerun; the truncated result is retained at
-`runs/chizat-muon/exploratory-cpu-h160.json` and is not a pass.
+`rounds/013-chizat-muon/artifacts/exploratory-cpu-h160.json` and is not a pass.
 
 The repaired rerun is retained at
-`runs/chizat-muon/exploratory-cpu-h160-v2.json`.  On the expanded grid, the
+`rounds/013-chizat-muon/artifacts/exploratory-cpu-h160-v2.json`.  On the expanded grid, the
 numerical optimum was interior at `eta=0.06`; the conservative one-SEM rule
 selected `eta=0.03`.  Fixed-eta trajectory and progress gates passed, with a
 final progress slope of `+0.00034`.  Mean primary losses from J1 through J5
@@ -143,5 +143,5 @@ negative-control gates:
 | D: `8..64` | 0.10 | 0.10 | `+0.000572` | `0.000895, 0.000497, 0.000223, 0.000207, 0.000198` |
 
 Artifacts are `exploratory-cpu-pure-{L,M,D}-h80.json` under
-`runs/chizat-muon/`.  These results rule out a simple cancellation that occurs
+`rounds/013-chizat-muon/artifacts/`.  These results rule out a simple cancellation that occurs
 only when all three dimensions grow together.

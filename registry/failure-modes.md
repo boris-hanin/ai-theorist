@@ -288,6 +288,22 @@ field that makes an entry actionable, so supply it for anything new.
   `max(2 SEM, 1% of primary loss)`.  Guard: every negative control reports both
   asymptotic shape behavior and paired performance against the proposed rule;
   neither channel substitutes for the other.
+- **F28 — a good MoE loss hides an unhealthy router.** Validation loss and even
+  a clean scaling-law fit can pass while one expert receives nearly all tokens
+  in an individual run.  The auxiliary-loss-free balance controller also has a
+  two-sided stability window: too small a rate permits collapse, while too
+  large a rate chases minibatch noise and oscillates.  Instance: the Autoscaler
+  MoE campaign retained apparently useful loss curves at controller rates
+  0.01, 0.03, 0.3, and 1.0, but each failed routing; 0.1 was the stable tested
+  value.
+  Detection signature: final loss improves with scale while the per-run
+  worst-expert load deviation approaches the full inactive mass or grows with
+  the controller rate.  Fix: tune the controller on routing health separately
+  from normalized optimizer eta and make routing an independent forecast gate.
+  Guard: report both the mean across seeds of each run's worst-expert deviation
+  and the absolute worst run; require the former below the declared tolerance
+  and the latter below a separate hard ceiling.  Neither a loss pass nor one
+  noisy worst-seed statistic is a substitute for the two-part gate.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

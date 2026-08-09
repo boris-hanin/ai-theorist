@@ -116,6 +116,7 @@ def main() -> None:
                     "tuning": result["tuning"],
                     "transfer_checks": result["transfer_checks"],
                     "negative_control": result["negative_control"],
+                    "routing_quality": result["routing_quality"],
                     "scaling_law": result["scaling_law"],
                     "final_scaling_law": result["final_scaling_law"],
                     "holdout_calibration": result["holdout_calibration"],
@@ -192,6 +193,11 @@ def main() -> None:
                     "losses_by_seed": summary.losses_by_seed,
                     "maximum_routing_load_imbalance": (
                         max(routing_imbalances) if routing_imbalances else None
+                    ),
+                    "mean_routing_load_imbalance": (
+                        sum(routing_imbalances) / len(routing_imbalances)
+                        if routing_imbalances
+                        else None
                     ),
                     "trial_seconds": sum(trial.duration_seconds for trial in trials),
                 }

@@ -23,6 +23,7 @@ scratch/
 runs/autoscaler/
 runs/chizat-lr-transfer-final/
 runs/chizat-lmd/
+runs/chizat-muon/
 apps/web/node_modules/
 apps/web/.next/
 apps/web/dist/
