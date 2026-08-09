@@ -148,3 +148,41 @@ fluctuation is no longer a pure site-CLT. *Why* that susceptibility is
 `~0.01–0.04` respectively. The failure lives at horizons *longer than the rate
 test uses*, which is why the rate landed on `-0.1668`. The caveat is real but it
 does not reach the headline — and it now has a bound rather than being open-ended.
+
+### The proposed mechanism is FALSIFIED (second A100, B2)
+
+The diagnosis above predicted the exponent shift comes from the shared-`Delta`
+channel, `dK = [site-CLT] + chi*dDelta` with `chi = dK/dDelta`. Since
+`dDelta ~ 1/sqrt(D)`, that shift requires **`chi` itself to be `D`-dependent**:
+
+    chi ~ D^beta   with   beta(h) = slope(h) + 1/2
+    => beta(8) ~ 0.00,  beta(64) ~ 0.153
+
+`chi` measured directly (perturb the target by 5%, read the change in the final
+kernel; `D` = 32…1024, 256 seeds):
+
+| horizon | 0 | 8 | 32 | 64 | 128 |
+|---|---|---|---|---|---|
+| `chi` | 0 | 6.5e-3 | 8.0e-2 | 3.3e-1 | 2.0e-1 |
+| `beta` | — | -0.006 | +0.055 | **+0.001** | +0.030 |
+
+**Half the mechanism holds and half does not.** `chi` is exactly zero without
+training and grows strongly with it, so the susceptibility does accumulate as the
+DMFT says. But `beta ~ 0` at every horizon against a required `+0.153`. **A
+`D`-independent `chi` cannot shift the exponent at all** — if both terms carry
+`1/sqrt(D)`, so does their sum, whatever the size of `chi`.
+
+So the shared-`Delta` channel is real but is **not** the source of the
+post-training `1/sqrt(D)` failure. Remaining candidates, untested:
+
+1. **`dDelta` is no longer `1/sqrt(D)` after training.** The error trajectory's
+   own fluctuation is assumed to inherit the population `1/sqrt(D)`; if training
+   changes its `D`-scaling, that propagates directly. Cheapest next test: measure
+   the seed-spread of the final loss vs `D` at several horizons.
+2. **The site-CLT term itself degrades** — i.e. the coordinate-sites acquire
+   `D`-dependent correlations under training, so the leading term is no longer a
+   clean CLT over `D` independent sites.
+
+Recorded as **open**, with one hypothesis explicitly killed. The bound on the
+`C^{-1/6}` result is unaffected: the deviation is still `<= 0.04` at the
+horizons the rate test uses.

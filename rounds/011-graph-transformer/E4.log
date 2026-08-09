@@ -1,0 +1,20 @@
+
+=== E4 (v2)  learning-rate transfer across D, L, H ===
+  SGD width D (alpha_A=1): SUSPECT (drift 0.08 dec is NOT settling: 0.08 over the largest three vs 0.03 over the smallest three)   drift 0.083 dec, lr* sem 0.020, threshold 0.056
+    dial |  1.0e-02  2.2e-02  4.6e-02  1.0e-01  2.2e-01  4.6e-01  1.0e+00  2.2e+00  4.6e+00  1.0e+01   argmin
+      32 |     0.41     0.37    0.254   0.0374   0.0183   0.0234   0.0545      inf      inf      inf   10^-0.59
+      64 |    0.447    0.417    0.337   0.0517   0.0257   0.0307   0.0602      inf      inf      inf   10^-0.57
+     128 |    0.433    0.397    0.289   0.0358   0.0211   0.0257    0.079      inf      inf      inf   10^-0.59
+     256 |    0.428    0.392     0.27   0.0297   0.0217   0.0285    0.042      inf      inf      inf   10^-0.65
+  SGD depth L (alpha_A=1): TRANSFERS   drift 0.103 dec, lr* sem 0.083, threshold 0.234
+    dial |  1.0e-02  2.2e-02  4.6e-02  1.0e-01  2.2e-01  4.6e-01  1.0e+00  2.2e+00  4.6e+00  1.0e+01   argmin
+       2 |    0.396    0.347    0.187   0.0287   0.0185   0.0257   0.0415      inf      inf      inf   10^-0.47
+       3 |    0.447    0.417    0.337   0.0517   0.0257   0.0307   0.0602      inf      inf      inf   10^-0.57
+       4 |    0.429    0.402    0.294   0.0418   0.0226   0.0238    0.121      inf      inf      inf   10^-0.54
+       6 |    0.444    0.427    0.372   0.0973    0.023   0.0211   0.0699      inf      inf      inf   10^-0.46
+  SGD heads H (alpha_A=1): TRANSFERS   drift 0.035 dec, lr* sem 0.024, threshold 0.067
+    dial |  1.0e-02  2.2e-02  4.6e-02  1.0e-01  2.2e-01  4.6e-01  1.0e+00  2.2e+00  4.6e+00  1.0e+01   argmin
+       1 |    0.433    0.397     0.29   0.0363   0.0217   0.0242   0.0527      inf      inf      inf   10^-0.56
+       2 |    0.433    0.398     0.29   0.0361   0.0214    0.024   0.0506      inf      inf      inf   10^-0.56
+       4 |    0.433    0.397    0.289   0.0358   0.0211   0.0257    0.079      inf      inf      inf   10^-0.59
+       8 |    0.434    0.398    0.291   0.0352   0.0204   0.0262   0.0603      inf      inf      inf   10^-0.59

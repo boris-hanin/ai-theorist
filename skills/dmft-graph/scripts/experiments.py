@@ -5,7 +5,7 @@ Every verdict on a transfer sweep comes from
 (statistical resolution, 0.3-decade practical bar, and the SHAPE of the drift,
 F22). It is imported, not reimplemented.
 
-    python experiments.py E1 E2 E3 E4 E5 E6 E7      (or `all`)
+    python experiments.py E1 E2 E3 E4 E5 E6 E7 E8 E9   (or `all`)
 """
 
 import json
@@ -182,70 +182,75 @@ def _leg(name, build, dials, lr_grid, steps, seeds, data, out):
     return v
 
 
-def E4(quick=False):
-    print("\n=== E4  learning-rate transfer across D, L, H ===")
+def E4(steps_sgd=24, steps_sign=60, seeds_sgd=(0, 1, 2, 3),
+       seeds_sign=(0, 1, 2, 3, 4, 5)):
+    """v2. v1 (`E4-transfer-v1.json`) is kept in the round directory: EVERY SGD
+    leg came back UNDER-POWERED because the optimum sat on the upper grid edge
+    (`10^-0.5`), so the drift statistic was meaningless. The fix is a wider grid,
+    not a different verdict rule -- `verdict` is imported unmodified.
+    """
+    print("\n=== E4 (v2)  learning-rate transfer across D, L, H ===")
     data = gt.dataset(seed=0, **BASE)
-    seeds = (0, 1, 2, 3)
-    steps = 12 if quick else 24
-    out = {"steps": steps, "seeds": list(seeds)}
+    out = {"steps_sgd": steps_sgd, "steps_sign": steps_sign,
+           "seeds_sgd": list(seeds_sgd), "seeds_sign": list(seeds_sign)}
+    lrg = np.logspace(-2.0, 1.0, 10)          # SGD
+    lrs = np.logspace(-3.0, -0.3, 10)         # signGD
+    S = lambda f: (f, lrg, steps_sgd, seeds_sgd)
 
-    # --- SGD, alpha_A = 1 (the recommended exponent) -------------------
-    lrg = np.logspace(-3.0, -0.5, 8)
     _leg("SGD width D (alpha_A=1)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
-         [32, 64, 128, 256], lrg, steps, seeds, data, out)
+         [32, 64, 128, 256], lrg, steps_sgd, seeds_sgd, data, out)
     _leg("SGD depth L (alpha_A=1)",
          lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="sgd", seed=s),
-         [2, 3, 4, 6], lrg, steps, seeds, data, out)
+         [2, 3, 4, 6], lrg, steps_sgd, seeds_sgd, data, out)
     _leg("SGD heads H (alpha_A=1)",
          lambda H, s: gt.GraphTransformer(D=128, L=3, H=H, alpha_A=1.0, opt="sgd", seed=s),
-         [1, 2, 4, 8], lrg, steps, seeds, data, out)
+         [1, 2, 4, 8], lrg, steps_sgd, seeds_sgd, data, out)
 
-    # --- signGD (Adam proxy) -------------------------------------------
-    lrs = np.logspace(-2.5, 0.0, 8)
     _leg("signGD width D (alpha_A=1)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [32, 64, 128, 256], lrs, steps, seeds, data, out)
+         [32, 64, 128, 256], lrs, steps_sign, seeds_sign, data, out)
     _leg("signGD depth L (alpha_A=1)",
          lambda L, s: gt.GraphTransformer(D=64, L=L, H=4, alpha_A=1.0, opt="signgd", seed=s),
-         [2, 3, 4, 6], lrs, steps, seeds, data, out)
+         [2, 3, 4, 6], lrs, steps_sign, seeds_sign, data, out)
     _leg("signGD heads H (alpha_A=1)",
          lambda H, s: gt.GraphTransformer(D=128, L=3, H=H, alpha_A=1.0, opt="signgd", seed=s),
-         [1, 2, 4, 8], lrs, steps, seeds, data, out)
+         [1, 2, 4, 8], lrs, steps_sign, seeds_sign, data, out)
 
-    # --- CONTROL 1: alpha_A = 0 (unnormalised logits) ------------------
-    # derivations/10 §4: gamma_A drifts with D, so width transfer must break.
+    # CONTROL 1: alpha_A = 0 -- gamma_A drifts with D (derivations/10 §4)
     _leg("CONTROL alpha_A=0, width D (SGD)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=0.0, opt="sgd", seed=s),
-         [32, 64, 128, 256], lrg, steps, seeds, data, out)
+         [32, 64, 128, 256], lrg, steps_sgd, seeds_sgd, data, out)
 
-    # --- CONTROL 2: Q/K correction dropped, at alpha_A = 1/2 -----------
-    # At alpha_A = 1 this control is an ALGEBRAIC IDENTITY (10 §3f) and is not run.
+    # CONTROL 2: Q/K correction dropped, at alpha_A = 1/2 ONLY.
+    # At alpha_A = 1 this comparison is an ALGEBRAIC IDENTITY (10 §3f).
     probe = gt.GraphTransformer(D=64, L=3, H=4, alpha_A=0.5, opt="sgd", seed=0)
     assert not probe.qk_correction_is_identity(), "control would be an identity"
     _leg("derived  alpha_A=0.5, width D (SGD)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=0.5, opt="sgd",
                                           param="derived", seed=s),
-         [32, 64, 128, 256], lrg, steps, seeds, data, out)
+         [32, 64, 128, 256], lrg, steps_sgd, seeds_sgd, data, out)
     _leg("CONTROL qk-global alpha_A=0.5, width D (SGD)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=0.5, opt="sgd",
                                           param="qk-global", seed=s),
-         [32, 64, 128, 256], lrg, steps, seeds, data, out)
+         [32, 64, 128, 256], lrg, steps_sgd, seeds_sgd, data, out)
 
-    # --- CONTROL 3: unnormalised message passing P = A -----------------
+    # CONTROL 3: unnormalised message passing P = A
     datA = gt.dataset(seed=0, op="sum", **BASE)
     _leg("CONTROL P=A unnormalised, width D (SGD)",
          lambda D, s: gt.GraphTransformer(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
-         [32, 64, 128, 256], lrg, steps, seeds, datA, out)
+         [32, 64, 128, 256], np.logspace(-4.0, -1.0, 10), steps_sgd, seeds_sgd,
+         datA, out)
 
-    # --- CONTROL 4: mis-scaled global LR (no D in the SGD rate) --------
+    # CONTROL 4: mis-scaled global LR (no D factor in the SGD rate)
     class _Bad(gt.GraphTransformer):
         def groups(self, eta0, C_ab=1.0):
             return [(p, lr / self.D) for p, lr in
                     gt.GraphTransformer.groups(self, eta0, C_ab)]
     _leg("CONTROL no-D SGD rate, width D",
          lambda D, s: _Bad(D=D, L=3, H=4, alpha_A=1.0, opt="sgd", seed=s),
-         [32, 64, 128, 256], np.logspace(-1.0, 1.5, 8), steps, seeds, data, out)
+         [32, 64, 128, 256], np.logspace(-0.5, 2.5, 10), steps_sgd, seeds_sgd,
+         data, out)
 
     dump("E4-transfer.json", out)
     return out
@@ -356,8 +361,120 @@ def E7():
     return out
 
 
+
+
+# ==========================================================================
+# E8  channel decomposition of Delta A, and the F18 horizon test
+# ==========================================================================
+# E3 came out inconsistent with derivations/10 §3 at alpha_A = 1/2. The reason
+# is a channel §3 never enumerated: the attention logits also move because the
+# block's INPUT moves (every earlier parameter group updates it by Theta(1)),
+# with no reference to the Q/K learning rate at all. That channel scales as
+#     Delta A|stream ~ D_h^{1/2 - alpha_A}
+# i.e. the same order as A_init, so it is invisible in the total whenever it
+# ties or beats the Q/K channel -- which it does at BOTH alpha_A tested. This
+# probe freezes one group at a time to separate them, and sweeps the horizon,
+# because F18's detection signature is a slope that drifts with training time.
+
+def _freeze(net, which):
+    """`which` in {'qk','stream'}: zero the learning rate of the other groups."""
+    keep = set()
+    if which == "qk":
+        for l in range(net.L):
+            keep.add(id(net.WQ[l])); keep.add(id(net.WK[l]))
+    else:
+        for p in net.params():
+            keep.add(id(p))
+        for l in range(net.L):
+            keep.discard(id(net.WQ[l])); keep.discard(id(net.WK[l]))
+    base = type(net).groups
+    net.groups = lambda eta0, C_ab=1.0, _b=base, _n=net, _k=keep: [
+        (p, lr if id(p) in _k else 0.0) for p, lr in _b(_n, eta0, C_ab)]
+    return net
+
+
+def E8(horizons=(1, 8, 64, 256)):
+    print("\n=== E8  Delta A channel decomposition + horizon (F18) ===")
+    data = gt.dataset(seed=0, **BASE)
+    out = {}
+    for opt, eta0 in (("sgd", 0.05), ("signgd", 0.02)):
+        for a in (1.0, 0.5):
+            for chan in ("qk", "stream", "both"):
+                rows = []
+                for D in (32, 64, 128, 256):
+                    per = {h: [] for h in horizons}
+                    for s in range(3):
+                        for h in horizons:
+                            net = gt.GraphTransformer(D=D, L=3, H=4, alpha_A=a,
+                                                      opt=opt, seed=s)
+                            if chan != "both":
+                                _freeze(net, chan)
+                            v, _ = gt.delta_A(net, data, eta0, steps=h)
+                            per[h].append(v)
+                    rows.append({"D": D, "Dh": D // 4,
+                                 **{"t%d" % h: float(np.mean(per[h])) for h in horizons}})
+                key = "%s_a%.1f_%s" % (opt, a, chan)
+                out[key] = {"rows": rows,
+                            **{"slope_t%d" % h: fit([r["Dh"] for r in rows],
+                                                    [r["t%d" % h] for r in rows])
+                               for h in horizons}}
+                print("  %-22s " % key + "  ".join(
+                    "t=%d %+.3f" % (h, out[key]["slope_t%d" % h][0]) for h in horizons))
+    dump("E8-deltaA-channels.json", out)
+    return out
+
+
+# ==========================================================================
+# E9  quantitative check of formula (G) for gamma
+# ==========================================================================
+
+def E9():
+    print("\n=== E9  formula (G): gamma^2 = <sum_v P^2> + <sum_{v!=v'} P P rho> ===")
+    data = gt.dataset(seed=0, **BASE)
+    rows = []
+    for tag, a in (("attn a=0", 0.0), ("attn a=0.5", 0.5), ("attn a=1", 1.0)):
+        net = gt.GraphTransformer(D=256, L=2, H=4, alpha_A=a, seed=0)
+        with torch.no_grad():
+            _, rec = net.forward(data, record=True)
+            X, S = rec["stream"][0], rec["S"][0]           # (B,N,D), (B,H,N,N)
+            Xn = X / X.pow(2).sum(-1, keepdim=True).sqrt()
+            rho = (Xn @ Xn.transpose(1, 2))[:, None]        # (B,1,N,N)
+            diag = torch.eye(X.shape[1], dtype=torch.bool)
+            g2_pred = float((S[..., None, :].squeeze(-2) * 0 + 0).sum()) if False else \
+                float((S.unsqueeze(-1) * S.unsqueeze(-2) * rho.unsqueeze(-3).squeeze(-3)
+                       ).sum(dim=(-1, -2)).mean()) if False else None
+            # explicit double sum: sum_{v,v'} S_uv S_uv' rho_vv'
+            num = torch.einsum("bhuv,bhuw,bvw->bhu", S, S, rho[:, 0])
+            g2_pred = float(num.mean())
+            g2_meas = float(torch.einsum("bhnm,bmd->bhnd", S, X).pow(2).sum()
+                            / (net.H * X.pow(2).sum()))
+        rows.append({"op": tag, "gamma_pred": g2_pred ** 0.5,
+                     "gamma_meas": g2_meas ** 0.5,
+                     "ratio": (g2_pred / g2_meas) ** 0.5})
+        print("  %-12s gamma predicted %.4f   measured %.4f   ratio %.4f"
+              % (tag, g2_pred ** 0.5, g2_meas ** 0.5, (g2_pred / g2_meas) ** 0.5))
+    for tag, mode in (("P=sym", "sym"), ("P=row", "row"), ("P=sum", "sum")):
+        d = gt.dataset(seed=0, op=mode, **BASE)
+        net = gt.GraphTransformer(D=256, L=2, H=4, alpha_A=1.0, seed=0)
+        with torch.no_grad():
+            _, rec = net.forward(d, record=True)
+            X = rec["stream"][0]
+            Xn = X / X.pow(2).sum(-1, keepdim=True).sqrt()
+            rho = Xn @ Xn.transpose(1, 2)
+            P = d["P"]
+            g2_pred = float(torch.einsum("buv,buw,bvw->bu", P, P, rho).mean())
+            g2_meas = float((P @ X).pow(2).sum() / X.pow(2).sum())
+        rows.append({"op": tag, "gamma_pred": g2_pred ** 0.5,
+                     "gamma_meas": g2_meas ** 0.5,
+                     "ratio": (g2_pred / g2_meas) ** 0.5})
+        print("  %-12s gamma predicted %.4f   measured %.4f   ratio %.4f"
+              % (tag, g2_pred ** 0.5, g2_meas ** 0.5, (g2_pred / g2_meas) ** 0.5))
+    dump("E9-formula-G.json", {"rows": rows})
+    return rows
+
+
 if __name__ == "__main__":
     args = sys.argv[1:] or ["all"]
-    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7"] if "all" in args else args
+    todo = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"] if "all" in args else args
     for name in todo:
         globals()[name]()
