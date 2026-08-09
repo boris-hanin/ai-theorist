@@ -137,10 +137,13 @@ class ResidualMLP(nn.Module):
         width = scale.width
         self.embed = nn.Linear(architecture.input_dim, width)
         self.block_type = architecture.block_type
+        # CompleteP/Chizat depth parameterization: every residual branch is O(1/R).
+        # Keep this outside the block-type branches so dense and MoE models cannot
+        # silently drift to different depth scalings.
+        branch_scale = architecture.residual_multiplier / scale.repeats
         if architecture.block_type == "pre_norm_moe":
             if scale.expert_width is None:
                 raise ValueError("MoE scale requires expert_width")
-            branch_scale = architecture.residual_multiplier / scale.repeats
             self.blocks = nn.ModuleList(
                 ResidualMoEBlock(
                     width,
@@ -154,7 +157,6 @@ class ResidualMLP(nn.Module):
                 for _ in range(scale.repeats)
             )
         else:
-            branch_scale = architecture.residual_multiplier / math.sqrt(scale.repeats)
             self.blocks = nn.ModuleList(
                 ResidualMLPBlock(width, architecture.activation, branch_scale)
                 for _ in range(scale.repeats)
@@ -248,18 +250,57 @@ def make_teacher_dataset(
     *,
     device: torch.device | str = "cpu",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Create one deterministic nonlinear regression task shared by every scale."""
-    generator = torch.Generator(device="cpu").manual_seed(dataset.seed)
-    total = dataset.n_train + dataset.n_validation
-    x = torch.randn(total, architecture.input_dim, generator=generator)
-    w_linear = torch.randn(architecture.input_dim, architecture.output_dim, generator=generator)
-    w_quad = torch.randn(architecture.input_dim, architecture.output_dim, generator=generator)
-    w_linear /= math.sqrt(architecture.input_dim)
-    w_quad /= math.sqrt(architecture.input_dim)
-    y = torch.sin(1.3 * (x @ w_linear)) + 0.35 * ((x.square() - 1.0) @ w_quad)
-    if dataset.noise_std:
-        noise = torch.randn(y.shape, generator=generator)
-        y = y + dataset.noise_std * noise
-    y = (y - y.mean(dim=0, keepdim=True)) / y.std(dim=0, keepdim=True).clamp_min(1e-6)
-    split = dataset.n_train
-    return tuple(t.to(device) for t in (x[:split], y[:split], x[split:], y[split:]))  # type: ignore[return-value]
+    """Create a deterministic configurable teacher task shared by every scale.
+
+    Training sets are nested prefixes as ``n_train`` grows, while validation is
+    generated from a separate fixed stream.  Joint data-scaling studies therefore
+    compare every model on exactly the same held-out examples.
+    """
+    teacher_generator = torch.Generator(device="cpu").manual_seed(dataset.seed + 10_003)
+    layer_weights: List[Tensor] = []
+    input_width = architecture.input_dim
+    for _ in range(dataset.teacher_depth):
+        weight = torch.randn(
+            input_width,
+            dataset.teacher_width,
+            generator=teacher_generator,
+        ) / math.sqrt(input_width)
+        layer_weights.append(weight)
+        input_width = dataset.teacher_width
+    readout = torch.randn(
+        input_width,
+        architecture.output_dim,
+        generator=teacher_generator,
+    ) / math.sqrt(input_width)
+
+    def inputs(count: int, seed: int) -> Tensor:
+        generator = torch.Generator(device="cpu").manual_seed(seed)
+        return torch.randn(count, architecture.input_dim, generator=generator)
+
+    def targets(x: Tensor, noise_seed: int) -> Tensor:
+        hidden = x
+        for layer, weight in enumerate(layer_weights):
+            projected = hidden @ weight
+            hidden = torch.sin((1.15 + 0.1 * layer) * projected) + 0.2 * torch.tanh(
+                projected.square() - 1.0
+            )
+        y = hidden @ readout
+        if dataset.noise_std:
+            noise_generator = torch.Generator(device="cpu").manual_seed(noise_seed)
+            y = y + dataset.noise_std * torch.randn(y.shape, generator=noise_generator)
+        return y
+
+    x_train = inputs(dataset.n_train, dataset.seed)
+    x_validation = inputs(dataset.n_validation, dataset.seed + 1)
+    y_train = targets(x_train, dataset.seed + 2)
+    y_validation = targets(x_validation, dataset.seed + 3)
+    calibration_x = inputs(1024, dataset.seed + 4)
+    calibration_y = targets(calibration_x, dataset.seed + 5)
+    mean_value = calibration_y.mean(dim=0, keepdim=True)
+    scale_value = calibration_y.std(dim=0, keepdim=True).clamp_min(1e-6)
+    y_train = (y_train - mean_value) / scale_value
+    y_validation = (y_validation - mean_value) / scale_value
+    return tuple(
+        tensor.to(device)
+        for tensor in (x_train, y_train, x_validation, y_validation)
+    )  # type: ignore[return-value]

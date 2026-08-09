@@ -23,13 +23,13 @@ during the project; it is not retroactively claimed for early rounds.
 - `registry/failure-modes.md`: the canonical failure registry (F7, F9, and F13
   are intentionally marked lost and are never reused).
 - `PROGRAM.md`: certification policy and current skill status.
-- `src/ai_theorist/autoscaler/`: the first product slice: strict residual-MLP
-  and sparse-MoE schemas, real SGD and Adam training, one-dimensional
-  normalized-eta tuning, transfer checks, fixed-horizon scaling fits, and
-  refusal-aware held-out calibration.
+- `src/ai_theorist/autoscaler/`: the first product slice: strict residual-MLP,
+  sparse-MoE, and νGPT normalized-Transformer schemas; real SGD and Adam
+  training; one-dimensional normalized-eta tuning; transfer checks;
+  fixed-horizon scaling fits; and refusal-aware held-out calibration.
 - `apps/web/`: the drag-and-drop Autoscaler workbench.  Its canvas intentionally
-  compiles only `Embed -> repeated pre-norm {MLP or top-k MoE} residual block
-  -> Unembed`.
+  compiles only typed `Embed -> repeated {MLP, top-k MoE, or νGPT} block ->
+  Unembed` graphs.
 
 ## Current status
 
@@ -74,6 +74,7 @@ The Autoscaler has a separate end-to-end path:
 ```bash
 ai-theorist-autoscale sample-spec /tmp/autoscaler.json --optimizer adam --quick
 ai-theorist-autoscale sample-spec /tmp/moe.json --optimizer adam --architecture pre_norm_moe --quick
+ai-theorist-autoscale sample-spec /tmp/nugpt.json --optimizer adam --architecture normalized_transformer --quick
 ai-theorist-autoscale plan /tmp/autoscaler.json
 ai-theorist-autoscale run /tmp/autoscaler.json --output runs/autoscaler/manual --summary
 ai-theorist-autoscale-api
@@ -86,6 +87,9 @@ shows a next-scale forecast only after every calibration gate passes.  See
 campaign configurations, and `docs/autoscaler-validation-report.md` for the
 measured evidence, retained negative results, and current A100 revalidation
 status after the fixed-eta transfer correction.
+The normalized-Transformer contract is documented separately in
+`docs/normalized-transformer-contract.md`; its A100 manifest is
+`configs/autoscaler/a100_nugpt_adam.json`.
 
 The deep-linear and nonlinear suites are more expensive:
 

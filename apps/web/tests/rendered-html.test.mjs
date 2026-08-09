@@ -24,16 +24,44 @@ test("server-renders the Autoscaler product shell", async () => {
   assert.match(html, /<title>Autoscaler · AI Theorist<\/title>/i);
   assert.match(html, /Build the model/);
   assert.match(html, /Residual stack/);
-  assert.match(html, /One horizon, five scales/);
+  assert.match(html, /Choose the regime\. Generate the ladder/);
   assert.match(html, /Forecasts must earn the right to appear/);
   assert.doesNotMatch(html, /Your site is taking shape/);
 });
 
-test("includes the fixed-horizon validation contract", async () => {
+test("includes the held-out validation contract", async () => {
   const response = await render();
   const html = await response.text();
-  assert.match(html, /Fixed across every scale/);
-  assert.match(html, /Common random seeds/);
-  assert.match(html, /Largest level held out/);
+  assert.match(html, /Validation examples always remain fixed/);
+  assert.match(html, /common validation/i);
+  assert.match(html, /largest held out/i);
   assert.match(html, /Your held-out result lands here/);
+});
+
+test("offers the nuGPT normalized-Transformer transfer contract", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.match(html, /νGPT/);
+  assert.match(html, /Normalized Transformer with LR transfer/);
+});
+
+test("defaults residual branches to inverse-depth scaling", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.match(html, /Branch multiplier/);
+  assert.match(html, /1 \/ R/);
+  assert.doesNotMatch(html, /1 \/ √R/);
+});
+
+test("exposes profiles, datasets, generated ladders, and joint scaling", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.match(html, /Plumbing only · forecasts disabled/);
+  assert.match(html, /Find transfer and loss range/);
+  assert.match(html, /Teacher regression/);
+  assert.match(html, /Markov language/);
+  assert.match(html, /Automatic scale ladder/);
+  assert.match(html, /Token budget|Sample budget/);
+  assert.match(html, /Joint model \+ data/);
+  assert.match(html, /power-law readiness/i);
 });

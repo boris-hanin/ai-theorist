@@ -11,6 +11,7 @@ from .study import atomic_write_json, run_study
 from .training import train_trial
 from .tuning import (
     MOE_TABLE1_ADAM,
+    NUGPT_MID_ALIGNMENT,
     STANDARD_RESIDUAL_MLP,
     raw_learning_rate_from_normalized_eta,
     summarize_trials,
@@ -29,7 +30,7 @@ def _print(payload: object) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Tune and validate fixed-horizon neural scaling laws")
+    parser = argparse.ArgumentParser(description="Tune and validate explicit-budget neural scaling laws")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     sample = subparsers.add_parser("sample-spec", help="write a complete example study")
@@ -37,7 +38,7 @@ def main() -> None:
     sample.add_argument("--optimizer", choices=("sgd", "adam"), default="adam")
     sample.add_argument(
         "--architecture",
-        choices=("pre_norm_mlp", "pre_norm_moe"),
+        choices=("pre_norm_mlp", "pre_norm_moe", "normalized_transformer"),
         default="pre_norm_mlp",
     )
     sample.add_argument("--quick", action="store_true")
@@ -100,7 +101,9 @@ def main() -> None:
                     "tuning": result["tuning"],
                     "transfer_checks": result["transfer_checks"],
                     "negative_control": result["negative_control"],
+                    "parameterization_control": result["parameterization_control"],
                     "routing_quality": result["routing_quality"],
+                    "normalization_quality": result["normalization_quality"],
                     "scaling_law": result["scaling_law"],
                     "final_scaling_law": result["final_scaling_law"],
                     "holdout_calibration": result["holdout_calibration"],
@@ -122,7 +125,9 @@ def main() -> None:
             screen_payload["seeds"] = args.seeds
         screen_spec = StudySpec.from_dict(screen_payload)
         parameterization = (
-            MOE_TABLE1_ADAM
+            NUGPT_MID_ALIGNMENT
+            if screen_spec.architecture.block_type == "normalized_transformer"
+            else MOE_TABLE1_ADAM
             if screen_spec.architecture.block_type == "pre_norm_moe"
             else STANDARD_RESIDUAL_MLP
         )

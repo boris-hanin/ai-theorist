@@ -26,7 +26,7 @@ body {
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-button, input { font: inherit; }
+button, input, select { font: inherit; }
 button, a { -webkit-tap-highlight-color: transparent; }
 button { color: inherit; }
 a { color: inherit; text-decoration: none; }
@@ -142,6 +142,35 @@ a { color: inherit; text-decoration: none; }
 .locked-inspector p { font-size: 11px; color: var(--muted); line-height: 1.6; }
 
 .study-section { padding-top: 70px; }
+.profile-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.profile-card { border: 1px solid var(--line); background: var(--panel); border-radius: 12px; padding: 15px 16px; text-align: left; cursor: pointer; display: grid; gap: 6px; }
+.profile-card strong { font-size: 12px; }
+.profile-card span { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.profile-card.active { border-color: var(--blue); background: var(--blue-pale); box-shadow: inset 0 0 0 1px var(--blue); }
+.profile-card:disabled { cursor: not-allowed; opacity: .65; }
+.setup-grid { display: grid; grid-template-columns: 1fr 420px; gap: 14px; margin-bottom: 14px; }
+.data-panel, .protocol-panel { padding-bottom: 17px; }
+.data-task-choice { max-width: 460px; }
+.difficulty-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin: 0 17px; max-width: 430px; }
+.difficulty-choice button, .joint-choice button { border: 1px solid var(--line); background: #faf9f5; border-radius: 8px; padding: 8px 10px; text-transform: capitalize; font-size: 10px; font-weight: 700; cursor: pointer; }
+.difficulty-choice button.active, .joint-choice button.active { border-color: var(--blue); color: var(--blue-dark); background: var(--blue-pale); }
+.dense-inputs { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
+.data-note { color: var(--muted); font-size: 9px; line-height: 1.55; margin: 14px 17px 0; max-width: 700px; }
+.joint-panel { min-height: 82px; padding: 13px 17px; display: flex; align-items: center; gap: 22px; margin-bottom: 14px; }
+.joint-panel > div:first-child { display: grid; gap: 5px; margin-right: auto; }
+.joint-panel > div:first-child strong { font-size: 11px; }
+.joint-panel > div:first-child span { color: var(--muted); font-size: 9px; }
+.joint-choice { display: flex; gap: 7px; }
+.joint-fields { display: grid; grid-template-columns: 125px 165px; gap: 8px; }
+.joint-fields label span, .ladder-builder label span { display: block; color: var(--muted); font-size: 8px; font-weight: 700; margin-bottom: 5px; }
+.joint-fields input, .joint-fields select, .ladder-builder input, .ladder-builder select { width: 100%; border: 1px solid var(--line); background: #faf9f5; border-radius: 7px; padding: 8px 9px; font-size: 10px; }
+.generated-scale-panel { margin-bottom: 14px; }
+.ladder-builder { padding: 13px 16px; display: grid; grid-template-columns: 1.35fr repeat(5, 1fr) auto; gap: 8px; align-items: end; border-bottom: 1px solid var(--line); }
+.reset-ladder { border: 1px solid var(--blue); background: transparent; color: var(--blue); border-radius: 7px; padding: 8px 10px; font-size: 9px; cursor: pointer; }
+.protocol-preview { border-top: 1px solid var(--line); padding: 12px 16px 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 7px; }
+.protocol-preview > div { border: 1px solid var(--line); background: #faf9f5; border-radius: 8px; padding: 9px; display: grid; gap: 4px; }
+.protocol-preview strong { color: var(--blue); font-size: 9px; }
+.protocol-preview span { color: var(--muted); font-size: 8px; }
 .study-grid { display: grid; grid-template-columns: 1fr 340px; gap: 14px; }
 .scale-panel { overflow: hidden; }
 .scale-table { padding: 8px 16px 14px; }
@@ -267,6 +296,16 @@ a { color: inherit; text-decoration: none; }
 .refusal-card { margin: 13px; padding: 14px; background: var(--orange-pale); border-radius: 9px; }
 .refusal-card strong { color: #9c441b; font-size: 10px; }
 .refusal-card ul { padding-left: 16px; margin: 9px 0 0; color: #86563f; font-size: 8px; line-height: 1.5; }
+.readiness-card { margin-top: 17px; border: 1px solid var(--line); border-left: 4px solid var(--orange); border-radius: 9px; padding: 14px 16px; background: #fffaf6; }
+.readiness-card.ready { border-left-color: var(--green); background: #f5fbf8; }
+.readiness-card > div:first-child { display: grid; gap: 4px; }
+.readiness-card small { color: var(--muted); text-transform: uppercase; letter-spacing: .08em; font-size: 8px; }
+.readiness-card strong { font-size: 13px; }
+.readiness-metrics { display: flex; gap: 22px; margin-top: 13px; }
+.readiness-metrics span { color: var(--muted); font-size: 9px; }
+.readiness-metrics b { color: var(--ink); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.readiness-card ul { margin: 12px 0 0; padding-left: 17px; color: #86563f; font-size: 9px; line-height: 1.55; }
+.readiness-card p { margin: 11px 0 0; color: var(--muted); font-size: 9px; }
 
 footer { border-top: 1px solid var(--line); margin-top: 60px; padding: 25px 4vw; color: var(--muted); font-size: 9px; display: flex; justify-content: space-between; align-items: center; }
 footer p { margin: 0; color: #4f586b; }
@@ -278,6 +317,8 @@ footer p { margin: 0; color: #4f586b; }
   .inspector-panel > .field-label { display: none; }
   .inspector-panel .segmented, .inspector-panel .readonly-field, .inspector-panel .formula-card { margin: 12px; }
   .study-grid { grid-template-columns: 1fr 300px; }
+  .setup-grid { grid-template-columns: 1fr; }
+  .ladder-builder { grid-template-columns: repeat(3, 1fr); }
   .review-bar { grid-template-columns: 1fr 1fr 1fr auto; }
   .review-bar .budget { display: none; }
   .method-strip { display: none; }
@@ -291,7 +332,10 @@ footer p { margin: 0; color: #4f586b; }
   .hero { padding-top: 46px; }
   .section-heading { display: block; }
   .section-heading > p { margin-top: 12px; }
-  .builder-grid, .study-grid, .result-grid { grid-template-columns: 1fr; }
+  .builder-grid, .study-grid, .result-grid, .setup-grid, .profile-grid { grid-template-columns: 1fr; }
+  .joint-panel { display: grid; }
+  .joint-choice, .readiness-metrics { display: grid; grid-template-columns: 1fr 1fr; }
+  .joint-fields, .dense-inputs, .ladder-builder { grid-template-columns: 1fr 1fr; }
   .builder-grid { min-height: unset; }
   .canvas-panel { min-height: 530px; grid-row: 1; }
   .palette-panel { grid-row: 2; }

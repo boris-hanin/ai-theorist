@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Autoscaler · AI Theorist",
-  description: "Fixed-horizon neural scaling with honest held-out calibration.",
+  description: "Explicit-budget neural scaling with honest held-out calibration.",
   openGraph: {
     title: "Autoscaler · AI Theorist",
     description: "Compose, tune, transfer, calibrate, and forecast neural architectures.",
@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   twitter: {
     card: "summary_large_image",
     title: "Autoscaler · AI Theorist",
-    description: "Fixed-horizon neural scaling with honest held-out calibration.",
+    description: "Explicit-budget neural scaling with honest held-out calibration.",
     images: ["/autoscaler-social-preview.png"],
   },
   icons: {

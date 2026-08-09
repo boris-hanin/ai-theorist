@@ -141,6 +141,7 @@ MappingLike = Dict[int, float]
 STANDARD_RESIDUAL_MLP = "standard_residual_mlp"
 CHIZAT_MEAN_FIELD = "chizat_mean_field"
 MOE_TABLE1_ADAM = "moe_table1_adam"
+NUGPT_MID_ALIGNMENT = "nugpt_mid_alignment"
 
 
 def _positive_finite(value: float, name: str) -> float:
@@ -185,6 +186,10 @@ def raw_learning_rate_from_normalized_eta(
         if optimizer_name != "adam":
             raise ValueError("moe_table1_adam does not certify SGD")
         return eta
+    if parameterization == NUGPT_MID_ALIGNMENT:
+        if optimizer_name != "adam":
+            raise ValueError("nugpt_mid_alignment currently certifies only Adam")
+        return eta
     if parameterization == CHIZAT_MEAN_FIELD:
         return eta if optimizer_name == "adam" else depth * width * eta / alpha ** 2
     raise ValueError(f"Unsupported parameterization: {parameterization}")
@@ -226,6 +231,7 @@ def optimizer_group_learning_rates_from_normalized_eta(
     depth: int = 1,
     alpha: float = 1.0,
     expert_width: Optional[int] = None,
+    reference_width: Optional[int] = None,
 ) -> Dict[str, float]:
     """Return every raw optimizer rate implied by one normalized coordinate."""
     base = raw_learning_rate_from_normalized_eta(
@@ -236,6 +242,21 @@ def optimizer_group_learning_rates_from_normalized_eta(
         depth=depth,
         alpha=alpha,
     )
+    if parameterization == NUGPT_MID_ALIGNMENT:
+        if (
+            isinstance(reference_width, bool)
+            or not isinstance(reference_width, int)
+            or reference_width <= 0
+        ):
+            raise ValueError("reference_width must be a positive integer for nuGPT")
+        width_multiplier = width / reference_width
+        hidden_rate = base * width_multiplier ** -0.75
+        return {
+            "nugpt_input": base * width_multiplier ** -0.5,
+            "nugpt_hidden": hidden_rate,
+            "nugpt_output": 0.5 * hidden_rate,
+            "nugpt_rescalers": base,
+        }
     if parameterization != MOE_TABLE1_ADAM:
         return {"all": base}
     if isinstance(expert_width, bool) or not isinstance(expert_width, int) or expert_width <= 0:
@@ -419,6 +440,10 @@ def transfer_rule_name(
         if optimizer_name != "adam":
             raise ValueError("moe_table1_adam does not certify SGD")
         return "moe_table1_group_rates_from_normalized_eta"
+    if parameterization == NUGPT_MID_ALIGNMENT:
+        if optimizer_name != "adam":
+            raise ValueError("nugpt_mid_alignment currently certifies only Adam")
+        return "nugpt_mid_alignment_group_rates_with_post_step_sphere_projection"
     if optimizer_name == "adam":
         return "raw_lr_equals_normalized_eta"
     if optimizer_name == "sgd":

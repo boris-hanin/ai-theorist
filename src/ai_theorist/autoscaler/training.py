@@ -13,6 +13,7 @@ from torch import Tensor
 from torch.nn import functional as F
 
 from .model import ResidualMLP, make_teacher_dataset
+from .normalized_transformer import NormalizedTransformer, make_synthetic_markov_dataset
 from .schema import ScaleLevel, StudySpec, parameter_count
 
 
@@ -40,6 +41,13 @@ class TrialResult:
     routing_loads: Optional[List[List[float]]] = None
     max_routing_load_imbalance: Optional[float] = None
     optimizer_parameterization: str = "declared"
+    normalized_transformer_diagnostics: Optional[Dict[str, float]] = None
+    learning_rate_schedule: str = "constant"
+    n_train: int = 0
+    n_validation: int = 0
+    batch_size: int = 0
+    microbatch_size: int = 0
+    token_horizon: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -49,6 +57,18 @@ def make_optimizer(model: torch.nn.Module, spec: StudySpec, learning_rate: float
     if learning_rate <= 0.0 or not math.isfinite(learning_rate):
         raise ValueError("learning_rate must be finite and positive")
     config = spec.optimizer
+    if spec.architecture.block_type == "normalized_transformer":
+        if config.name != "adam":
+            raise ValueError("normalized_transformer currently supports only Adam")
+        if not isinstance(model, NormalizedTransformer):
+            raise TypeError("normalized_transformer optimizer requires its typed model")
+        return torch.optim.Adam(
+            model.optimizer_parameter_groups(learning_rate),
+            lr=learning_rate,
+            betas=(config.beta1, config.beta2),
+            eps=config.epsilon,
+            weight_decay=0.0,
+        )
     if spec.architecture.block_type == "pre_norm_moe":
         if config.name != "adam":
             raise ValueError("pre_norm_moe currently supports only Adam")
@@ -116,7 +136,17 @@ def train_trial(
     torch.manual_seed(seed)
     if device.startswith("cuda"):
         torch.cuda.manual_seed_all(seed)
-    model = ResidualMLP(spec.architecture, scale).to(device)
+    model: torch.nn.Module
+    if spec.architecture.block_type == "normalized_transformer":
+        model = NormalizedTransformer(
+            spec.architecture,
+            scale,
+            parameterization=(
+                "baseline_ngpt" if force_global_learning_rate is not None else "nugpt"
+            ),
+        ).to(device)
+    else:
+        model = ResidualMLP(spec.architecture, scale).to(device)
     optimizer_learning_rate = (
         normalized_learning_rate if raw_learning_rate is None else raw_learning_rate
     )
@@ -144,9 +174,15 @@ def train_trial(
         str(group.get("name", f"group_{index}")): float(group["lr"])
         for index, group in enumerate(optimizer.param_groups)
     }
-    x_train, y_train, x_validation, y_validation = make_teacher_dataset(
-        spec.architecture, spec.dataset, device=device
-    )
+    peak_group_learning_rates = [float(group["lr"]) for group in optimizer.param_groups]
+    if spec.architecture.block_type == "normalized_transformer":
+        x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
+            spec.architecture, spec.dataset, device=device
+        )
+    else:
+        x_train, y_train, x_validation, y_validation = make_teacher_dataset(
+            spec.architecture, spec.dataset, device=device
+        )
     batch_generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     step = 0
     trace: List[Dict[str, float]] = []
@@ -175,7 +211,15 @@ def train_trial(
         target_steps = min(target_steps, _validate_stop_step(stop_after_steps))
     trace_interval = max(1, spec.horizon.steps // 8)
     diverged = False
+    schedule_multiplier = 1.0
     while step < target_steps:
+        if spec.architecture.block_type == "normalized_transformer":
+            schedule_position = step / max(1, spec.horizon.steps - 1)
+            schedule_multiplier = 0.1 + 0.9 * 0.5 * (
+                1.0 + math.cos(math.pi * schedule_position)
+            )
+            for group, peak_rate in zip(optimizer.param_groups, peak_group_learning_rates):
+                group["lr"] = peak_rate * schedule_multiplier
         indices_cpu = torch.randint(
             0,
             spec.dataset.n_train,
@@ -191,16 +235,31 @@ def train_trial(
         for start in range(0, spec.horizon.batch_size, microbatch_size):
             micro_indices = indices[start : start + microbatch_size]
             predictions = model(x_train[micro_indices])
-            micro_loss_sum = F.mse_loss(
-                predictions, y_train[micro_indices], reduction="sum"
-            )
-            micro_loss = micro_loss_sum / (spec.horizon.batch_size * spec.architecture.output_dim)
+            if spec.architecture.block_type == "normalized_transformer":
+                micro_loss_sum = F.cross_entropy(
+                    predictions.reshape(-1, spec.architecture.vocab_size),
+                    y_train[micro_indices].reshape(-1),
+                    reduction="sum",
+                )
+                loss_denominator = (
+                    spec.horizon.batch_size * spec.architecture.context_length
+                )
+            else:
+                micro_loss_sum = F.mse_loss(
+                    predictions, y_train[micro_indices], reduction="sum"
+                )
+                loss_denominator = (
+                    spec.horizon.batch_size * spec.architecture.output_dim
+                )
+            micro_loss = micro_loss_sum / loss_denominator
             if not torch.isfinite(micro_loss):
                 finite_step = False
                 break
             micro_loss.backward()
             loss_value = loss_value + micro_loss.detach()
-            current_loads = model.routing_loads()
+            current_loads = (
+                model.routing_loads() if isinstance(model, ResidualMLP) else None
+            )
             if current_loads is not None:
                 weight = len(micro_indices) / spec.horizon.batch_size
                 if routing_load_sums is None:
@@ -213,10 +272,16 @@ def train_trial(
             break
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
         optimizer.step()
-        model.update_router_balance(routing_load_sums)
+        if isinstance(model, NormalizedTransformer):
+            model.project_normalized_weights()
+        elif isinstance(model, ResidualMLP):
+            model.update_router_balance(routing_load_sums)
         step += 1
         if step == 1 or step % trace_interval == 0 or step == target_steps:
-            trace.append({"step": float(step), "training_loss": float(loss_value.cpu())})
+            trace_row = {"step": float(step), "training_loss": float(loss_value.cpu())}
+            if spec.architecture.block_type == "normalized_transformer":
+                trace_row["peak_learning_rate_multiplier"] = schedule_multiplier
+            trace.append(trace_row)
         if checkpoint_path is not None and checkpoint_every and (
             step % checkpoint_every == 0 or step == target_steps
         ):
@@ -240,8 +305,22 @@ def train_trial(
 
     model.eval()
     with torch.no_grad():
-        validation_loss_tensor: Tensor = F.mse_loss(model(x_validation), y_validation)
-        validation_routing_loads = model.routing_loads()
+        validation_predictions = model(x_validation)
+        if spec.architecture.block_type == "normalized_transformer":
+            validation_loss_tensor = F.cross_entropy(
+                validation_predictions.reshape(-1, spec.architecture.vocab_size),
+                y_validation.reshape(-1),
+            )
+        else:
+            validation_loss_tensor = F.mse_loss(validation_predictions, y_validation)
+        validation_routing_loads = (
+            model.routing_loads() if isinstance(model, ResidualMLP) else None
+        )
+        normalized_transformer_diagnostics = (
+            model.sphere_diagnostics()
+            if isinstance(model, NormalizedTransformer)
+            else None
+        )
     validation_loss = float(validation_loss_tensor.detach().cpu())
     diverged = diverged or not math.isfinite(validation_loss) or validation_loss > 1e8
     if diverged:
@@ -295,6 +374,25 @@ def train_trial(
         routing_loads=serialized_loads,
         max_routing_load_imbalance=max_load_imbalance,
         optimizer_parameterization=optimizer_parameterization,
+        normalized_transformer_diagnostics=normalized_transformer_diagnostics,
+        learning_rate_schedule=(
+            "cosine_to_10_percent_without_warmup"
+            if spec.architecture.block_type == "normalized_transformer"
+            else "constant"
+        ),
+        n_train=spec.dataset.n_train,
+        n_validation=spec.dataset.n_validation,
+        batch_size=spec.horizon.batch_size,
+        microbatch_size=spec.horizon.microbatch_size or spec.horizon.batch_size,
+        token_horizon=(
+            spec.horizon.steps
+            * spec.horizon.batch_size
+            * (
+                spec.architecture.context_length
+                if spec.architecture.block_type == "normalized_transformer"
+                else 1
+            )
+        ),
     )
 
 

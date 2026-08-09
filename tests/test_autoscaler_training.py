@@ -1,4 +1,5 @@
 import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ import torch
 
 from ai_theorist.autoscaler.schema import StudySpec, default_study_spec
 from ai_theorist.autoscaler.training import make_optimizer, train_trial
+from ai_theorist.autoscaler.model import make_teacher_dataset
 
 
 def tiny_spec(optimizer="adam", *, steps=8, microbatch_size=None):
@@ -130,3 +132,19 @@ def test_moe_microbatching_preserves_balance_update_semantics():
     assert accumulated_result.final_validation_loss == pytest.approx(
         full_result.final_validation_loss, rel=1e-6, abs=1e-7
     )
+
+
+def test_regression_data_scaling_uses_nested_training_data_and_fixed_validation():
+    spec = tiny_spec("adam")
+    small_dataset = replace(
+        spec.dataset,
+        n_train=32,
+        teacher_width=32,
+        teacher_depth=3,
+    )
+    large_dataset = replace(small_dataset, n_train=64)
+    small = make_teacher_dataset(spec.architecture, small_dataset)
+    large = make_teacher_dataset(spec.architecture, large_dataset)
+    assert torch.equal(small[0], large[0][:32])
+    assert torch.equal(small[2], large[2])
+    assert torch.equal(small[3], large[3])

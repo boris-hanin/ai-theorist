@@ -4,7 +4,7 @@ import { AutoscalerStudio } from "./AutoscalerStudio";
 export const metadata: Metadata = {
   title: "Autoscaler · AI Theorist",
   description:
-    "Compose a residual architecture, tune it, validate transfer, and calibrate a fixed-horizon scaling law.",
+    "Compose a residual architecture, choose data and training budgets, validate transfer, and calibrate a held-out scaling law.",
   other: {
     "codex-preview": "development",
   },

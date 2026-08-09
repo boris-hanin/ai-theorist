@@ -6,6 +6,7 @@ from ai_theorist.autoscaler.training import TrialResult
 from ai_theorist.autoscaler.tuning import (
     CHIZAT_MEAN_FIELD,
     MOE_TABLE1_ADAM,
+    NUGPT_MID_ALIGNMENT,
     STANDARD_RESIDUAL_MLP,
     adaptive_tune,
     fixed_eta_noninferiority,
@@ -148,6 +149,24 @@ def test_normalized_eta_conversions_are_parameterization_specific_and_invertible
     assert moe_rates["moe_up"] == pytest.approx(0.005)
     assert moe_rates["moe_down"] == pytest.approx(0.00125)
     assert moe_rates["readout_weight"] == pytest.approx(0.005)
+
+    nugpt_rates = optimizer_group_learning_rates_from_normalized_eta(
+        NUGPT_MID_ALIGNMENT,
+        "adam",
+        0.003,
+        width=512,
+        depth=16,
+        reference_width=256,
+    )
+    assert nugpt_rates == {
+        "nugpt_input": pytest.approx(0.003 * 2 ** -0.5),
+        "nugpt_hidden": pytest.approx(0.003 * 2 ** -0.75),
+        "nugpt_output": pytest.approx(0.5 * 0.003 * 2 ** -0.75),
+        "nugpt_rescalers": pytest.approx(0.003),
+    }
+    assert transfer_rule_name("adam", NUGPT_MID_ALIGNMENT) == (
+        "nugpt_mid_alignment_group_rates_with_post_step_sphere_projection"
+    )
 
 
 def test_fixed_eta_diagnostics_accept_inverse_sqrt_finite_width_settling():
