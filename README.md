@@ -22,6 +22,11 @@ during the project; it is not retroactively claimed for early rounds.
 - `registry/failure-modes.md`: the canonical F1–F22 registry (F7, F9, and F13
   are intentionally marked lost and are never reused).
 - `PROGRAM.md`: certification policy and current skill status.
+- `src/ai_theorist/autoscaler/`: the first product slice: a strict residual-MLP
+  schema, real SGD and Adam training, one-dimensional LR tuning, transfer
+  checks, fixed-horizon scaling fits, and refusal-aware held-out calibration.
+- `apps/web/`: the drag-and-drop Autoscaler workbench.  Its canvas intentionally
+  compiles only `Embed -> repeated pre-norm MLP residual block -> Unembed`.
 
 ## Current status
 
@@ -54,6 +59,22 @@ python -m pip install -e '.[test]'
 pytest
 python skills/dmft-derivation/scripts/validate.py --quick
 ```
+
+The Autoscaler has a separate end-to-end path:
+
+```bash
+ai-theorist-autoscale sample-spec /tmp/autoscaler.json --optimizer adam --quick
+ai-theorist-autoscale plan /tmp/autoscaler.json
+ai-theorist-autoscale run /tmp/autoscaler.json --output runs/autoscaler/manual --summary
+ai-theorist-autoscale-api
+```
+
+With the API running on port 8787, start `apps/web` with Node 22 and pnpm.  The
+UI compiles a study, launches it asynchronously, monitors trial progress, and
+shows a next-scale forecast only after every calibration gate passes.  See
+`docs/autoscaler-validation.md` for the exact acceptance contract and A100
+campaign configurations, and `docs/autoscaler-validation-report.md` for the
+measured release evidence and retained negative results.
 
 The deep-linear and nonlinear suites are more expensive:
 

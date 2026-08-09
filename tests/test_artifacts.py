@@ -12,6 +12,8 @@ def reject_nonstandard_constant(value):
 def test_all_json_artifacts_are_standard_json():
     failures = []
     for path in ROOT.rglob("*.json"):
+        if "node_modules" in path.parts:
+            continue
         try:
             json.loads(path.read_text(encoding="utf-8"),
                        parse_constant=reject_nonstandard_constant)

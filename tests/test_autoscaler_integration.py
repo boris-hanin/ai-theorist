@@ -1,0 +1,124 @@
+import copy
+import json
+from pathlib import Path
+import threading
+import time
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import pytest
+
+from ai_theorist.autoscaler.api import AutoscalerServer, RequestHandler, StudyStore
+from ai_theorist.autoscaler.schema import StudySpec, compile_plan, default_study_spec
+from ai_theorist.autoscaler.study import run_study
+
+
+def integration_spec():
+    data = copy.deepcopy(default_study_spec("adam", quick=True).to_dict())
+    data["dataset"] = {"n_train": 32, "n_validation": 24, "noise_std": 0.0, "seed": 17}
+    data["horizon"] = {"steps": 4, "batch_size": 8, "microbatch_size": None}
+    data["scales"] = [
+        {"name": "S1", "width": 4, "repeats": 1},
+        {"name": "S2", "width": 6, "repeats": 1},
+        {"name": "S3", "width": 8, "repeats": 2},
+        {"name": "S4", "width": 10, "repeats": 2},
+        {"name": "S5", "width": 12, "repeats": 3},
+    ]
+    data["tuning"] = {
+        "learning_rates": [0.0001, 0.001, 0.01],
+        "max_expansion_rounds": 0,
+        "expansion_factor": 3,
+    }
+    data["validation"] = {
+        "transfer_probe_decades": 0.3,
+        "run_negative_control": False,
+        "bootstrap_samples": 0,
+    }
+    data["seeds"] = [2, 7]
+    return StudySpec.from_dict(data)
+
+
+def test_end_to_end_study_writes_strict_manifest_and_result(tmp_path: Path):
+    spec = integration_spec()
+    output = tmp_path / "study"
+    result = run_study(spec, output_dir=output)
+
+    assert result["status"] == "completed"
+    assert len(result["scale_results"]) == 5
+    assert len(result["holdout_calibration"]) == 1
+    assert len(result["trials"]) == compile_plan(spec)["trial_budget_before_edge_expansion"]
+    assert result["next_scale_forecast"] is None or result["forecastable"]
+    for filename in ("manifest.json", "result.json"):
+        parsed = json.loads((output / filename).read_text(encoding="utf-8"))
+        assert parsed.get("schema_version", parsed.get("spec", {}).get("schema_version")) == 1
+
+
+def test_api_health_compile_and_async_study(tmp_path: Path):
+    try:
+        server = AutoscalerServer(("127.0.0.1", 0), RequestHandler)
+    except PermissionError:
+        pytest.skip("local socket binding is disabled in this sandbox")
+    server.store = StudyStore(tmp_path)
+    server.allowed_origins = set()
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        health_request = Request(f"{base}/api/health", headers={"Origin": "http://localhost:3000"})
+        with urlopen(health_request, timeout=3) as response:
+            assert json.load(response)["status"] == "ok"
+            assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
+        spec = integration_spec().to_dict()
+        compile_request = Request(
+            f"{base}/api/compile",
+            data=json.dumps({"spec": spec}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(compile_request, timeout=3) as response:
+            compiled = json.load(response)
+        assert compiled["plan"]["target_metric"] == "final_validation_loss"
+
+        hostile = Request(
+            f"{base}/api/compile",
+            data=json.dumps({"spec": spec}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Origin": "https://hostile.example"},
+            method="POST",
+        )
+        with pytest.raises(HTTPError) as hostile_error:
+            urlopen(hostile, timeout=3)
+        assert hostile_error.value.code == 403
+
+        study_request = Request(
+            f"{base}/api/studies",
+            data=json.dumps({"spec": spec, "device": "cpu"}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(study_request, timeout=3) as response:
+            job = json.load(response)
+        deadline = time.time() + 10
+        while job["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.05)
+            with urlopen(f"{base}/api/studies/{job['id']}", timeout=3) as response:
+                job = json.load(response)
+        assert job["status"] == "completed", job.get("error")
+        assert job["result"]["status"] == "completed"
+
+        invalid = Request(
+            f"{base}/api/compile",
+            data=b'{"schema_version":1}',
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urlopen(invalid, timeout=3)
+        except HTTPError as exc:
+            assert exc.code == 400
+        else:
+            raise AssertionError("invalid spec should return HTTP 400")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=3)

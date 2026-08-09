@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "name": "a100-sgd-gelu-fixed-horizon-v3-inverse-sqrt-transfer",
+  "architecture": {
+    "block_type": "pre_norm_mlp",
+    "activation": "gelu",
+    "input_dim": 16,
+    "output_dim": 1,
+    "residual_multiplier": 1.0
+  },
+  "optimizer": {
+    "name": "sgd",
+    "momentum": 0.0,
+    "beta1": 0.9,
+    "beta2": 0.999,
+    "epsilon": 1e-8
+  },
+  "dataset": {
+    "n_train": 16384,
+    "n_validation": 4096,
+    "noise_std": 0.03,
+    "seed": 1729
+  },
+  "horizon": {
+    "steps": 600,
+    "batch_size": 256,
+    "microbatch_size": null
+  },
+  "scales": [
+    {"name": "S1", "width": 96, "repeats": 2},
+    {"name": "S2", "width": 144, "repeats": 3},
+    {"name": "S3", "width": 216, "repeats": 4},
+    {"name": "S4", "width": 324, "repeats": 4},
+    {"name": "S5", "width": 486, "repeats": 5},
+    {"name": "S6", "width": 729, "repeats": 6}
+  ],
+  "tuning": {
+    "learning_rates": [0.003, 0.01, 0.03, 0.1, 0.3],
+    "max_expansion_rounds": 2,
+    "expansion_factor": 3.0
+  },
+  "validation": {
+    "transfer_probe_decades": 0.3,
+    "run_negative_control": true,
+    "bootstrap_samples": 400
+  },
+  "seeds": [11, 29, 47, 71],
+  "holdout_count": 1
+}
