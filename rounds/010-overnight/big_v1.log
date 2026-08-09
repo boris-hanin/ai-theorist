@@ -1,0 +1,75 @@
+[01:41:46] E1 eb=1 C=1.000e+03 L=3 D=10 M=8 S=512 imb 0.750->0.750 [0s]
+[01:41:46] E1 eb=1 C=4.000e+03 L=4 D=16 M=16 S=512 imb 0.750->0.750 [0s]
+[01:41:47] E1 eb=1 C=1.600e+04 L=5 D=25 M=32 S=512 imb 0.750->0.750 [0s]
+[01:41:47] E1 eb=1 C=6.400e+04 L=6 D=40 M=67 S=384 imb 0.750->0.719 [0s]
+[01:41:47] E1 eb=1 C=2.560e+05 L=8 D=63 M=127 S=256 imb 0.750->0.703 [0s]
+[01:41:49] E1 eb=1 C=1.024e+06 L=10 D=101 M=253 S=192 imb 0.750->0.682 [1s]
+[01:41:54] E1 eb=1 C=4.096e+06 L=13 D=160 M=492 S=128 imb 0.750->0.613 [5s]
+[01:42:11] E1 eb=1 C=1.638e+07 L=16 D=254 M=1008 S=96 imb 0.750->0.553 [17s]
+[01:42:25] E1 eb=1 C=6.554e+07 L=20 D=403 M=2033 S=48 imb 0.750->0.559 [14s]
+[01:42:48] E1 eb=1 C=2.621e+08 L=25 D=640 M=4095 S=24 imb 0.750->0.570 [23s]
+[01:42:48] E1 eb=1  slope -0.1566  tail -0.1575  (pred -0.1667)
+[01:42:49] E1 eb=0 C=1.000e+03 L=3 D=10 M=8 S=512 imb 0.750->0.750 [0s]
+[01:42:49] E1 eb=0 C=4.000e+03 L=4 D=16 M=16 S=512 imb 0.750->0.750 [0s]
+[01:42:49] E1 eb=0 C=1.600e+04 L=5 D=25 M=32 S=512 imb 0.750->0.750 [0s]
+[01:42:49] E1 eb=0 C=6.400e+04 L=6 D=40 M=67 S=384 imb 0.750->0.750 [0s]
+[01:42:49] E1 eb=0 C=2.560e+05 L=8 D=63 M=127 S=256 imb 0.750->0.750 [0s]
+[01:42:51] E1 eb=0 C=1.024e+06 L=10 D=101 M=253 S=192 imb 0.750->0.750 [1s]
+[01:42:56] E1 eb=0 C=4.096e+06 L=13 D=160 M=492 S=128 imb 0.750->0.750 [5s]
+[01:43:13] E1 eb=0 C=1.638e+07 L=16 D=254 M=1008 S=96 imb 0.750->0.750 [17s]
+[01:43:27] E1 eb=0 C=6.554e+07 L=20 D=403 M=2033 S=48 imb 0.750->0.750 [14s]
+[01:43:50] E1 eb=0 C=2.621e+08 L=25 D=640 M=4095 S=24 imb 0.750->0.750 [23s]
+[01:43:50] E1 eb=0  slope -0.1563  tail -0.1573  (pred -0.1667)
+[01:43:50] E3 init D=32     spread 8.8846e-02
+[01:43:50] E3 init D=64     spread 6.1931e-02
+[01:43:50] E3 init D=128    spread 4.7618e-02
+[01:43:50] E3 init D=256    spread 3.0689e-02
+[01:43:50] E3 init D=512    spread 2.3347e-02
+[01:43:51] E3 init D=1024   spread 1.4750e-02
+[01:43:53] E3 init D=2048   spread 1.0972e-02
+[01:43:56] E3 init D=4096   spread 8.0260e-03
+[01:44:02] E3 init D=8192   spread 5.6389e-03
+[01:44:13] E3 init D=16384  spread 3.7531e-03
+[01:44:13] E3 init slope -0.5045 tail -0.4909 (pred -0.5)
+[01:44:13] E3 trained D=32     spread 8.8846e-02
+[01:44:13] E3 trained D=64     spread 6.1931e-02
+[01:44:14] E3 trained D=128    spread 4.7618e-02
+[01:44:14] E3 trained D=256    spread 3.0689e-02
+[01:44:14] E3 trained D=512    spread 2.3347e-02
+[01:44:15] E3 trained D=1024   spread 1.4750e-02
+[01:44:16] E3 trained D=2048   spread 1.0972e-02
+[01:44:19] E3 trained D=4096   spread 8.0260e-03
+[01:44:25] E3 trained D=8192   spread 5.6389e-03
+[01:44:37] E3 trained D=16384  spread 3.7531e-03
+[01:44:37] E3 trained slope -0.5045 tail -0.4909 (pred -0.5)
+[01:44:38] E2 depth L                4      lr* +0.548 
+[01:44:40] E2 depth L                8      lr* +0.549 
+[01:44:47] E2 depth L                16     lr* +0.518 
+[01:45:07] E2 depth L                32     lr* +0.545 
+[01:46:22] E2 depth L                64     lr* +0.558 
+[01:46:22] E2 depth L                drift 0.040  tail 0.040
+[01:46:23] E2 active a               8      lr* +0.558 
+[01:46:25] E2 active a               16     lr* +0.549 
+[01:46:29] E2 active a               32     lr* +0.552 
+[01:46:34] E2 active a               64     lr* +0.555 
+[01:46:46] E2 active a               128    lr* +0.551 
+[01:46:46] E2 active a               drift 0.009  tail 0.004
+[01:46:48] E2 expert width M         32     lr* +0.564 
+[01:46:50] E2 expert width M         64     lr* +0.563 
+[01:46:51] E2 expert width M         128    lr* +0.549 
+[01:46:55] E2 expert width M         256    lr* +0.553 
+[01:47:00] E2 expert width M         512    lr* +0.530 
+[01:47:00] E2 expert width M         drift 0.034  tail 0.023
+[01:47:02] E2 embedding D            16     lr* +0.540 
+[01:47:04] E2 embedding D            32     lr* +0.553 
+[01:47:06] E2 embedding D            64     lr* +0.549 
+[01:47:09] E2 embedding D            128    lr* +0.556 
+[01:47:14] E2 embedding D            256    lr* +0.548 
+[01:47:14] E2 embedding D            drift 0.016  tail 0.008
+[01:47:16] E2 expert count E (a=4)   16     lr* +0.549 
+[01:47:20] E2 expert count E (a=4)   32     lr* +0.574 
+[01:47:25] E2 expert count E (a=4)   64     lr* +0.587 
+[01:47:37] E2 expert count E (a=4)   128    lr* +0.616 
+[01:48:03] E2 expert count E (a=4)   256    lr* +0.607 
+[01:48:03] E2 expert count E (a=4)   drift 0.067  tail 0.029
+[01:48:03] ALL DONE
