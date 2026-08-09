@@ -135,7 +135,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/")
         if path == "/api/health":
-            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 1})
+            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 2})
             return
         if path == "/api/default-spec":
             self._send(200, {"spec": default_study_spec(quick=True).to_dict()})

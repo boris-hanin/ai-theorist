@@ -17,16 +17,19 @@ during the project; it is not retroactively claimed for early rounds.
 - `skills/dmft-{resnet-depth,attention,moe,graph}/`: architecture-specific
   derivations, simulators, sweeps, and stated coverage limits.
 - `derivations/`: long-form derivations and corrections.
-- `rounds/`: eleven validation rounds with results and, where retained, raw
-  data and preregistrations.
-- `registry/failure-modes.md`: the canonical F1–F22 registry (F7, F9, and F13
+- `rounds/`: fifteen numbered validation rounds, including explicitly pending
+  or exploratory work, with results and, where retained, raw data and
+  preregistrations.
+- `registry/failure-modes.md`: the canonical failure registry (F7, F9, and F13
   are intentionally marked lost and are never reused).
 - `PROGRAM.md`: certification policy and current skill status.
-- `src/ai_theorist/autoscaler/`: the first product slice: a strict residual-MLP
-  schema, real SGD and Adam training, one-dimensional LR tuning, transfer
-  checks, fixed-horizon scaling fits, and refusal-aware held-out calibration.
+- `src/ai_theorist/autoscaler/`: the first product slice: strict residual-MLP
+  and sparse-MoE schemas, real SGD and Adam training, one-dimensional
+  normalized-eta tuning, transfer checks, fixed-horizon scaling fits, and
+  refusal-aware held-out calibration.
 - `apps/web/`: the drag-and-drop Autoscaler workbench.  Its canvas intentionally
-  compiles only `Embed -> repeated pre-norm MLP residual block -> Unembed`.
+  compiles only `Embed -> repeated pre-norm {MLP or top-k MoE} residual block
+  -> Unembed`.
 
 ## Current status
 
@@ -38,6 +41,12 @@ during the project; it is not retroactively claimed for early rounds.
   weight was falsified; the tested causal sum uses strict past.
 - Attention, residual, and MoE scaling claims have executable measurements,
   with each round's failed or under-powered bars retained in its `results.md`.
+- Round 014 validates simultaneous Chizat transfer in `L`, `M`, and `D`; the
+  theory-motivated `LM/D = constant` path is the flattest tested joint path.
+- Round 015 validates the sparse-MoE product path on two A100s, including
+  groupwise Adam transfer, routing-load guards, a wrong-global-rate control,
+  and held-out validation-loss calibration.  This is product evidence, not a
+  full MoE DMFT certification.
 - The Round 010 `C^-1/6` rate is supported by a large A100 artifact.  Its v2
   source had not been committed;
   `skills/dmft-moe/scripts/overnight_suite_v2.py` reconstructs the exact
@@ -64,6 +73,7 @@ The Autoscaler has a separate end-to-end path:
 
 ```bash
 ai-theorist-autoscale sample-spec /tmp/autoscaler.json --optimizer adam --quick
+ai-theorist-autoscale sample-spec /tmp/moe.json --optimizer adam --architecture pre_norm_moe --quick
 ai-theorist-autoscale plan /tmp/autoscaler.json
 ai-theorist-autoscale run /tmp/autoscaler.json --output runs/autoscaler/manual --summary
 ai-theorist-autoscale-api
@@ -74,7 +84,8 @@ UI compiles a study, launches it asynchronously, monitors trial progress, and
 shows a next-scale forecast only after every calibration gate passes.  See
 `docs/autoscaler-validation.md` for the exact acceptance contract and A100
 campaign configurations, and `docs/autoscaler-validation-report.md` for the
-measured release evidence and retained negative results.
+measured evidence, retained negative results, and current A100 revalidation
+status after the fixed-eta transfer correction.
 
 The deep-linear and nonlinear suites are more expensive:
 

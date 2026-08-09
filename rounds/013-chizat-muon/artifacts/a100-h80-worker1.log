@@ -1,0 +1,4 @@
+controller_started=2026-08-09T18:49:49Z
+muon_started=2026-08-09T18:55:50Z
+{"controls": {"wrong_W_D": true, "wrong_constant_unembed": true, "wrong_sgd_LMD": true}, "output": "/home/ubuntu/chizat-muon-transfer-20260809/runs/a100-h80.json", "selected_eta": 0.1, "transfer_accepted": true}
+muon_completed=2026-08-09T18:58:26Z

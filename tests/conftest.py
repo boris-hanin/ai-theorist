@@ -8,5 +8,6 @@ for relative in (
     "skills/dmft-derivation/scripts",
     "skills/dmft-graph/scripts",
     "skills/dmft-moe/scripts",
+    "skills/dmft-resnet-depth/scripts",
 ):
     sys.path.insert(0, str(ROOT / relative))

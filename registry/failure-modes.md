@@ -243,6 +243,67 @@ field that makes an entry actionable, so supply it for anything new.
   and cannot tell a moved optimum from a swapped basin. Note this is the opposite
   hazard from F22 — F22 catches a drift that is real but not settling, F24 catches
   a drift that is not real at all.
+- **F25 — the stability edge is mislabeled as LR transfer.** A sweep tunes the
+  LR independently at every width and calls drift of the finite-horizon argmin
+  a transfer failure.  In a correctly normalized mean-field parameterization,
+  a fixed `eta` gives an `M`-independent limiting update while empirical kernels
+  retain `M^-1/2` fluctuations.  Those fluctuations move the largest stable
+  Euler step, so wider models can safely use a more aggressive rate even when
+  the original normalized rate transfers perfectly.  Instance: the faithful
+  Chizat `L=8`, `alpha=1` A100 sweep had only `0.0325` decades of final-loss
+  spread across `M=64..512` at fixed `eta=79.4328`, while the separately chosen
+  near-divergence optimum moved strongly with `M`.  Detection signature: losses
+  and trajectories collapse at conservative fixed `eta`, but the argmin rides
+  the last stable grid points.  Fix: make fixed-`eta` trajectory convergence the
+  transfer test and report `eta_critical(M)`/the aggressive local optimum in a
+  separate `edge_of_stability` block that cannot alter the transfer verdict.
+  Guard: every LR report must name both the normalized coordinate and the raw
+  optimizer LR; no width-wise fitted power may enter a parameterization without
+  an independent function-space derivation.
+- **F26 — frozen boundary maps hide an end-to-end transfer failure.** A
+  residual-block harness embeds the fixed task and reads it out through random
+  maps but trains only the repeated blocks.  The resulting experiment can
+  validate the block's coordinate while saying nothing about the architecture
+  actually exposed by the product, whose embed and unembed have different
+  multiplicities and therefore different width scaling.  Worse, routing every
+  2D tensor through a matrix optimizer silently sends these boundary matrices
+  through Muon even though the optimizer contract assigns them to auxiliary
+  Adam.  Detection signature: the trial manifest has no boundary optimizer
+  groups or their update RMS, yet reports end-to-end transfer.  Fix: initialize
+  and train a fan-in embed and mean-field unembed explicitly, derive their
+  rates from their own function-space kernels, and route by semantic role.
+  Guard: assert every trainable parameter appears in exactly one named group;
+  record boundary initialization, raw LR, and first-step update RMS; include a
+  frozen or deliberately mis-scaled boundary control.
+- **F27 — a negative control settles to the wrong loss and escapes.** A transfer
+  battery rejects a deliberately wrong rule only when adjacent finite-size
+  gaps keep growing or fractional progress changes with scale.  A wrong rule
+  can instead converge smoothly to a much worse limiting trajectory, so both
+  shape tests pass even though the control clearly bites.  Instance: the
+  constant-unembed Chizat-Muon control at 160 steps passed settling/progress
+  while its largest-shape mean loss was about `9.5x` the primary loss.
+  Detection signature: a control is much worse in paired largest-shape loss
+  but is labeled unrejected.  Fix: add a common-seed paired final-loss channel
+  and reject when the control-minus-primary increase exceeds
+  `max(2 SEM, 1% of primary loss)`.  Guard: every negative control reports both
+  asymptotic shape behavior and paired performance against the proposed rule;
+  neither channel substitutes for the other.
+- **F28 — a good MoE loss hides an unhealthy router.** Validation loss and even
+  a clean scaling-law fit can pass while one expert receives nearly all tokens
+  in an individual run.  The auxiliary-loss-free balance controller also has a
+  two-sided stability window: too small a rate permits collapse, while too
+  large a rate chases minibatch noise and oscillates.  Instance: the Autoscaler
+  MoE campaign retained apparently useful loss curves at controller rates
+  0.01, 0.03, 0.3, and 1.0, but each failed routing; 0.1 was the stable tested
+  value.
+  Detection signature: final loss improves with scale while the per-run
+  worst-expert load deviation approaches the full inactive mass or grows with
+  the controller rate.  Fix: tune the controller on routing health separately
+  from normalized optimizer eta and make routing an independent forecast gate.
+  Guard: report both the mean across seeds of each run's worst-expert deviation
+  and the absolute worst run; require the former below the declared tolerance
+  and the latter below a separate hard ceiling.  Neither a loss pass nor one
+  noisy worst-seed statistic is a substitute for the two-part gate.
 - **F17 — response-kernel write-order race in causal co-integration.**
   The response row Ā(t, s<t) is computable at time t and READ by the
   same-step field assembly; writing it after the read leaves the response

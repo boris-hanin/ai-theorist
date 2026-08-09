@@ -22,7 +22,7 @@ class TrialResult:
     width: int
     repeats: int
     seed: int
-    learning_rate: float
+    normalized_learning_rate: float
     optimizer: str
     parameter_count: int
     steps_completed: int
@@ -32,6 +32,14 @@ class TrialResult:
     device: str
     duration_seconds: float = 0.0
     peak_memory_bytes: int = 0
+    raw_learning_rate: Optional[float] = None
+    raw_learning_rates: Optional[Dict[str, float]] = None
+    expert_width: Optional[int] = None
+    num_experts: Optional[int] = None
+    active_experts: Optional[int] = None
+    routing_loads: Optional[List[List[float]]] = None
+    max_routing_load_imbalance: Optional[float] = None
+    optimizer_parameterization: str = "declared"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -41,6 +49,18 @@ def make_optimizer(model: torch.nn.Module, spec: StudySpec, learning_rate: float
     if learning_rate <= 0.0 or not math.isfinite(learning_rate):
         raise ValueError("learning_rate must be finite and positive")
     config = spec.optimizer
+    if spec.architecture.block_type == "pre_norm_moe":
+        if config.name != "adam":
+            raise ValueError("pre_norm_moe currently supports only Adam")
+        if not hasattr(model, "optimizer_parameter_groups"):
+            raise TypeError("MoE model does not expose optimizer parameter groups")
+        groups = model.optimizer_parameter_groups(learning_rate)
+        return torch.optim.Adam(
+            groups,
+            lr=learning_rate,
+            betas=(config.beta1, config.beta2),
+            eps=config.epsilon,
+        )
     if config.name == "sgd":
         return torch.optim.SGD(model.parameters(), lr=learning_rate, momentum=config.momentum)
     if config.name == "adam":
@@ -69,16 +89,23 @@ def _atomic_torch_save(payload: Dict[str, Any], path: Path) -> None:
 def train_trial(
     spec: StudySpec,
     scale: ScaleLevel,
-    learning_rate: float,
+    normalized_learning_rate: float,
     seed: int,
     *,
+    raw_learning_rate: Optional[float] = None,
+    force_global_learning_rate: Optional[float] = None,
     device: str = "cpu",
     checkpoint_path: Optional[Path] = None,
     checkpoint_every: int = 0,
     stop_after_steps: Optional[int] = None,
     resume: bool = True,
 ) -> TrialResult:
-    """Train to an exact step horizon, with bitwise-continuable local checkpoints."""
+    """Train at a normalized eta and record the parameterization's raw LR.
+
+    Direct callers may omit ``raw_learning_rate``; in that compatibility mode
+    the supplied normalized rate is used for both coordinates.  Autoscaler
+    studies always pass both explicitly.
+    """
     if device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
     if device.startswith("cuda"):
@@ -90,7 +117,33 @@ def train_trial(
     if device.startswith("cuda"):
         torch.cuda.manual_seed_all(seed)
     model = ResidualMLP(spec.architecture, scale).to(device)
-    optimizer = make_optimizer(model, spec, learning_rate)
+    optimizer_learning_rate = (
+        normalized_learning_rate if raw_learning_rate is None else raw_learning_rate
+    )
+    if force_global_learning_rate is None:
+        optimizer = make_optimizer(model, spec, optimizer_learning_rate)
+        optimizer_parameterization = "declared"
+    else:
+        if force_global_learning_rate <= 0.0 or not math.isfinite(force_global_learning_rate):
+            raise ValueError("force_global_learning_rate must be finite and positive")
+        optimizer_learning_rate = force_global_learning_rate
+        config = spec.optimizer
+        if config.name == "adam":
+            optimizer = torch.optim.Adam(
+                model.parameters(),
+                lr=optimizer_learning_rate,
+                betas=(config.beta1, config.beta2),
+                eps=config.epsilon,
+            )
+        else:
+            optimizer = torch.optim.SGD(
+                model.parameters(), lr=optimizer_learning_rate, momentum=config.momentum
+            )
+        optimizer_parameterization = "single_global_control"
+    raw_learning_rates = {
+        str(group.get("name", f"group_{index}")): float(group["lr"])
+        for index, group in enumerate(optimizer.param_groups)
+    }
     x_train, y_train, x_validation, y_validation = make_teacher_dataset(
         spec.architecture, spec.dataset, device=device
     )
@@ -102,7 +155,10 @@ def train_trial(
         expected = {
             "study_fingerprint": spec.fingerprint,
             "scale": scale.name,
-            "learning_rate": learning_rate,
+            "normalized_learning_rate": normalized_learning_rate,
+            "raw_learning_rate": optimizer_learning_rate,
+            "raw_learning_rates": raw_learning_rates,
+            "optimizer_parameterization": optimizer_parameterization,
             "seed": seed,
         }
         actual = {key: checkpoint.get(key) for key in expected}
@@ -131,10 +187,12 @@ def train_trial(
         microbatch_size = spec.horizon.microbatch_size or spec.horizon.batch_size
         loss_value = torch.zeros((), device=device)
         finite_step = True
+        routing_load_sums = None
         for start in range(0, spec.horizon.batch_size, microbatch_size):
             micro_indices = indices[start : start + microbatch_size]
+            predictions = model(x_train[micro_indices])
             micro_loss_sum = F.mse_loss(
-                model(x_train[micro_indices]), y_train[micro_indices], reduction="sum"
+                predictions, y_train[micro_indices], reduction="sum"
             )
             micro_loss = micro_loss_sum / (spec.horizon.batch_size * spec.architecture.output_dim)
             if not torch.isfinite(micro_loss):
@@ -142,11 +200,20 @@ def train_trial(
                 break
             micro_loss.backward()
             loss_value = loss_value + micro_loss.detach()
+            current_loads = model.routing_loads()
+            if current_loads is not None:
+                weight = len(micro_indices) / spec.horizon.batch_size
+                if routing_load_sums is None:
+                    routing_load_sums = [load * weight for load in current_loads]
+                else:
+                    for index, load in enumerate(current_loads):
+                        routing_load_sums[index].add_(load, alpha=weight)
         if not finite_step:
             diverged = True
             break
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
         optimizer.step()
+        model.update_router_balance(routing_load_sums)
         step += 1
         if step == 1 or step % trace_interval == 0 or step == target_steps:
             trace.append({"step": float(step), "training_loss": float(loss_value.cpu())})
@@ -157,7 +224,10 @@ def train_trial(
                 {
                     "study_fingerprint": spec.fingerprint,
                     "scale": scale.name,
-                    "learning_rate": learning_rate,
+                    "normalized_learning_rate": normalized_learning_rate,
+                    "raw_learning_rate": optimizer_learning_rate,
+                    "raw_learning_rates": raw_learning_rates,
+                    "optimizer_parameterization": optimizer_parameterization,
                     "seed": seed,
                     "step": step,
                     "trace": trace,
@@ -171,6 +241,7 @@ def train_trial(
     model.eval()
     with torch.no_grad():
         validation_loss_tensor: Tensor = F.mse_loss(model(x_validation), y_validation)
+        validation_routing_loads = model.routing_loads()
     validation_loss = float(validation_loss_tensor.detach().cpu())
     diverged = diverged or not math.isfinite(validation_loss) or validation_loss > 1e8
     if diverged:
@@ -181,12 +252,24 @@ def train_trial(
     else:
         peak_memory_bytes = 0
     duration_seconds = time.monotonic() - started_at
+    serialized_loads = (
+        [[float(value) for value in load.cpu()] for load in validation_routing_loads]
+        if validation_routing_loads is not None
+        else None
+    )
+    if serialized_loads is None:
+        max_load_imbalance = None
+    else:
+        target_load = spec.architecture.active_experts / spec.architecture.num_experts
+        max_load_imbalance = max(
+            abs(value - target_load) for load in serialized_loads for value in load
+        )
     return TrialResult(
         scale=scale.name,
         width=scale.width,
         repeats=scale.repeats,
         seed=seed,
-        learning_rate=learning_rate,
+        normalized_learning_rate=normalized_learning_rate,
         optimizer=spec.optimizer.name,
         parameter_count=parameter_count(spec, scale),
         steps_completed=step,
@@ -196,6 +279,22 @@ def train_trial(
         device=device,
         duration_seconds=duration_seconds,
         peak_memory_bytes=peak_memory_bytes,
+        raw_learning_rate=optimizer_learning_rate,
+        raw_learning_rates=raw_learning_rates,
+        expert_width=scale.expert_width,
+        num_experts=(
+            spec.architecture.num_experts
+            if spec.architecture.block_type == "pre_norm_moe"
+            else None
+        ),
+        active_experts=(
+            spec.architecture.active_experts
+            if spec.architecture.block_type == "pre_norm_moe"
+            else None
+        ),
+        routing_loads=serialized_loads,
+        max_routing_load_imbalance=max_load_imbalance,
+        optimizer_parameterization=optimizer_parameterization,
     )
 
 

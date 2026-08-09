@@ -149,6 +149,12 @@ From `references/validation-checks.md`:
 6. **Report the Monte-Carlo floor next to every theory-vs-sim gap (F8).**
    Certify it by sample-halving. A gap smaller than its own floor is not
    evidence of agreement OR disagreement.
+7. **For hyperparameter transfer, hold normalized `eta` fixed (F25).** Compare
+   common-seed trajectories across the scale dial and test whether absolute
+   differences settle with the derived finite-size rate. Sweep the local
+   finite-horizon optimum/largest stable rate separately under an
+   `edge_of_stability` label; it is never the transfer verdict. Always record
+   both normalized `eta` and the parameterization-derived raw optimizer LR.
 
 `scripts/validate.py` runs checks 1–6 for the two-layer case and prints the
 numbers; extend it rather than re-deriving the battery by hand.
@@ -185,6 +191,11 @@ Full entries in `registry/failure-modes.md` (repo-level, canonical).
   has operator norm ~ dt·λ·T); response-noise rectifies into a positive kernel
   bias. Raise damping (extra damping on responses), anneal γ₀ from small
   values, or increase S.
+- **F25 — never use width-wise `argmin_eta` drift as the primary transfer
+  verdict.** It can track a moving finite-width stability edge even when fixed
+  normalized-`eta` dynamics converge correctly. Derive the raw LR map in
+  function space, test fixed-`eta` trajectories, and report the stability edge
+  in a separate non-gating record.
 
 ## Extensions recorded (see references for the deltas)
 

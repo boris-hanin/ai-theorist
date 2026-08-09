@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "a100-adam-gelu-fixed-horizon-v1",
   "architecture": {
     "block_type": "pre_norm_mlp",
@@ -35,7 +35,7 @@
     {"name": "S6", "width": 729, "repeats": 12}
   ],
   "tuning": {
-    "learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01],
+    "normalized_learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01],
     "max_expansion_rounds": 2,
     "expansion_factor": 3.0
   },
