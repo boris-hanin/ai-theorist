@@ -164,6 +164,72 @@ statement of why MoE works, and it locates the benefit of 2601.20205's Finding
 rate — the rate cannot see `E` at all, which N1/N3/N4 now confirm three separate
 ways (`+0.030`, and 0.04 decades of LR drift).
 
+## The `C^{-1/6}` rate — MEASURED
+
+Reference-free by construction: along the optimal-shape path
+(`D ~ C^{1/3}`, `L ~ C^{1/6}`, `aM = C/(LD)`) **all three error terms are
+`Theta(C^{-1/6})` regardless of their coefficients**, so the distance between the
+`C` and `4C` ensembles carries the exponent directly:
+
+    E_diff(C)^2 = |mu_C - mu_4C|^2 + var_C + var_4C   ~   C^{-1/3}
+
+No limit reference is needed — and none is possible: `C^{-1/6}` is so slow that a
+reference 10x better than `C = 1e7` would require `C_ref ~ 1e13`.
+
+A100, `C` = 1e3 → 6.6e7 (4.8 decades), **192 seeds** per point:
+
+| C → 4C | E_diff |
+|---|---|
+| 1.0e3 → 4.0e3 | 2.771e-1 |
+| 4.0e3 → 1.6e4 | 2.309e-1 |
+| 1.6e4 → 6.4e4 | 1.845e-1 |
+| 6.4e4 → 2.6e5 | 1.489e-1 |
+| 2.6e5 → 1.0e6 | 1.197e-1 |
+| 1.0e6 → 4.1e6 | 9.443e-2 |
+| 4.1e6 → 1.6e7 | 7.658e-2 |
+| 1.6e7 → 6.6e7 | 6.137e-2 |
+
+    slope (all)   -0.1571        slope (last 4)  -0.1597        predicted -0.1667
+
+Local slopes after the first point are `-0.16 +/- 0.01`. At `S = 24` the fit gave
+`-0.1494` / `-0.1227`; raising to `S = 192` moved **both** toward the prediction
+and the tail from `-0.123` to `-0.160`, i.e. the estimate settles as precision
+increases (the F22 criterion, applied to itself).
+
+Data: `rate-C-one-sixth.json`; code `skills/dmft-moe/scripts/rate_gpu.py`.
+
+## FIDELITY — what architecture this actually is
+
+**Not the transformer of 2601.20205 §3.1, and not Chizat's model unmodified.**
+It is a faithful merge of the two *scaling structures* on the **reduced MoE-only
+model of 2601.20205 §4**. Deviations, in full:
+
+*From Chizat 2509.10167 §2.1:*
+- **added an embedding and a scalar readout** (his model is `R^D -> R^D` with
+  `loss_i(h^L)`); needed because the rate test requires a `D`-comparable observable
+- **per-group learning rates** instead of his single global `L M eta / alpha^2` —
+  forced by convention: he bounds `||h|| = Theta(1)`, this program uses
+  per-coordinate `Theta(1)` (`||h|| = sqrt D`), under which one global LR is
+  provably wrong in `D` (round 009 N4)
+- `alpha` fixed at 1
+
+*From 2601.20205:*
+- **no MHSA and no LayerNorm** — this is their §4 reduced model
+- **plain GD**, not Adam / SignGD
+- linear readout `<w, h^L>`, not `W_unembd phi(h^L)`
+- **the expert biases are FROZEN at their random init**, not updated by the
+  auxiliary-loss-free rule `b_i <- b_i - eta_bias (Load_i - kappa)`. **There is no
+  load balancing in these dynamics.** This is the deviation most likely to matter
+  for anything routing-dependent, and it is untested here.
+- the parameterisation is written in Chizat's convention (`1/(LM)` branch,
+  `Theta(1)` weights) rather than theirs (`1/L` branch,
+  `sigma_down = sqrt(D)/M`); algebraically identical, shown in `09` §2
+
+So what is validated is the **scaling structure of the merged limit** —
+`W_eff = L a M`, `E` absent from the rate, and the `C^{-1/6}` envelope — on the
+reduced architecture. It is **not** a validation on a transformer with attention,
+LayerNorm, Adam and live load balancing.
+
 ## Audit of every transfer plot in the program
 
 Prompted by the `D` failure, all previously published transfer figures were
