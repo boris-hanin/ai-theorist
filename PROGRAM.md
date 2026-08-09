@@ -25,9 +25,9 @@ in this repo rests on the program record alone; those artifacts are gone.
 |---|---|---|
 | dmft-derivation | **PARTIAL** — L=1 certified; deep-linear and general-depth nonlinear P=1 response solvers implemented (quick battery L=1–3); P>1 nonlinear coupling not certified | `skills/dmft-derivation/`, `rounds/001–003` |
 | dmft-master | RECONSTRUCTED | `skills/dmft-master/` |
-| dmft-resnet-depth | RECONSTRUCTED | `skills/dmft-resnet-depth/` |
+| dmft-resnet-depth | RECONSTRUCTED — rounds 012 and 014 validate retrospective Chizat width and joint `L,M,D` transfer subclaims; the `LM/D`-constant path is preferred, but there is no prereg/exact-reduction certification | `skills/dmft-resnet-depth/`, `rounds/012`, `rounds/014` |
 | dmft-attention | RECONSTRUCTED — round 005 measured four transfer claims, but did not complete its own certification bar | `skills/dmft-attention/`, `rounds/005` |
-| dmft-moe | **PARTIAL** — rewritten from round 006; sharp scaling subclaims pass, collapse/control bars are mixed; full DMFT absent | `skills/dmft-moe/`, `rounds/006–010` |
+| dmft-moe | **PARTIAL** — rewritten from round 006; sharp scaling subclaims pass, collapse/control bars are mixed, and round 015 validates the sparse-MoE product parameterization; full DMFT remains absent | `skills/dmft-moe/`, `rounds/006–010`, `rounds/015` |
 | dmft-graph | **FAILED VALIDATION** — round 011 failed its preregistered rule (P3, P4/P4b, P7, and controls P3c2/P3c3); static/scaling subclaims remain useful, but neither the full parameterisation nor a dynamics solver is certified | `skills/dmft-graph/`, `rounds/011` |
 
 The four companion skills were originally delivered as downloadable archives

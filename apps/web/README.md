@@ -1,7 +1,10 @@
 # AI Theorist Autoscaler web
 
-A vinext product shell for composing the MVP residual architecture and launching
+A vinext product shell for composing the MVP residual architectures and launching
 fixed-horizon tuning, transfer, and scaling-law studies through the local Python API.
+The typed canvas includes the standard pre-norm MLP, Chizat particles, and the
+sparse MoE.  Embed and unembed are trained; Muon is exposed only for the
+validated Chizat semantic-routing contract.
 
 Start the scientific service from the repository root with
 `PYTHONPATH=src python -m ai_theorist.autoscaler.api`, then run this app. The UI

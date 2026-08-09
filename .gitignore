@@ -21,6 +21,8 @@ scratch/
 
 # Autoscaler runtime output
 runs/autoscaler/
+runs/chizat-lr-transfer-final/
+runs/chizat-lmd/
 apps/web/node_modules/
 apps/web/.next/
 apps/web/dist/

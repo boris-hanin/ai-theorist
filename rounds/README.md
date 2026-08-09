@@ -61,6 +61,9 @@ downloadable archive has produced nothing.
 | `009-moe-mean-ode` | novel residual-MoE mean-ODE scaling | derivation/prereg committed before measurement | headline rate/shape evidence |
 | `010-overnight` | large A100 rate/transfer follow-up | no formal prereg retained | v2 data retained; v2 source reconstructed from log |
 | `011-graph-transformer` | graph-transformer derivation and transfer | formal prereg committed before measurement | **FAILED overall**; static/scaling subclaims retained, signGD transfer unresolved after follow-ups |
+| `012-chizat-width-transfer` | non-MoE Chizat block-only fixed-eta width transfer | none; retrospective user-directed follow-up | block eta passes through 1280 steps/M=2048; embed/unembed were not trained |
+| `013-chizat-muon` | end-to-end Chizat Muon transfer with trained embed/unembed | prereg drafted/amended before A100 execution but not committed; exploratory only | **exploratory pass** on CPU joint/pure-axis screens, 160-step follow-up, and two identical A100 replicas; not certified |
+| `016-chizat-optimizer-dataset` | Chizat SGD/Adam/Muon across three versioned tasks | **draft only; must be committed before execution** | pending; nine-cell manifest prepared, no A100 result |
 
 The older pre-directory program (including the hyperbolic work) still has lost
 artifacts. `skills/dmft-master/references/instances.md` is a reconstructed

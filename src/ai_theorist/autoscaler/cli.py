@@ -6,10 +6,17 @@ from pathlib import Path
 import sys
 
 from .api import serve
+from .matrix import compile_validation_matrix, run_validation_matrix
 from .schema import StudySpec, compile_plan, default_study_spec
 from .study import atomic_write_json, run_study
 from .training import train_trial
-from .tuning import summarize_trials
+from .tuning import (
+    MOE_TABLE1_ADAM,
+    STANDARD_RESIDUAL_MLP,
+    parameterization_for_block_type,
+    raw_learning_rate_from_normalized_eta,
+    summarize_trials,
+)
 
 
 def _read_spec(path: Path) -> StudySpec:
@@ -29,7 +36,12 @@ def main() -> None:
 
     sample = subparsers.add_parser("sample-spec", help="write a complete example study")
     sample.add_argument("path", type=Path)
-    sample.add_argument("--optimizer", choices=("sgd", "adam"), default="adam")
+    sample.add_argument("--optimizer", choices=("sgd", "adam", "muon"), default="adam")
+    sample.add_argument(
+        "--architecture",
+        choices=("pre_norm_mlp", "pre_norm_moe", "chizat_mlp"),
+        default="pre_norm_mlp",
+    )
     sample.add_argument("--quick", action="store_true")
 
     plan = subparsers.add_parser("plan", help="validate and compile a study without training")
@@ -42,9 +54,25 @@ def main() -> None:
     run.add_argument("--summary", action="store_true", help="print a compact result instead of every trial")
     run.add_argument("--progress-jsonl", action="store_true", help="stream machine-readable progress events")
 
-    screen = subparsers.add_parser("screen", help="measure one fixed LR across the full scale ladder")
+    matrix_plan = subparsers.add_parser(
+        "matrix-plan", help="validate and expand an optimizer-by-dataset matrix"
+    )
+    matrix_plan.add_argument("manifest", type=Path)
+
+    matrix_run = subparsers.add_parser(
+        "matrix-run", help="execute a validation matrix sequentially"
+    )
+    matrix_run.add_argument("manifest", type=Path)
+    matrix_run.add_argument("--device", default="cpu")
+    matrix_run.add_argument(
+        "--output", type=Path, default=Path("runs/autoscaler/validation-matrix")
+    )
+
+    screen = subparsers.add_parser(
+        "screen", help="measure one fixed normalized eta across the full scale ladder"
+    )
     screen.add_argument("spec", type=Path)
-    screen.add_argument("--learning-rate", type=float, required=True)
+    screen.add_argument("--normalized-eta", type=float, required=True)
     screen.add_argument("--device", default="cpu")
     screen.add_argument("--steps", type=int)
     screen.add_argument("--seeds", type=int, nargs="+")
@@ -57,7 +85,14 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.command == "sample-spec":
-        atomic_write_json(args.path, default_study_spec(args.optimizer, args.quick).to_dict())
+        atomic_write_json(
+            args.path,
+            default_study_spec(
+                args.optimizer,
+                args.quick,
+                block_type=args.architecture,
+            ).to_dict(),
+        )
     elif args.command == "plan":
         _print(compile_plan(_read_spec(args.spec)))
     elif args.command == "run":
@@ -93,6 +128,13 @@ def main() -> None:
             )
         else:
             _print(result)
+    elif args.command == "matrix-plan":
+        with args.manifest.open("r", encoding="utf-8") as handle:
+            _print(compile_validation_matrix(json.load(handle)))
+    elif args.command == "matrix-run":
+        with args.manifest.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        _print(run_validation_matrix(payload, output_dir=args.output, device=args.device))
     elif args.command == "screen":
         with args.spec.open("r", encoding="utf-8") as handle:
             screen_payload = json.load(handle)
@@ -101,8 +143,18 @@ def main() -> None:
         if args.seeds is not None:
             screen_payload["seeds"] = args.seeds
         screen_spec = StudySpec.from_dict(screen_payload)
+        parameterization = parameterization_for_block_type(
+            screen_spec.architecture.block_type
+        )
         rows = []
         for scale in screen_spec.scales:
+            raw_rate = raw_learning_rate_from_normalized_eta(
+                parameterization,
+                screen_spec.optimizer.name,
+                args.normalized_eta,
+                width=scale.width,
+                depth=scale.repeats,
+            )
             trials = []
             for seed in screen_spec.seeds:
                 print(
@@ -113,27 +165,43 @@ def main() -> None:
                     train_trial(
                         screen_spec,
                         scale,
-                        args.learning_rate,
+                        args.normalized_eta,
                         seed,
+                        raw_learning_rate=raw_rate,
                         device=args.device,
                     )
                 )
-            summary = summarize_trials(trials, args.learning_rate)
+            summary = summarize_trials(trials, args.normalized_eta)
+            routing_imbalances = [
+                trial.max_routing_load_imbalance
+                for trial in trials
+                if trial.max_routing_load_imbalance is not None
+            ]
             rows.append(
                 {
                     "scale": scale.name,
                     "width": scale.width,
                     "repeats": scale.repeats,
+                    "expert_width": scale.expert_width,
+                    "particle_width": scale.particle_width,
+                    "normalized_learning_rate": args.normalized_eta,
+                    "raw_learning_rate": raw_rate,
+                    "raw_learning_rates": trials[0].raw_learning_rates,
                     "mean_final_validation_loss": summary.mean_final_validation_loss,
                     "sem_final_validation_loss": summary.sem_final_validation_loss,
                     "losses_by_seed": summary.losses_by_seed,
+                    "maximum_routing_load_imbalance": (
+                        max(routing_imbalances) if routing_imbalances else None
+                    ),
                     "trial_seconds": sum(trial.duration_seconds for trial in trials),
                 }
             )
         payload = {
             "study_fingerprint": screen_spec.fingerprint,
             "steps": screen_spec.horizon.steps,
-            "learning_rate": args.learning_rate,
+            "normalized_learning_rate": args.normalized_eta,
+            "learning_rate_coordinate": "normalized_eta",
+            "optimizer_parameterization": parameterization,
             "device": args.device,
             "scale_results": rows,
         }

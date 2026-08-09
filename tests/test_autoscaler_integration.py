@@ -25,7 +25,7 @@ def integration_spec():
         {"name": "S5", "width": 12, "repeats": 3},
     ]
     data["tuning"] = {
-        "learning_rates": [0.0001, 0.001, 0.01],
+        "normalized_learning_rates": [0.0001, 0.001, 0.01],
         "max_expansion_rounds": 0,
         "expansion_factor": 3,
     }
@@ -33,6 +33,32 @@ def integration_spec():
         "transfer_probe_decades": 0.3,
         "run_negative_control": False,
         "bootstrap_samples": 0,
+    }
+    data["seeds"] = [2, 7]
+    return StudySpec.from_dict(data)
+
+
+def moe_integration_spec():
+    data = copy.deepcopy(default_study_spec("adam", quick=True, block_type="pre_norm_moe").to_dict())
+    data["dataset"] = {"n_train": 32, "n_validation": 24, "noise_std": 0.0, "seed": 17}
+    data["horizon"] = {"steps": 4, "batch_size": 8, "microbatch_size": None}
+    data["scales"] = [
+        {"name": "S1", "width": 4, "repeats": 1, "expert_width": 8},
+        {"name": "S2", "width": 6, "repeats": 1, "expert_width": 12},
+        {"name": "S3", "width": 8, "repeats": 2, "expert_width": 16},
+        {"name": "S4", "width": 10, "repeats": 2, "expert_width": 20},
+        {"name": "S5", "width": 12, "repeats": 3, "expert_width": 24},
+    ]
+    data["tuning"] = {
+        "normalized_learning_rates": [0.01, 0.1, 1.0],
+        "max_expansion_rounds": 0,
+        "expansion_factor": 3,
+    }
+    data["validation"] = {
+        "transfer_probe_decades": 0.3,
+        "run_negative_control": False,
+        "bootstrap_samples": 0,
+        "routing_load_tolerance": 1e-12,
     }
     data["seeds"] = [2, 7]
     return StudySpec.from_dict(data)
@@ -48,9 +74,30 @@ def test_end_to_end_study_writes_strict_manifest_and_result(tmp_path: Path):
     assert len(result["holdout_calibration"]) == 1
     assert len(result["trials"]) == compile_plan(spec)["trial_budget_before_edge_expansion"]
     assert result["next_scale_forecast"] is None or result["forecastable"]
+    assert result["learning_rate_coordinate"]["tuned"] == "normalized_eta"
+    assert all(
+        row["normalized_learning_rate"] == result["learning_rate_coordinate"]["normalized_eta"]
+        and row["raw_learning_rate"] > 0.0
+        for row in result["scale_results"]
+    )
+    assert result["transfer_checks"][0]["acceptance_rule"].startswith("fixed_eta_")
+    assert (
+        result["transfer_checks"][0]["edge_of_stability"]["purpose"]
+        == "diagnostic_only_not_a_transfer_gate"
+    )
     for filename in ("manifest.json", "result.json"):
         parsed = json.loads((output / filename).read_text(encoding="utf-8"))
-        assert parsed.get("schema_version", parsed.get("spec", {}).get("schema_version")) == 1
+        assert parsed.get("schema_version", parsed.get("spec", {}).get("schema_version")) == 2
+
+
+def test_moe_routing_gate_refuses_forecast_when_loads_exceed_tolerance(tmp_path: Path):
+    result = run_study(moe_integration_spec(), output_dir=tmp_path / "moe-study")
+
+    assert result["routing_quality"]["applicable"] is True
+    assert result["routing_quality"]["accepted"] is False
+    assert result["routing_quality"]["scales"]
+    assert result["forecastable"] is False
+    assert "MoE expert routing exceeded the declared load-imbalance tolerance" in result["refusal_reasons"]
 
 
 def test_api_health_compile_and_async_study(tmp_path: Path):
@@ -66,7 +113,9 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
     try:
         health_request = Request(f"{base}/api/health", headers={"Origin": "http://localhost:3000"})
         with urlopen(health_request, timeout=3) as response:
-            assert json.load(response)["status"] == "ok"
+            health = json.load(response)
+            assert health["status"] == "ok"
+            assert health["schema_version"] == 2
             assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
 
         spec = integration_spec().to_dict()

@@ -99,6 +99,9 @@ a { color: inherit; text-decoration: none; }
 .block-glyph i:last-child { width: 70%; opacity: .55; }
 .block-glyph.relu { background: var(--orange-pale); border-color: #f1c4aa; }
 .block-glyph.relu i { background: var(--orange); }
+.block-glyph.moe { background: #f1ecff; border-color: #c9b8ee; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.block-glyph.moe i { width: 100%; height: 100%; min-height: 8px; background: #7652b8; opacity: .8; }
+.block-glyph.moe i:last-child { width: 100%; opacity: .45; }
 .coming-soon { margin: 22px 17px 0; border-top: 1px solid var(--line); padding-top: 14px; }
 .coming-soon span { color: var(--orange); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
 .coming-soon p { color: var(--muted); font-size: 10px; line-height: 1.55; margin: 7px 0; }
@@ -143,6 +146,7 @@ a { color: inherit; text-decoration: none; }
 .scale-panel { overflow: hidden; }
 .scale-table { padding: 8px 16px 14px; }
 .scale-row { min-height: 56px; display: grid; grid-template-columns: .7fr 1fr 1fr 1fr .8fr; align-items: center; gap: 15px; border-bottom: 1px solid #e6e3db; font-size: 11px; }
+.scale-row.moe-scale-row { grid-template-columns: .6fr .85fr .85fr .85fr 1fr .8fr; gap: 11px; }
 .scale-row:last-child { border-bottom: 0; }
 .scale-row.table-head { min-height: 38px; color: var(--muted); font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; }
 .scale-row input, .paired-inputs input { width: 100%; border: 1px solid var(--line); background: #faf9f5; border-radius: 7px; padding: 8px 9px; font-size: 11px; outline: none; }
@@ -152,14 +156,20 @@ a { color: inherit; text-decoration: none; }
 .role { justify-self: start; border: 1px solid #cbd2ec; background: var(--blue-pale); color: var(--blue-dark); padding: 5px 7px; border-radius: 999px; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
 .role.holdout { background: var(--orange-pale); color: #a84c1f; border-color: #edc2aa; }
 .validation-error { margin: 0 16px 15px; color: var(--red); font-size: 10px; }
+.validation-warning { margin: 0 16px 15px; color: #9a5a22; background: var(--orange-pale); border-left: 3px solid var(--orange); padding: 9px 10px; font-size: 10px; }
+.inspector-inputs { margin-top: 0; margin-bottom: 12px; }
 .protocol-panel { padding-bottom: 17px; }
-.optimizer-choice { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0 17px; }
+.optimizer-choice { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 0 17px; }
 .optimizer-choice button { border: 1px solid var(--line); background: #faf9f5; border-radius: 9px; padding: 11px; cursor: pointer; text-align: left; }
 .optimizer-choice button.active { border-color: var(--blue); background: var(--blue-pale); box-shadow: inset 0 0 0 1px var(--blue); }
+.optimizer-choice button:disabled { cursor: not-allowed; opacity: .52; }
 .optimizer-choice strong, .optimizer-choice small { display: block; }
 .optimizer-choice strong { font-size: 11px; }
 .optimizer-choice small { color: var(--muted); font-size: 8px; margin-top: 5px; }
 .paired-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 22px 17px 0; }
+.dataset-select { display: block; margin: 0 17px; }
+.dataset-select > span { display: block; margin: 18px 0 8px; color: var(--muted); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .1em; }
+.dataset-select select { width: 100%; border: 1px solid var(--line); background: #faf9f5; border-radius: 7px; padding: 9px; font-size: 10px; color: var(--ink); }
 .paired-inputs label span { display: block; color: var(--muted); font-size: 9px; font-weight: 700; margin-bottom: 6px; }
 .fixed-callout { margin: 14px 17px; border-left: 3px solid var(--orange); background: var(--orange-pale); padding: 11px 12px; display: grid; gap: 4px; }
 .fixed-callout b { font-size: 9px; }
@@ -297,6 +307,9 @@ footer p { margin: 0; color: #4f586b; }
   .run-button { min-height: 68px; }
   .scale-row { grid-template-columns: .5fr 1fr 1fr .7fr; }
   .scale-row > *:nth-child(4), .table-head > *:nth-child(4) { display: none; }
+  .scale-row.moe-scale-row { grid-template-columns: .5fr 1fr 1fr 1fr .7fr; }
+  .scale-row.moe-scale-row > *:nth-child(4) { display: block; }
+  .scale-row.moe-scale-row > *:nth-child(5) { display: none; }
   .empty-results, .running-card { grid-template-columns: 1fr; }
   .empty-plot { height: 150px; }
   .running-card { padding: 25px; }

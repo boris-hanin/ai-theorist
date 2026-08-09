@@ -24,6 +24,10 @@ test("server-renders the Autoscaler product shell", async () => {
   assert.match(html, /<title>Autoscaler · AI Theorist<\/title>/i);
   assert.match(html, /Build the model/);
   assert.match(html, /Residual stack/);
+  assert.match(html, /Chizat particles/);
+  assert.match(html, /Muon/);
+  assert.match(html, /U\/W Muon/);
+  assert.match(html, /Trained/);
   assert.match(html, /One horizon, five scales/);
   assert.match(html, /Forecasts must earn the right to appear/);
   assert.doesNotMatch(html, /Your site is taking shape/);
@@ -36,4 +40,5 @@ test("includes the fixed-horizon validation contract", async () => {
   assert.match(html, /Common random seeds/);
   assert.match(html, /Largest level held out/);
   assert.match(html, /Your held-out result lands here/);
+  assert.match(html, /Dataset task/);
 });

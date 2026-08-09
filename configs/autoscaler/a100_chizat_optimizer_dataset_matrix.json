@@ -1,0 +1,86 @@
+{
+  "matrix_schema_version": 1,
+  "name": "a100-chizat-optimizer-dataset",
+  "base_spec": {
+    "schema_version": 2,
+    "name": "overridden-by-matrix",
+    "architecture": {
+      "block_type": "chizat_mlp",
+      "activation": "tanh",
+      "input_dim": 16,
+      "output_dim": 1,
+      "residual_multiplier": 1.0
+    },
+    "optimizer": {
+      "name": "adam"
+    },
+    "dataset": {
+      "kind": "sinusoid_quadratic",
+      "n_train": 16384,
+      "n_validation": 4096,
+      "noise_std": 0.03,
+      "seed": 4242,
+      "generator_version": 1
+    },
+    "horizon": {
+      "steps": 600,
+      "batch_size": 256,
+      "microbatch_size": 128
+    },
+    "scales": [
+      {"name": "S1", "width": 8, "repeats": 2, "particle_width": 32},
+      {"name": "S2", "width": 18, "repeats": 3, "particle_width": 48},
+      {"name": "S3", "width": 32, "repeats": 4, "particle_width": 64},
+      {"name": "S4", "width": 72, "repeats": 6, "particle_width": 96},
+      {"name": "S5", "width": 128, "repeats": 8, "particle_width": 128},
+      {"name": "S6", "width": 200, "repeats": 10, "particle_width": 160}
+    ],
+    "tuning": {
+      "normalized_learning_rates": [0.003, 0.01, 0.03, 0.1, 0.3],
+      "max_expansion_rounds": 2,
+      "expansion_factor": 3.0
+    },
+    "validation": {
+      "transfer_probe_decades": 0.3,
+      "run_negative_control": true,
+      "bootstrap_samples": 400,
+      "routing_load_tolerance": 0.25
+    },
+    "seeds": [101, 211, 307, 419, 523],
+    "holdout_count": 1
+  },
+  "optimizers": [
+    {
+      "id": "sgd",
+      "optimizer": {"name": "sgd", "momentum": 0.0},
+      "tuning": {
+        "normalized_learning_rates": [0.0003, 0.001, 0.003, 0.01, 0.03],
+        "max_expansion_rounds": 2,
+        "expansion_factor": 3.0
+      }
+    },
+    {
+      "id": "adam",
+      "optimizer": {"name": "adam", "beta1": 0.9, "beta2": 0.999, "epsilon": 1e-8},
+      "tuning": {
+        "normalized_learning_rates": [0.003, 0.01, 0.03, 0.1, 0.3],
+        "max_expansion_rounds": 2,
+        "expansion_factor": 3.0
+      }
+    },
+    {
+      "id": "muon",
+      "optimizer": {"name": "muon"},
+      "tuning": {
+        "normalized_learning_rates": [0.03, 0.05, 0.08, 0.1, 0.14, 0.2, 0.3],
+        "max_expansion_rounds": 2,
+        "expansion_factor": 3.0
+      }
+    }
+  ],
+  "datasets": [
+    {"id": "linear", "dataset": {"kind": "linear"}},
+    {"id": "tanh", "dataset": {"kind": "tanh_teacher"}},
+    {"id": "sinquad", "dataset": {"kind": "sinusoid_quadratic"}}
+  ]
+}

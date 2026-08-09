@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "date": "2026-08-09",
+  "model": "Chizat non-MoE mean-ODE residual network",
+  "D": 32,
+  "P": 64,
+  "L": 8,
+  "alpha": 1.0,
+  "widths": [64, 128, 256, 512, 1024, 2048],
+  "seeds": [0, 1, 2, 3, 4],
+  "normalized_eta": 79.43282347242814,
+  "raw_lr_rule": "L*M*normalized_eta/alpha^2",
+  "workers": ["ready-buzzard-1", "satisfied-alpaca-1"],
+  "horizons": {
+    "80": {
+      "transfer_accepted": true,
+      "learning_progress_slope": 0.00025771622448552214,
+      "omit_M_progress_slope": -0.3942395150654397,
+      "negative_control_rejected": true,
+      "cross_worker_duplicates_verified": 108
+    },
+    "640": {
+      "transfer_accepted": true,
+      "learning_progress_slope": 0.000002299537874197931,
+      "omit_M_progress_slope": -0.3871972633988131,
+      "negative_control_rejected": true,
+      "cross_worker_duplicates_verified": 108
+    },
+    "1280": {
+      "transfer_accepted": true,
+      "learning_progress_slope": 0.00000010803102321545711,
+      "omit_M_progress_slope": -0.3686726478630082,
+      "negative_control_rejected": true,
+      "cross_worker_duplicates_verified": 12
+    }
+  },
+  "verdict": "fixed normalized eta transfers in M; stability edge is separate"
+}

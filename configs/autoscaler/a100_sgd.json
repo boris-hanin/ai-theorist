@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "name": "a100-sgd-gelu-fixed-horizon-v3-inverse-sqrt-transfer",
+  "schema_version": 2,
+  "name": "a100-sgd-gelu-fixed-horizon-v4-normalized-eta-transfer",
   "architecture": {
     "block_type": "pre_norm_mlp",
     "activation": "gelu",
@@ -35,7 +35,7 @@
     {"name": "S6", "width": 729, "repeats": 6}
   ],
   "tuning": {
-    "learning_rates": [0.003, 0.01, 0.03, 0.1, 0.3],
+    "normalized_learning_rates": [0.045, 0.15, 0.45, 1.5, 4.5],
     "max_expansion_rounds": 2,
     "expansion_factor": 3.0
   },
