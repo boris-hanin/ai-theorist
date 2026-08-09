@@ -13,3 +13,94 @@
 [01:50:10] E1 eb=1 C=4.096e+06 L=13 D=160 M=492 S=512 imb 0.750->0.599 [55s]
 [01:51:38] E1 eb=1 C=8.190e+06 L=14 D=202 M=724 S=384 imb 0.750->0.556 [88s]
 [01:53:45] E1 eb=1 C=1.638e+07 L=16 D=254 M=1008 S=256 imb 0.750->0.518 [127s]
+[01:55:36] E1 eb=1 C=3.280e+07 L=18 D=320 M=1424 S=192 imb 0.750->0.519 [110s]
+[01:57:17] E1 eb=1 C=6.554e+07 L=20 D=403 M=2033 S=128 imb 0.750->0.520 [101s]
+[01:59:31] E1 eb=1 C=1.310e+08 L=23 D=508 M=2803 S=96 imb 0.750->0.525 [134s]
+[02:02:17] E1 eb=1 C=2.621e+08 L=25 D=640 M=4095 S=64 imb 0.750->0.523 [167s]
+[02:02:19] E1 FAIL C=5.240e+08 : OutOfMemoryError('CUDA out of memory. Tried to allocate 572.00 MiB. GPU 0 has a total capacity of 79.25 GiB of which 140.81 MiB is free. Including non-PyTorch memory, this process has 79.10 GiB memory in use. Of the allocated memory 78.58 GiB is allocated by PyTorch, and 23.88 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)')
+[02:02:19] E1 eb=1  slope -0.1593  tail -0.1668  (pred -0.1667)
+[02:02:19] E1 eb=0 C=1.000e+03 L=3 D=10 M=8 S=3072 imb 0.750->0.750 [0s]
+[02:02:19] E1 eb=0 C=2.000e+03 L=4 D=13 M=10 S=3072 imb 0.750->0.750 [0s]
+[02:02:20] E1 eb=0 C=4.000e+03 L=4 D=16 M=16 S=3072 imb 0.750->0.750 [0s]
+[02:02:20] E1 eb=0 C=8.000e+03 L=4 D=20 M=25 S=2048 imb 0.750->0.750 [0s]
+[02:02:21] E1 eb=0 C=1.600e+04 L=5 D=25 M=32 S=2048 imb 0.750->0.750 [1s]
+[02:02:22] E1 eb=0 C=3.200e+04 L=6 D=32 M=42 S=1536 imb 0.750->0.750 [1s]
+[02:02:24] E1 eb=0 C=6.400e+04 L=6 D=40 M=67 S=1536 imb 0.750->0.750 [2s]
+[02:02:26] E1 eb=0 C=1.280e+05 L=7 D=50 M=91 S=1024 imb 0.750->0.750 [2s]
+[02:02:30] E1 eb=0 C=2.560e+05 L=8 D=63 M=127 S=1024 imb 0.750->0.750 [4s]
+[02:02:36] E1 eb=0 C=5.120e+05 L=9 D=80 M=178 S=768 imb 0.750->0.750 [6s]
+[02:02:49] E1 eb=0 C=1.024e+06 L=10 D=101 M=253 S=768 imb 0.750->0.750 [13s]
+[02:03:08] E1 eb=0 C=2.050e+06 L=11 D=127 M=367 S=512 imb 0.750->0.750 [20s]
+[02:03:59] E1 eb=0 C=4.096e+06 L=13 D=160 M=492 S=512 imb 0.750->0.750 [51s]
+[02:05:22] E1 eb=0 C=8.190e+06 L=14 D=202 M=724 S=384 imb 0.750->0.750 [82s]
+[02:07:22] E1 eb=0 C=1.638e+07 L=16 D=254 M=1008 S=256 imb 0.750->0.750 [121s]
+[02:09:05] E1 eb=0 C=3.280e+07 L=18 D=320 M=1424 S=192 imb 0.750->0.750 [103s]
+[02:10:46] E1 eb=0 C=6.554e+07 L=20 D=403 M=2033 S=128 imb 0.750->0.750 [101s]
+[02:13:00] E1 eb=0 C=1.310e+08 L=23 D=508 M=2803 S=96 imb 0.750->0.750 [134s]
+[02:15:47] E1 eb=0 C=2.621e+08 L=25 D=640 M=4095 S=64 imb 0.750->0.750 [167s]
+[02:15:48] E1 FAIL C=5.240e+08 : OutOfMemoryError('CUDA out of memory. Tried to allocate 572.00 MiB. GPU 0 has a total capacity of 79.25 GiB of which 140.81 MiB is free. Including non-PyTorch memory, this process has 79.10 GiB memory in use. Of the allocated memory 78.58 GiB is allocated by PyTorch, and 23.88 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)')
+[02:15:48] E1 eb=0  slope -0.1596  tail -0.1614  (pred -0.1667)
+[02:15:48] E3 init D=32     spread 8.7396e-02
+[02:15:48] E3 init D=64     spread 6.1993e-02
+[02:15:49] E3 init D=128    spread 4.5294e-02
+[02:15:50] E3 init D=256    spread 3.1319e-02
+[02:15:51] E3 init D=512    spread 2.2082e-02
+[02:15:54] E3 init D=1024   spread 1.5292e-02
+[02:16:00] E3 init D=2048   spread 1.1074e-02
+[02:16:12] E3 init D=4096   spread 8.0523e-03
+[02:16:36] E3 init D=8192   spread 5.6960e-03
+[02:17:28] E3 init D=16384  spread 3.8941e-03
+[02:17:28] E3 init slope -0.4969 tail -0.4906 (pred -0.5)
+[02:17:29] E3 trained D=32     spread 8.8591e-02
+[02:17:31] E3 trained D=64     spread 6.2921e-02
+[02:17:33] E3 trained D=128    spread 4.5812e-02
+[02:17:38] E3 trained D=256    spread 3.1795e-02
+[02:17:47] E3 trained D=512    spread 2.2667e-02
+[02:18:04] E3 trained D=1024   spread 1.5671e-02
+[02:18:41] E3 trained D=2048   spread 1.1620e-02
+[02:19:57] E3 trained D=4096   spread 8.8467e-03
+[02:22:19] E3 trained D=8192   spread 6.6989e-03
+[02:26:44] E3 trained D=16384  spread 6.2273e-03
+[02:26:44] E3 trained slope -0.4476 tail -0.3457 (pred -0.5)
+[02:26:44] E3 init_wide D=32     spread 8.8669e-02
+[02:26:44] E3 init_wide D=64     spread 6.2845e-02
+[02:26:47] E3 init_wide D=128    spread 4.1858e-02
+[02:26:53] E3 init_wide D=256    spread 3.2228e-02
+[02:27:05] E3 init_wide D=512    spread 2.2035e-02
+[02:27:29] E3 init_wide D=1024   spread 1.5846e-02
+[02:28:16] E3 init_wide D=2048   spread 1.0837e-02
+[02:29:51] E3 init_wide D=4096   spread 7.8917e-03
+[02:33:01] E3 init_wide D=8192   spread 5.1378e-03
+[02:39:21] E3 init_wide D=16384  spread 3.9441e-03
+[02:39:21] E3 init_wide slope -0.5026 tail -0.5089 (pred -0.5)
+[02:39:33] E2 depth L                4      lr* +0.307 
+[02:40:04] E2 depth L                8      lr* +0.301 
+[02:41:40] E2 depth L                16     lr* +0.296 
+[02:48:17] E2 depth L                32     lr* +0.303 
+[03:14:03] E2 depth L                64     lr* +0.320 
+[03:14:03] E2 depth L                drift 0.024  tail 0.024
+[03:14:18] E2 active a               8      lr* +0.309 
+[03:14:50] E2 active a               16     lr* +0.301 
+[03:15:45] E2 active a               32     lr* +0.302 
+[03:17:39] E2 active a               64     lr* +0.304 
+[03:21:40] E2 active a               128    lr* +0.302 
+[03:21:40] E2 active a               drift 0.008  tail 0.002
+[03:21:48] E2 expert width M         32     lr* +0.306 
+[03:22:04] E2 expert width M         64     lr* +0.310 
+[03:22:35] E2 expert width M         128    lr* +0.301 
+[03:23:29] E2 expert width M         256    lr* +0.292 
+[03:25:19] E2 expert width M         512    lr* +0.270 
+[03:25:19] E2 expert width M         drift 0.041  tail 0.031
+[03:25:30] E2 embedding D            16     lr* +0.267 
+[03:25:46] E2 embedding D            32     lr* +0.281 
+[03:26:18] E2 embedding D            64     lr* +0.301 
+[03:27:10] E2 embedding D            128    lr* +0.306 
+[03:28:52] E2 embedding D            256    lr* +0.306 
+[03:28:52] E2 embedding D            drift 0.039  tail 0.005
+[03:29:23] E2 expert count E (a=4)   16     lr* +0.301 
+[03:30:19] E2 expert count E (a=4)   32     lr* +0.340 
+[03:32:13] E2 expert count E (a=4)   64     lr* +0.356 
+[03:36:14] E2 expert count E (a=4)   128    lr* +0.383 
+[03:45:36] E2 expert count E (a=4)   256    lr* +0.429 
+[03:45:36] E2 expert count E (a=4)   drift 0.128  tail 0.072
+[03:45:36] ALL DONE
