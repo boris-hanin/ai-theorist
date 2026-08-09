@@ -50,10 +50,15 @@ prefactor.
   `H` is; the head split only re-labels columns. Do not attach `H` to them.
   *Domain (F19): this is fixed by counting the fan-in of exactly those two
   matrices. It does not extend to `W_Q, W_K`, whose relevant sum is over `D_h`.*
-- **`W_Q, W_K` need `sigma_QK = D_h^{1-alpha_A}` — and the SAME `sigma_QK` works
-  for SGD and for Adam.** Nothing else in the table has that property
-  (`sigma_0` is `sqrt(L)` for SGD and `1/sqrt(D)` for Adam). At `alpha_A = 1` it
-  is 1: no correction at all.
+- **`W_Q, W_K` need a `sigma_QK`, and its exponent is CONTESTED AND UNMEASURED.**
+  Two candidates, differing by which label the backward-through-`W_O`
+  contraction carries: `D_h^{1-alpha_A}` (coherent — asserted in `10` §3e and
+  **falsified at `t <= 256`**) or `D_h^{3/4-alpha_A}` (incoherent — what round
+  011 E8 supports). Whichever it is, the **same** `sigma_QK` serves SGD and Adam,
+  which nothing else in the table does (`sigma_0` is `sqrt(L)` for SGD and
+  `1/sqrt(D)` for Adam). Do not quote either exponent as established: the
+  transfer harness moves `lr*` only 0.12 dec under a `D_h` Q/K mis-scaling,
+  against 0.62 dec for a `sqrt(D)` mis-scaling of `W_V/W_O` in the same sector.
 - **`sigma_QK` and the Q/K learning rate are THE SAME KNOB.** `q =
   (1/(sigma_QK sqrt(D))) W_Q x` with `W_Q ~ N(0,sigma_QK^2)` is distributionally
   identical to `sigma_QK = 1`; only the needed rate moves. So a "control" that
@@ -62,9 +67,11 @@ prefactor.
   `alpha_A = 1/2`. `gt.py` has `qk_correction_is_identity()` for this.
 - **The paper's §2.4 says `sigma_{L+1} = 1` for Adam. That is a typo** — its own
   Table 1 and the closing line of its Prop. 3 both say `1/sqrt(D)`, and
-  `eta^{(L+1)} = eta_0 sigma_{L+1}` forces `1/sqrt(D)`. An implementer following
-  §2.4 gets a decoder rate `sqrt(D)` too large, which presents as a width-transfer
-  failure.
+  `eta^{(L+1)} = eta_0 sigma_{L+1}` forces `1/sqrt(D)`. Worth fixing, but
+  **measured consequence is mild**: implementing the typo gives drift 0.110 dec
+  and still TRANSFERS. Both conventions leave the forward pass unchanged
+  (`z = Theta(D^{-1/2})`); only the decoder's needed rate moves, so it
+  under-trains by `sqrt(D)` without destabilising anything.
 
 ## `gamma`: what it is, and why it must be scanned
 
