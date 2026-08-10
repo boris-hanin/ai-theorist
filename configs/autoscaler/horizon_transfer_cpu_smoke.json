@@ -37,7 +37,6 @@
   "horizon_rules": [
     "none",
     "nugpt_one_third",
-    "bjorck_032",
     "fitted_power"
   ],
   "validation_interval": 8,

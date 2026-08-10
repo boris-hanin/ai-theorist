@@ -1395,7 +1395,7 @@ export function AutoscalerStudio() {
         presented_tokens: parsedHorizonValues,
         batch_examples: horizonBatchExamples,
         schedules: useJiangChizat ? ["jiang_half_warmup_constant"] : horizonSchedules,
-        horizon_rules: ["none", "nugpt_one_third", "bjorck_032", "fitted_power"],
+        horizon_rules: ["none", "nugpt_one_third", "fitted_power"],
         validation_interval: targetDevice === "cuda" ? 2048 : 128,
         seeds: targetDevice === "cuda" ? [11, 29, 47] : [11, 29],
         minimum_seeds: targetDevice === "cuda" ? 3 : 2,

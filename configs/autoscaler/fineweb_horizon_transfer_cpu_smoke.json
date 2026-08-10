@@ -31,7 +31,7 @@
   "presented_tokens": [256, 512, 1024, 2048],
   "batch_examples": 2,
   "schedules": ["cosine_to_10_percent"],
-  "horizon_rules": ["none", "nugpt_one_third", "bjorck_032", "fitted_power"],
+  "horizon_rules": ["none", "nugpt_one_third", "fitted_power"],
   "validation_interval": 128,
   "seeds": [11],
   "minimum_seeds": 1,

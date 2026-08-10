@@ -73,16 +73,20 @@ The preregistered candidates are:
 
 - `none`: `beta = 0`, a negative/control hypothesis;
 - `nugpt_one_third`: `beta = 1/3`;
-- `bjorck_032`: `beta = 0.32`;
 - `fitted_power`: fit both coefficient and exponent on fit horizons only.
+
+`bjorck_032` remains accepted for reproducing older sensitivity runs, but is
+not a default candidate: distinguishing `0.32` from `1/3` is false precision at
+the seed counts and horizon spans used here. Reports group it with the
+one-third theory family rather than treating it as a competing hypothesis.
 
 For Jiang+Chizat, the CompleteP DMFT contract supplies the distinct model-scale
 LR and epsilon formulas for embeddings, norms, attention QKV, attention output,
 FFN up, FFN down, and other biases. At fixed `(L,M,D)` the horizon candidate
 multiplies every already-parameterized group by the same `eta(T)` ratio. The
-`1/3` and `0.32` duration exponents are cross-theory candidates, not claims
-derived by the Jiang CompleteP paper; the fitted rule and no-transfer control
-make that uncertainty explicit.
+The `1/3` duration exponent is a cross-theory candidate, not a claim derived by
+the Jiang CompleteP paper; the fitted rule and no-transfer control make that
+uncertainty explicit.
 
 For every schedule family, at least three fit horizons are tuned independently.
 The largest horizon is hidden while rules are fitted and frozen. Frozen rules
