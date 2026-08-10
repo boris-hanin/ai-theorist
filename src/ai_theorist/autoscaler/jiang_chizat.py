@@ -532,7 +532,7 @@ class JiangChizatTransformer(nn.Module):
         )
 
     @torch.no_grad()
-    def diagnostics(self) -> Dict[str, float]:
+    def diagnostics(self) -> Dict[str, Optional[float]]:
         entropies = [block.attention.last_entropy for block in self.blocks]
         logit_rms = [block.attention.last_logit_rms for block in self.blocks]
         finite_entropy = [value for value in entropies if torch.isfinite(value)]
@@ -541,12 +541,12 @@ class JiangChizatTransformer(nn.Module):
             "mean_attention_entropy": (
                 float(torch.stack(finite_entropy).mean().cpu())
                 if finite_entropy
-                else float("nan")
+                else None
             ),
             "mean_attention_logit_rms": (
                 float(torch.stack(finite_logits).mean().cpu())
                 if finite_logits
-                else float("nan")
+                else None
             ),
             "rho_LM_over_D": self.shape.rho,
         }

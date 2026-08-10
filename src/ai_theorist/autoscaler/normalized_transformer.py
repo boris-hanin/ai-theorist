@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from contextlib import nullcontext
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
@@ -389,7 +389,7 @@ class NormalizedTransformer(nn.Module):
         return audit_optimizer_groups(self, groups, NUGPT_ADAM_THEORY)
 
     @torch.no_grad()
-    def sphere_diagnostics(self) -> Dict[str, float]:
+    def sphere_diagnostics(self) -> Dict[str, Optional[float]]:
         errors: List[Tensor] = []
         for _, weight, dimension in self._normalized_weight_axes():
             errors.append((weight.float().norm(dim=dimension) - 1.0).abs().max())
@@ -400,12 +400,12 @@ class NormalizedTransformer(nn.Module):
         return {
             "maximum_matrix_norm_error": float(torch.stack(errors).max().cpu()),
             "maximum_hidden_norm_error": (
-                float(torch.stack(finite_hidden).max().cpu()) if finite_hidden else float("nan")
+                float(torch.stack(finite_hidden).max().cpu()) if finite_hidden else None
             ),
             "mean_attention_entropy": (
                 float(torch.stack(finite_entropies).mean().cpu())
                 if finite_entropies
-                else float("nan")
+                else None
             ),
             "mean_attention_alpha": float(
                 torch.stack(

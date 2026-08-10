@@ -97,6 +97,21 @@ def test_ngpt_projection_and_hidden_states_stay_on_unit_sphere():
     assert diagnostics["mean_logit_scale"] == pytest.approx(1.0, abs=1e-6)
 
 
+def test_uncaptured_ngpt_entropy_is_explicitly_unavailable():
+    spec = tiny_ngpt_spec()
+    model = NormalizedTransformer(
+        spec.architecture,
+        spec.scales[1],
+        attention_backend="math",
+        capture_attention_diagnostics=False,
+    )
+    inputs, _, _, _ = make_synthetic_markov_dataset(spec.architecture, spec.dataset)
+    model(inputs[:2])
+    diagnostics = model.sphere_diagnostics()
+    assert diagnostics["mean_attention_entropy"] is None
+    assert math.isfinite(diagnostics["maximum_matrix_norm_error"])
+
+
 def test_baseline_ngpt_control_restores_original_rescaler_initialization():
     spec = tiny_ngpt_spec()
     scale = spec.scales[-1]

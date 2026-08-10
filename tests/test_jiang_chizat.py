@@ -51,6 +51,14 @@ def test_forward_is_causal_and_uses_tied_embeddings():
     assert math.isfinite(diagnostics["mean_attention_logit_rms"])
 
 
+def test_uncaptured_attention_diagnostics_are_explicitly_unavailable():
+    model = make_model(capture_attention_diagnostics=False)
+    model(torch.randint(0, 16, (2, 8)))
+    diagnostics = model.diagnostics()
+    assert diagnostics["mean_attention_entropy"] is None
+    assert diagnostics["mean_attention_logit_rms"] is None
+
+
 def test_mean_field_down_projection_and_fan_in_control_are_distinct():
     shape = JiangChizatShape(
         depth=1, hidden_width=1024, residual_width=256, head_dimension=64
