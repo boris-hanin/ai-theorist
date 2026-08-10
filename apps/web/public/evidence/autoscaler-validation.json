@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "observed_at": "2026-08-10",
   "web_workflows": [
     {"job_id": "ada53251904f", "workflow": "dense MLP / Adam", "trials": 26, "heldout_relative_error": 0.03019, "scaling_r_squared": 0.98436, "outcome": "forecast withheld"},
@@ -35,8 +35,53 @@
     "consensus_qualified": false,
     "refusal": "independent qualified estimators disagree beyond the allowed 2x ratio"
   },
+  "a100_fineweb_transfer": {
+    "source": {
+      "dataset": "HuggingFaceFW/fineweb-edu",
+      "config": "sample-10BT",
+      "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+      "corpus_fingerprint": "666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1",
+      "training_tokens": 67156577,
+      "validation_tokens": 8395537,
+      "training_source_rows": [0, 14291],
+      "validation_source_rows": [5000000, 5001948],
+      "tokenizer": "byte_v1"
+    },
+    "protocol": {"shapes": 4, "normalized_eta_grid_points": 7, "seeds": [11, 29, 47], "steps": 300, "batch_size": 16, "context_length": 64},
+    "dense_jiang_attention_chizat_ffn": {
+      "full_training_trials": 216,
+      "feature_velocity_probes": 12,
+      "reference_eta": 0.03,
+      "best_eta_by_shape": {"S1": 0.03, "S2": 0.03, "S3": 0.03, "S4": 0.03},
+      "fixed_reference_eta_to_oracle_loss_ratio_by_shape": {"S1": 1.0, "S2": 1.0, "S3": 1.0, "S4": 1.0},
+      "fixed_reference_eta_progress_slope": 0.023379327,
+      "fixed_reference_eta_validation_loss_by_shape": {"S1": 2.493587251, "S2": 2.409812567, "S3": 2.401609711, "S4": 2.39520367},
+      "selected_group_multipliers": {"embeddings": 1.0, "norms": 1.0, "attention_qkv": 0.0625, "attention_output": 0.5, "ffn_up": 1.0, "ffn_down": 0.0625, "other_biases": 1.0},
+      "transfer_certified": true,
+      "feature_velocity_accepted": true,
+      "negative_controls_rejected": 0,
+      "negative_controls_tested": 4,
+      "mechanism_discrimination_certified": false
+    },
+    "jiang_sparse_moe": {
+      "full_training_trials": 213,
+      "reference_eta": 0.03,
+      "best_eta_by_shape": {"S1": 0.03, "S2": 0.03, "S3": 0.03, "S4": 0.03},
+      "fixed_reference_eta_to_oracle_loss_ratio_by_shape": {"S1": 1.0, "S2": 1.0, "S3": 1.0, "S4": 1.0},
+      "fixed_reference_eta_progress_slope": 0.021843471,
+      "fixed_reference_eta_validation_loss_by_shape": {"S1": 2.49901783, "S2": 2.472347061, "S3": 2.424128319, "S4": 2.441286037},
+      "selected_group_multipliers": {"embeddings": 2.0, "norms": 1.0, "attention_qkv": 0.0625, "attention_output": 0.5, "router": 0.0625, "expert_up": 1.0, "expert_down": 0.0625, "other_biases": 1.0},
+      "largest_shape_maximum_routing_load_deviation": 0.3333333333,
+      "transfer_certified": true,
+      "negative_controls_rejected": 0,
+      "negative_controls_tested": 3,
+      "mechanism_discrimination_certified": false
+    }
+  },
   "limitations": [
-    "The real-text corpus is a deterministic integration fixture, not a scientific pretraining dataset.",
+    "The batch-scaling runtime assay still uses a deterministic integration fixture; the Jiang-family transfer assay now uses a frozen FineWeb-Edu sample-10BT slice.",
+    "The FineWeb-Edu transfer assay is byte-tokenized, context 64, and 300 steps, so it validates local HP transfer rather than frontier-scale pretraining behavior.",
+    "The FineWeb-Edu negative controls were not separated, so the results certify transfer but not unique mechanism identification.",
     "The supplied hosts each exposed one A100; multi-GPU FSDP was not physically exercised.",
     "CUDA selections execute on the host running the compute API; the browser is not a remote-cluster scheduler.",
     "Smoke-profile results validate plumbing and refusals, not long-range scaling-law quality."

@@ -14,6 +14,11 @@ from widely separated, non-overlapping source-row ranges and written to
 separate JSONL files.  A completed snapshot is re-used only after both files
 pass their recorded SHA-256 checks.
 
+Transient dataset-server failures use bounded exponential backoff.  Each
+completed 100-document page is fsynced with a checkpoint tied to the source
+revision and materialization contract, so an interrupted download resumes from
+the last verified source row.
+
 The public data is currently tokenized with the deterministic `byte_v1`
 tokenizer.  This makes the first real-data campaign self-contained and removes
 tokenizer-version drift, but it is not yet the final modern tokenizer baseline.
@@ -50,7 +55,34 @@ would define a different model and loss.
 ## Interpretation boundary
 
 Real web text fixes the most serious data-realism weakness, but a 64 MiB slice,
-byte tokenizer, context 128, and a few hundred optimizer steps are still a
+byte tokenizer, context 64, and a few hundred optimizer steps are still a
 pilot-scale transfer assay.  A positive result establishes that the per-group
 parameterization survives the move from a Markov generator to natural text at
 the tested scales.  It is not yet evidence for frontier-scale loss prediction.
+
+## 2026-08-10 A100 evidence
+
+The A100 campaign froze FineWeb-Edu sample-10BT revision
+`87f09149ef4734204d70ed1d046ddc9ca3f2b8f9` into 67,156,577 training and
+8,395,537 held-out byte tokens.  Source rows `0..14291` and
+`5000000..5001948` are disjoint.  The token-stream fingerprint is
+`666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1`.
+
+Both campaigns used four joint scale points, seven normalized learning rates,
+three paired seeds, 300 steps, batch size 16, and the same pre-sampled token
+windows for every trial and control.
+
+- Dense Jiang attention + Chizat mean-field FFN: all four scale-wise grid
+  optima were `eta=0.03`; the base-selected fixed rate was exactly at each
+  grid oracle, and the progress-vs-scale log slope was `0.02338`.  All seven
+  group-only feature-velocity checks passed.  None of four negative controls
+  was rejected.
+- Jiang sparse MoE: all four scale-wise grid optima were again `eta=0.03`;
+  the fixed rate was exactly at each grid oracle, and the progress-vs-scale log
+  slope was `0.02184`.  None of three negative controls was rejected.  Maximum
+  routing-load deviation reached `0.3333` at the largest shape.
+
+The exact conclusion is therefore **HP transfer certified; mechanism
+discrimination not certified** for both architectures.  The public web
+evidence view preserves that distinction rather than turning a clean optimum
+match into a stronger causal claim.

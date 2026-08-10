@@ -2124,6 +2124,28 @@ export function AutoscalerStudio() {
 
         <div className="runtime-canary">
           <div className="runtime-canary-head">
+            <div><p className="eyebrow">Frozen FineWeb-Edu transfer assay</p><h3>Jiang attention + Chizat FFN and full Jiang sparse MoE</h3></div>
+            <span>429 full trials + 12 feature probes</span>
+          </div>
+          <div className="runtime-canary-grid">
+            <div><small>Frozen corpus</small><strong>67.16M / 8.40M</strong><span>training / held-out byte tokens</span></div>
+            <div><small>Transfer grid</small><strong>4 × 7 × 3</strong><span>scales × normalized η × paired seeds</span></div>
+            <div><small>Base-selected η</small><strong>0.03 / 0.03</strong><span>dense / sparse MoE</span></div>
+            <div><small>Worst oracle ratio</small><strong>1.000× / 1.000×</strong><span>fixed base η versus each scale optimum</span></div>
+          </div>
+          <div className="runtime-canary-verdict">
+            <span className="verdict-mark pass">✓</span>
+            <div><strong>Dense HP transfer certified · mechanism claim withheld</strong><p>Every scale chose η=0.03; fixed-rate progress has log-slope 0.023 and all seven parameter-group feature-velocity probes pass. None of four deliberately wrong controls was separated on this short byte-level task, so the app does not claim unique theoretical identification.</p></div>
+          </div>
+          <div className="runtime-canary-verdict">
+            <span className="verdict-mark pass">✓</span>
+            <div><strong>Sparse MoE HP transfer certified · mechanism claim withheld</strong><p>Every scale again chose η=0.03 and fixed-rate progress has log-slope 0.022. None of three wrong controls was separated; maximum routing-load deviation reaches 33.3% at the largest shape, which is recorded as a follow-up rather than hidden.</p></div>
+          </div>
+          <p className="runtime-provenance">Observed on A100 80 GB · FineWeb-Edu sample-10BT revision <code>87f09149ef47</code> · corpus <code>666710b377c444e7</code> · disjoint rows <code>0–14,291</code> and <code>5,000,000–5,001,948</code> · byte_v1 · context 64 · 300 steps · batch 16</p>
+        </div>
+
+        <div className="runtime-canary">
+          <div className="runtime-canary-head">
             <div><p className="eyebrow">A100 runtime assay</p><h3>Real text · AdamW + Adam + SGD · BF16 · explicit FlashAttention</h3></div>
             <span>432 completed trials</span>
           </div>

@@ -107,6 +107,12 @@ test("publishes recipes, strict evidence, and the persistent web ledger", async 
   assert.match(html, /evidence JSON/);
   assert.match(html, /A100 runtime assay/);
   assert.match(html, /No batch recommendation issued/);
+  assert.match(html, /Frozen FineWeb-Edu transfer assay/);
+  assert.match(html, /Jiang attention \+ Chizat FFN and full Jiang sparse MoE/);
+  assert.match(html, /Worst oracle ratio/);
+  assert.match(html, /Dense HP transfer certified · mechanism claim withheld/);
+  assert.match(html, /Sparse MoE HP transfer certified · mechanism claim withheld/);
+  assert.match(html, /666710b377c444e7/);
   assert.match(html, /Workflows launched through this interface/);
   assert.match(html, /Refresh ledger/);
 });
