@@ -518,6 +518,11 @@ def run_transformer_batch_trial(
     gradient_clip_norm: Optional[float] = 100.0,
     device: str = "cpu",
     initial_state: Optional[Mapping[str, torch.Tensor]] = None,
+    prepared_dataset: Optional[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    ] = None,
+    prepared_dataset_metadata: Optional[Mapping[str, Any]] = None,
+    dataset_identity: Optional[Mapping[str, Any]] = None,
     cache_directory: Optional[Path] = None,
     cache_key_suffix: str = "",
     cache_state: bool = False,
@@ -539,7 +544,9 @@ def run_transformer_batch_trial(
         raise RuntimeError("CUDA was requested but is unavailable")
     identity = {
         "architecture": asdict(architecture),
-        "dataset": asdict(dataset),
+        "dataset": (
+            dict(dataset_identity) if dataset_identity is not None else asdict(dataset)
+        ),
         "scale": asdict(scale),
         "optimizer": optimizer.to_dict(),
         "total_tokens": total_tokens,
@@ -598,9 +605,26 @@ def run_transformer_batch_trial(
         }
         for index, group in enumerate(torch_optimizer.param_groups)
     ]
-    x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
-        architecture, dataset, device=device
-    )
+    if prepared_dataset is None:
+        x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
+            architecture, dataset, device=device
+        )
+    else:
+        x_train, y_train, x_validation, y_validation = prepared_dataset
+        expected_shapes = (
+            (dataset.n_train, architecture.context_length),
+            (dataset.n_train, architecture.context_length),
+            (dataset.n_validation, architecture.context_length),
+            (dataset.n_validation, architecture.context_length),
+        )
+        actual_shapes = tuple(tuple(tensor.shape) for tensor in prepared_dataset)
+        if actual_shapes != expected_shapes:
+            raise ValueError(
+                "prepared_dataset shapes must match dataset counts and architecture context; "
+                f"expected {expected_shapes}, got {actual_shapes}"
+            )
+        if any(str(tensor.device) != str(torch.device(device)) for tensor in prepared_dataset):
+            raise ValueError("prepared_dataset tensors must already be on the requested device")
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     steps = total_tokens // batch_tokens
     checkpoints = []
@@ -613,7 +637,7 @@ def run_transformer_batch_trial(
         schedule_multiplier = schedule.multiplier(step, steps)
         for group, peak_rate in zip(torch_optimizer.param_groups, peak_group_rates):
             group["lr"] = peak_rate * schedule_multiplier
-        indices_cpu = torch.randint(0, dataset.n_train, (batch_examples,), generator=generator)
+        indices_cpu = torch.randint(0, x_train.shape[0], (batch_examples,), generator=generator)
         indices = indices_cpu.to(device) if device != "cpu" else indices_cpu
         torch_optimizer.zero_grad(set_to_none=True)
         logits = model(x_train[indices])
@@ -691,6 +715,15 @@ def run_transformer_batch_trial(
             "peak_parameter_group_contract": peak_group_contract,
             "gradient_clipping": (
                 "none" if gradient_clip_norm is None else gradient_clip_norm
+            ),
+            "dataset": (
+                dict(prepared_dataset_metadata)
+                if prepared_dataset_metadata is not None
+                else {
+                    "kind": "synthetic_markov",
+                    "task_type": dataset.task_type,
+                    "sampling_seed": dataset.seed,
+                }
             ),
         },
     )

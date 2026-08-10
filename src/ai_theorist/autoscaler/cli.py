@@ -132,6 +132,7 @@ def main() -> None:
     horizon.add_argument("config", type=Path)
     horizon.add_argument("--device", default="cpu")
     horizon.add_argument("--output", type=Path)
+    horizon.add_argument("--progress-jsonl", action="store_true")
 
     joint = subparsers.add_parser(
         "joint-transfer",
@@ -341,8 +342,15 @@ def main() -> None:
         payload = _read_json(args.config)
         if not isinstance(payload, dict):
             raise ValueError("horizon-transfer config must be an object")
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
         _write_and_print(
-            run_horizon_transfer_campaign(payload, device=args.device), args.output
+            run_horizon_transfer_campaign(
+                payload, device=args.device, progress=progress
+            ),
+            args.output,
         )
     elif args.command == "joint-transfer":
         payload = _read_json(args.config)

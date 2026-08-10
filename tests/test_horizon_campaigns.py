@@ -113,3 +113,61 @@ def test_horizon_campaign_runs_through_persistent_job_engine(tmp_path) -> None:
     assert (tmp_path / "manifest.json").is_file()
     assert (tmp_path / "result.json").is_file()
     assert (tmp_path / "trials").is_dir()
+
+
+def test_horizon_campaign_freezes_one_fingerprinted_real_text_sample(tmp_path) -> None:
+    train_path = tmp_path / "train.txt"
+    validation_path = tmp_path / "validation.txt"
+    train_path.write_text("alpha beta gamma delta\n" * 32, encoding="utf-8")
+    validation_path.write_text("held out epsilon zeta\n" * 16, encoding="utf-8")
+    config = _config()
+    config["architecture"] = {
+        **config["architecture"],
+        "vocab_size": 260,
+        "context_length": 4,
+    }
+    config["dataset"] = {
+        "task_type": "tokenized_text",
+        "train_path": str(train_path),
+        "validation_path": str(validation_path),
+        "tokenizer": "byte_v1",
+        "n_train": 8,
+        "n_validation": 8,
+        "seed": 7,
+        "maximum_bytes": 1_000_000,
+    }
+    config["presented_tokens"] = [16, 32, 64, 128]
+    config["cache_directory"] = str(tmp_path / "cache")
+
+    plan = compile_campaign_plan("horizon_transfer", config)
+    assert plan["data_mode"] == "frozen_real_text"
+    assert plan["execution_order"][0] == "freeze_real_text_corpus_and_sampled_windows"
+
+    result = run_horizon_transfer_campaign(config)
+    fingerprint = result["dataset"]["fingerprint"]
+    assert len(fingerprint) == 64
+    assert result["dataset"]["sampled_unique_training_tokens"] == 32
+    assert result["fixed_coordinates"]["unique_tokens"] == 32
+    assert all(
+        record["metadata"]["dataset"]["corpus_fingerprint"] == fingerprint
+        for record in result["records"]
+    )
+    assert all(
+        record["metadata"]["unique_training_tokens"] == 32
+        for record in result["records"]
+    )
+
+
+def test_real_text_horizon_requires_byte_tokenizer_vocabulary(tmp_path) -> None:
+    config = _config()
+    config["dataset"] = {
+        "task_type": "tokenized_text",
+        "train_path": str(tmp_path / "train.txt"),
+        "validation_path": str(tmp_path / "validation.txt"),
+        "tokenizer": "byte_v1",
+        "n_train": 8,
+        "n_validation": 8,
+        "seed": 7,
+    }
+    with pytest.raises(ValueError, match="vocab_size 260"):
+        run_horizon_transfer_campaign(config)

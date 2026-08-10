@@ -46,7 +46,15 @@ throughout the factorial campaign.
 This data path applies to:
 
 - the dense interleaved Jiang-attention + Chizat mean-field FFN experiment;
-- the full sparse Jiang MoE experiment.
+- the full sparse Jiang MoE experiment;
+- fixed-model normalized-Transformer schedule and token-horizon transfer.
+
+The horizon campaign freezes the same corpus and sampled-window contract, tunes
+each schedule independently on at least three shorter horizons, freezes the
+candidate `eta(T)` rules, tests them at the hidden longest horizon, and reveals
+that horizon's LR oracle only for regret scoring. Its A100 manifest is
+`configs/autoscaler/fineweb_horizon_transfer_a100.json`, and the resumable
+launcher is `scripts/run_fineweb_horizon_transfer_a100.sh`.
 
 It does **not** replace the exact Chizat equation-(22) nonlinear-regression
 experiment.  That experiment remains a source-faithful synthetic control; text

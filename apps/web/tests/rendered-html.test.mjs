@@ -100,6 +100,8 @@ test("publishes recipes, strict evidence, and the persistent web ledger", async 
   assert.match(html, /Start from a validation recipe/);
   assert.match(html, /MoE · Adam/);
   assert.match(html, /GPT batch census/);
+  assert.match(html, /νGPT horizon transfer/);
+  assert.match(html, /Schedule [+] peak LR · frozen holdout/);
   assert.match(html, /Transfer success and scaling-law quality are separate claims/);
   assert.match(html, /Forecasts issued/);
   assert.match(html, /Negative control\s*(?:<!-- -->)?\s*separated/);

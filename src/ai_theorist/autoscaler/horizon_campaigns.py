@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
+import torch
 
 from .batch_campaigns import run_transformer_batch_trial
 from .batch_scaling import BatchRunRecord, OptimizerHyperparameters
 from .lr_schedules import LearningRateSchedule
 from .normalized_transformer import NormalizedTransformer
 from .schema import ArchitectureTemplate, DatasetSpec, ScaleLevel
+from .transfer_data import FrozenLanguageModelData, load_frozen_text_windows
 
 
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
@@ -45,6 +47,108 @@ class BudgetGeometry:
             "tokens_per_parameter": self.tokens_per_parameter,
             "presented_to_unique_token_ratio": self.repetition_ratio,
         }
+
+
+@dataclass(frozen=True)
+class HorizonDataset:
+    trial_spec: DatasetSpec
+    frozen: Optional[FrozenLanguageModelData]
+    identity: Dict[str, Any]
+    result: Optional[Dict[str, Any]]
+
+
+def _horizon_dataset(
+    payload: Mapping[str, Any],
+    *,
+    architecture: ArchitectureTemplate,
+    device: str,
+) -> HorizonDataset:
+    if payload.get("task_type") != "tokenized_text":
+        spec = DatasetSpec.from_dict(dict(payload))
+        return HorizonDataset(spec, None, asdict(spec), None)
+
+    allowed = {
+        "task_type",
+        "train_path",
+        "validation_path",
+        "tokenizer",
+        "n_train",
+        "n_validation",
+        "seed",
+        "maximum_bytes",
+    }
+    extras = sorted(set(payload) - allowed)
+    if extras:
+        raise ValueError(f"unknown tokenized-text dataset field(s): {', '.join(extras)}")
+    tokenizer = str(payload.get("tokenizer", "byte_v1"))
+    if tokenizer not in {"byte_v1", "uint16_bin_v1"}:
+        raise ValueError("dataset.tokenizer must be byte_v1 or uint16_bin_v1")
+    if tokenizer == "byte_v1" and architecture.vocab_size != 260:
+        raise ValueError("byte_v1 real-text horizon campaigns require vocab_size 260")
+    train_path = Path(str(payload.get("train_path", "")))
+    validation_path = Path(str(payload.get("validation_path", "")))
+    if not str(payload.get("train_path", "")).strip() or not str(
+        payload.get("validation_path", "")
+    ).strip():
+        raise ValueError("tokenized-text horizon campaigns require train_path and validation_path")
+    n_train = _positive_int(payload.get("n_train"), "dataset.n_train")
+    n_validation = _positive_int(payload.get("n_validation"), "dataset.n_validation")
+    if n_train < 8 or n_validation < 8:
+        raise ValueError("dataset.n_train and dataset.n_validation must each be at least 8")
+    seed = _positive_int(payload.get("seed"), "dataset.seed")
+    maximum_bytes = _positive_int(
+        payload.get("maximum_bytes", 536_870_912), "dataset.maximum_bytes"
+    )
+    frozen = load_frozen_text_windows(
+        train_path=train_path,
+        validation_path=validation_path,
+        tokenizer=tokenizer,
+        vocab_size=architecture.vocab_size,
+        context_length=architecture.context_length,
+        n_train=n_train,
+        n_validation=n_validation,
+        seed=seed,
+        device=torch.device(device),
+        maximum_bytes=maximum_bytes,
+    )
+    trial_spec = DatasetSpec(
+        task_type="synthetic_markov",
+        difficulty="custom",
+        n_train=n_train,
+        n_validation=n_validation,
+        noise_std=0.0,
+        seed=seed,
+        markov_order=1,
+        markov_states=2,
+    )
+    metadata = dict(frozen.metadata)
+    identity = {
+        "task_type": "tokenized_text",
+        "tokenizer": tokenizer,
+        "corpus_fingerprint": metadata["corpus_fingerprint"],
+        "corpus_training_tokens": metadata["corpus_training_tokens"],
+        "corpus_validation_tokens": metadata["corpus_validation_tokens"],
+        "sampled_training_windows": n_train,
+        "sampled_validation_windows": n_validation,
+        "context_length": architecture.context_length,
+        "sampling_seed": seed,
+    }
+    result = {
+        "kind": metadata["kind"],
+        "tokenizer": tokenizer,
+        "fingerprint": metadata["corpus_fingerprint"],
+        "training_tokens": metadata["corpus_training_tokens"],
+        "validation_tokens": metadata["corpus_validation_tokens"],
+        "sampled_training_windows": n_train,
+        "sampled_validation_windows": n_validation,
+        "sampled_unique_training_tokens": n_train * architecture.context_length,
+        "context_length": architecture.context_length,
+        "sampling_seed": seed,
+        "sampling_policy": metadata["sampling_policy"],
+        "train_path": metadata["train_path"],
+        "validation_path": metadata["validation_path"],
+    }
+    return HorizonDataset(trial_spec, frozen, identity, result)
 
 
 def _positive_int(value: Any, name: str) -> int:
@@ -247,6 +351,15 @@ def compile_horizon_transfer_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     maximum_expansion_trials = (
         len(horizons) * len(schedules) * expansion_rounds * len(seeds)
     )
+    real_text = config.get("dataset", {}).get("task_type") == "tokenized_text"
+    execution_order = [
+        "fit_horizon_oracles",
+        "freeze_schedule_and_horizon_rules",
+        "evaluate_frozen_rules_on_heldout_horizon",
+        "reveal_heldout_oracle_for_regret_only",
+    ]
+    if real_text:
+        execution_order.insert(0, "freeze_real_text_corpus_and_sampled_windows")
     return {
         "schema_version": 1,
         "campaign": "horizon_transfer",
@@ -261,12 +374,8 @@ def compile_horizon_transfer_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "planned_grid_trials": (
             fit_trials + transfer_trials + oracle_trials + maximum_expansion_trials
         ),
-        "execution_order": [
-            "fit_horizon_oracles",
-            "freeze_schedule_and_horizon_rules",
-            "evaluate_frozen_rules_on_heldout_horizon",
-            "reveal_heldout_oracle_for_regret_only",
-        ],
+        "data_mode": "frozen_real_text" if real_text else "synthetic_markov",
+        "execution_order": execution_order,
     }
 
 
@@ -281,7 +390,18 @@ def run_horizon_transfer_campaign(
     architecture = ArchitectureTemplate.from_dict(dict(config["architecture"]))
     if architecture.block_type != "normalized_transformer":
         raise ValueError("the first horizon-transfer slice requires normalized_transformer")
-    dataset = DatasetSpec.from_dict(dict(config["dataset"]))
+    if config["dataset"].get("task_type") == "tokenized_text":
+        _progress(
+            progress,
+            "freeze-real-text-data",
+            0,
+            int(plan["planned_grid_trials"]),
+            "Loading and freezing one fingerprinted real-text window sample",
+        )
+    horizon_data = _horizon_dataset(
+        dict(config["dataset"]), architecture=architecture, device=device
+    )
+    dataset = horizon_data.trial_spec
     scale = ScaleLevel.from_dict(dict(config["scale"]), 0)
     optimizer_payload = dict(config["optimizer"])
     if optimizer_payload.get("name") != "adam":
@@ -363,6 +483,11 @@ def run_horizon_transfer_campaign(
             learning_rate_schedule=asdict(schedule),
             gradient_clip_norm=None,
             device=device,
+            prepared_dataset=(horizon_data.frozen.tensors if horizon_data.frozen else None),
+            prepared_dataset_metadata=(
+                horizon_data.frozen.metadata if horizon_data.frozen else None
+            ),
+            dataset_identity=horizon_data.identity,
             cache_directory=cache_directory,
             cache_key_suffix=f"-{role}",
         )
@@ -566,6 +691,7 @@ def run_horizon_transfer_campaign(
         "campaign": "horizon_transfer",
         "device": device,
         "config": dict(config),
+        "dataset": horizon_data.result,
         "plan": plan,
         "coordinates": {
             "N": "trainable parameters",

@@ -104,6 +104,9 @@ The normalized-Transformer contract is documented separately in
 Batch scaling and its A100 manifests are documented in
 `docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision, and
 single-node FSDP contracts are in `docs/PRETRAINING_RUNTIME.md`.
+Frozen real-text learning-rate schedule and token-horizon transfer is specified
+in `docs/HORIZON_TRANSFER.md`, with a CPU smoke manifest and a resumable
+FineWeb-Edu A100 campaign.
 
 The deep-linear and nonlinear suites are more expensive:
 
