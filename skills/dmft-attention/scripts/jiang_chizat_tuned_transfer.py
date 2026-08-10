@@ -204,13 +204,14 @@ def primary_analysis(
         best_by_shape[shape.label] = min(etas, key=lambda eta: means[eta])
     reference_oracle_eta = best_by_shape[reference_label]
     reference_oracle_loss = means_by_shape[reference_label][reference_oracle_eta]
-    reference_eta = min(
+    conservative_reference_eta = min(
         eta
         for eta in etas
         if math.isfinite(means_by_shape[reference_label][eta])
         and means_by_shape[reference_label][eta]
         <= oracle_tolerance * reference_oracle_loss
     )
+    reference_eta = reference_oracle_eta
     offsets = {
         label: math.log10(value / reference_eta)
         for label, value in best_by_shape.items()
@@ -235,6 +236,22 @@ def primary_analysis(
         shape.label: fixed_losses[shape.label] / max(oracle_losses[shape.label], 1e-30)
         for shape in shapes
     }
+    conservative_fixed = fixed_eta_analysis(
+        trials,
+        shapes,
+        seeds,
+        eta=conservative_reference_eta,
+        rule="primary",
+    )
+    conservative_losses = {
+        shape.label: means_by_shape[shape.label][conservative_reference_eta]
+        for shape in shapes
+    }
+    conservative_oracle_ratios = {
+        shape.label: conservative_losses[shape.label]
+        / max(oracle_losses[shape.label], 1e-30)
+        for shape in shapes
+    }
     gates = {
         "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
         "every_shape_has_a_complete_finite_oracle": all(
@@ -247,11 +264,22 @@ def primary_analysis(
         "reference_shape": reference_label,
         "reference_eta": reference_eta,
         "reference_oracle_eta": reference_oracle_eta,
-        "reference_selection_method": (
-            "smallest fully finite eta within the oracle loss-ratio tolerance "
-            "on the reference shape"
-        ),
+        "reference_selection_method": "minimum mean validation loss on the reference shape",
         "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
+        "conservative_operating_point": {
+            "eta": conservative_reference_eta,
+            "selection_method": (
+                "smallest fully finite eta within the oracle loss-ratio tolerance "
+                "on the reference shape"
+            ),
+            "fixed_eta": conservative_fixed,
+            "validation_loss_by_shape": conservative_losses,
+            "loss_ratio_to_oracle_by_shape": conservative_oracle_ratios,
+            "maximum_loss_ratio_to_oracle": max(conservative_oracle_ratios.values()),
+            "near_every_shape_oracle": (
+                max(conservative_oracle_ratios.values()) <= oracle_tolerance
+            ),
+        },
         "best_eta_by_shape": best_by_shape,
         "best_eta_offset_decades": offsets,
         "maximum_absolute_best_eta_offset_decades": max(

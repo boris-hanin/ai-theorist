@@ -114,7 +114,7 @@ def test_moe_relative_multiplier_gate_keeps_source_without_paired_improvement():
     ) == pytest.approx(1.0)
 
 
-def test_moe_primary_uses_smallest_reference_loss_quality_gate():
+def test_moe_primary_tunes_reference_argmin_and_reports_conservative_point():
     etas = (1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
     rows = []
     for shape in tiny_shapes():
@@ -145,6 +145,7 @@ def test_moe_primary_uses_smallest_reference_loss_quality_gate():
         1.10,
     )
     assert report["reference_oracle_eta"] == pytest.approx(1e-2)
-    assert report["reference_eta"] == pytest.approx(3e-3)
+    assert report["reference_eta"] == pytest.approx(1e-2)
+    assert report["conservative_operating_point"]["eta"] == pytest.approx(3e-3)
     assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
-    assert report["accepted"] is True
+    assert report["accepted"] is False

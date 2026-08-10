@@ -403,13 +403,14 @@ def analyze(
     }
     reference_oracle_eta = best_eta_by_width[reference_width]
     reference_oracle_loss = mean_losses[(reference_width, reference_oracle_eta)]
-    reference_eta = min(
+    conservative_reference_eta = min(
         eta
         for eta in etas
         if math.isfinite(mean_losses[(reference_width, eta)])
         and mean_losses[(reference_width, eta)]
         <= oracle_tolerance * reference_oracle_loss
     )
+    reference_eta = reference_oracle_eta
     reference_index = list(etas).index(reference_eta)
     fixed_rows = [
         [
@@ -427,6 +428,22 @@ def analyze(
     oracle_ratios = [
         fixed_loss / max(oracle_loss, 1e-30)
         for fixed_loss, oracle_loss in zip(fixed_losses, oracle_losses)
+    ]
+    conservative_rows = [
+        [
+            trial
+            for trial in selected
+            if trial.width == width
+            and math.isclose(trial.eta, conservative_reference_eta)
+        ]
+        for width in widths
+    ]
+    conservative_losses = [
+        mean_losses[(width, conservative_reference_eta)] for width in widths
+    ]
+    conservative_oracle_ratios = [
+        conservative_loss / max(oracle_loss, 1e-30)
+        for conservative_loss, oracle_loss in zip(conservative_losses, oracle_losses)
     ]
     exact_argmin_drift_within_tolerance = (
         max(abs(value) for value in best_offsets) <= 0.35
@@ -453,11 +470,29 @@ def analyze(
         "reference_width": reference_width,
         "reference_eta": reference_eta,
         "reference_oracle_eta": reference_oracle_eta,
-        "reference_selection_method": (
-            "smallest fully finite eta within the oracle loss-ratio tolerance "
-            "on the reference width"
-        ),
+        "reference_selection_method": "minimum mean validation loss on the reference width",
         "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
+        "conservative_operating_point": {
+            "eta": conservative_reference_eta,
+            "selection_method": (
+                "smallest fully finite eta within the oracle loss-ratio tolerance "
+                "on the reference width"
+            ),
+            "all_trials_finite": all(
+                not row.diverged and math.isfinite(row.final_validation_loss)
+                for rows in conservative_rows
+                for row in rows
+            ),
+            "validation_loss_by_width": {
+                str(width): value for width, value in zip(widths, conservative_losses)
+            },
+            "loss_ratio_to_oracle_by_width": {
+                str(width): value
+                for width, value in zip(widths, conservative_oracle_ratios)
+            },
+            "maximum_loss_ratio_to_oracle": max(conservative_oracle_ratios),
+            "near_every_width_oracle": max(conservative_oracle_ratios) <= oracle_tolerance,
+        },
         "best_eta_by_width": {str(width): best_eta_by_width[width] for width in widths},
         "best_eta_offset_decades": {str(width): value for width, value in zip(widths, best_offsets)},
         "maximum_absolute_best_eta_offset_decades": max(abs(value) for value in best_offsets),

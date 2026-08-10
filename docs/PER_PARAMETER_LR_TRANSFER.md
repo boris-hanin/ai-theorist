@@ -22,12 +22,14 @@ scale-independent fitted multiplier is part of the base model; it is not a
 replacement for the theoretical scale factor.
 
 For every campaign, the reference is the smallest model in the scaling ladder.
-The deployable reference learning rate is the smallest fully finite grid point
-whose paired-seed mean validation loss is within 10% of the reference model's
-grid oracle. This conservative near-optimal choice is made from reference-model
-data only. Transfer succeeds only if that fixed choice remains within 10% of
-each larger model's separately swept oracle; exact discrete argmin equality is
-reported as a diagnostic rather than treated as a hard gate.
+The primary reference learning rate is the fully finite grid point with minimum
+paired-seed mean validation loss on that reference model. Transfer succeeds
+only if that fixed base-scale argmin remains within 10% of each larger model's
+separately swept oracle. The smallest fully finite reference-grid point within
+10% of the base oracle is also reported as a conservative operating-point
+diagnostic, but it cannot replace the tuned base argmin in the primary transfer
+claim. Exact discrete argmin equality across target shapes remains a separate
+diagnostic rather than a hard gate.
 
 ## Fixed-depth μP residual MLP
 

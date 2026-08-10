@@ -91,7 +91,7 @@ def test_nonfinite_failed_control_diagnostics_are_strict_json_safe():
     }
 
 
-def test_near_oracle_transfer_is_not_rejected_by_a_noisy_discrete_argmin():
+def test_reference_argmin_is_primary_and_near_oracle_point_is_diagnostic():
     widths = (64, 128, 256, 512)
     etas = (0.001, 0.003, 0.01, 0.03, 0.1)
     rows = []
@@ -124,6 +124,7 @@ def test_near_oracle_transfer_is_not_rejected_by_a_noisy_discrete_argmin():
         oracle_tolerance=1.10,
     )
     assert report["reference_oracle_eta"] == pytest.approx(0.03)
-    assert report["reference_eta"] == pytest.approx(0.01)
+    assert report["reference_eta"] == pytest.approx(0.03)
+    assert report["conservative_operating_point"]["eta"] == pytest.approx(0.01)
     assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
-    assert report["accepted"] is True
+    assert report["accepted"] is False
