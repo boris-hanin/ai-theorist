@@ -1573,6 +1573,7 @@ export function AutoscalerStudio() {
         schedule: useJiangChizat ? "jiang_half_warmup_constant" : "cosine_to_10_percent",
         batch_examples: forecastBatchExamples,
         validation_examples: targetDevice === "cuda" ? 256 : 16,
+        validation_microbatch_examples: targetDevice === "cuda" ? 4 : 1,
         validation_interval_steps: targetDevice === "cuda" ? 2000 : 1,
         seeds: targetDevice === "cuda" ? [11, 29, 47] : [3],
         runtime: {

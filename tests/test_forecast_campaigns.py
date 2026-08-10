@@ -237,6 +237,10 @@ def test_plan_compiles_exact_vocab_aware_constant_tpp_ladder(
     assert plan["scales"][-1]["heldout"] is True
     assert all(row["relative_parameter_error"] == 0.0 for row in plan["scales"])
     assert all(row["tokens_per_parameter"] > 0.0 for row in plan["scales"])
+    assert plan["measurement_contract"]["validation_microbatch_examples"] == 1
+    changed = _jiang_config(tmp_path, manifest_path)
+    changed["validation_microbatch_examples"] = 2
+    assert compile_real_text_scaling_plan(changed)["fingerprint"] != plan["fingerprint"]
 
 
 def test_smoke_campaign_runs_accelerated_checkpointed_theory_path(

@@ -375,6 +375,14 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     validation_interval_steps = _positive_int(
         config.get("validation_interval_steps"), "validation_interval_steps"
     )
+    validation_microbatch_examples = _positive_int(
+        int(config.get("validation_microbatch_examples", batch_examples)),
+        "validation_microbatch_examples",
+    )
+    if validation_microbatch_examples > validation_examples // runtime.num_processes:
+        raise ValueError(
+            "validation_microbatch_examples cannot exceed per-process validation examples"
+        )
     optimizer = config.get("optimizer")
     if not isinstance(optimizer, Mapping) or optimizer.get("name") != "adam":
         raise ValueError("theory scaling ladder currently requires Adam")
@@ -434,6 +442,7 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "measurement_contract": {
             "validation_examples": validation_examples,
             "validation_interval_steps": validation_interval_steps,
+            "validation_microbatch_examples": validation_microbatch_examples,
         },
         "scales": [row.to_dict() for row in scales],
         "fit_parameter_span": observed_span,
@@ -471,14 +480,6 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     return plan_payload
 
 
-def _distributed_mean(value: torch.Tensor, context: DistributedContext) -> torch.Tensor:
-    result = value.detach().clone()
-    if context.world_size > 1:
-        torch.distributed.all_reduce(result, op=torch.distributed.ReduceOp.SUM)
-        result.div_(context.world_size)
-    return result
-
-
 @torch.no_grad()
 def _evaluate(
     model: nn.Module,
@@ -486,6 +487,7 @@ def _evaluate(
     *,
     vocab_size: int,
     validation_examples: int,
+    validation_microbatch_examples: int,
     seed: int,
     runtime: PretrainingRuntimeSpec,
     context: DistributedContext,
@@ -495,15 +497,28 @@ def _evaluate(
     generator = torch.Generator(device="cpu").manual_seed(
         900_001 + seed + 1_000_003 * context.rank
     )
-    inputs, targets = corpus.sample_batch(
-        "validation", local_examples, generator, context.device
-    )
-    with _autocast(runtime, context.device):
-        logits = model(inputs)
-        loss = F.cross_entropy(
-            logits.float().reshape(-1, vocab_size), targets.reshape(-1)
+    loss_sum = torch.zeros((), dtype=torch.float64, device=context.device)
+    token_count = torch.zeros((), dtype=torch.float64, device=context.device)
+    remaining = local_examples
+    while remaining:
+        current = min(validation_microbatch_examples, remaining)
+        inputs, targets = corpus.sample_batch(
+            "validation", current, generator, context.device
         )
-    result = float(_distributed_mean(loss, context).cpu())
+        with _autocast(runtime, context.device):
+            logits = model(inputs)
+            batch_loss = F.cross_entropy(
+                logits.float().reshape(-1, vocab_size),
+                targets.reshape(-1),
+                reduction="sum",
+            )
+        loss_sum += batch_loss.double()
+        token_count += targets.numel()
+        remaining -= current
+    if context.world_size > 1:
+        torch.distributed.all_reduce(loss_sum, op=torch.distributed.ReduceOp.SUM)
+        torch.distributed.all_reduce(token_count, op=torch.distributed.ReduceOp.SUM)
+    result = float((loss_sum / token_count).cpu())
     model.train()
     return result
 
@@ -767,6 +782,9 @@ def _run_trial(
             corpus,
             vocab_size=int(config["architecture"]["vocab_size"]),
             validation_examples=int(config.get("validation_examples", 256)),
+            validation_microbatch_examples=int(
+                config.get("validation_microbatch_examples", config["batch_examples"])
+            ),
             seed=seed,
             runtime=runtime,
             context=context,
@@ -829,6 +847,11 @@ def _run_trial(
                 corpus,
                 vocab_size=int(config["architecture"]["vocab_size"]),
                 validation_examples=int(config.get("validation_examples", 256)),
+                validation_microbatch_examples=int(
+                    config.get(
+                        "validation_microbatch_examples", config["batch_examples"]
+                    )
+                ),
                 seed=seed,
                 runtime=runtime,
                 context=context,
