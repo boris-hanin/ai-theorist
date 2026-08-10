@@ -4,18 +4,21 @@ from pathlib import Path
 import shutil
 
 import pytest
+import torch
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
 
-from ai_theorist.autoscaler import tokenization
+from ai_theorist.autoscaler import forecast_campaigns, tokenization
 from ai_theorist.autoscaler.forecast_campaigns import (
+    _sample_rank_partitioned_batch,
     bind_real_text_scaling_config,
     compile_real_text_scaling_plan,
     jiang_parameter_count,
     nugpt_parameter_count,
     run_real_text_scaling_campaign,
 )
+from ai_theorist.autoscaler.pretraining import DistributedContext
 from ai_theorist.autoscaler.forecast_fleet import (
     aggregate_forecast_fleet_cache,
     assign_forecast_fleet_tasks,
@@ -227,6 +230,37 @@ def test_analytic_counts_match_both_theory_models() -> None:
     )
 
 
+def test_ddp_sampling_partitions_the_same_global_draw_as_one_gpu() -> None:
+    class DeterministicCorpus:
+        def sample_batch(self, _split, count, generator, _device):
+            inputs = torch.randint(0, 1000, (count, 4), generator=generator)
+            return inputs, inputs + 1
+
+    corpus = DeterministicCorpus()
+    single_generator = torch.Generator().manual_seed(123)
+    expected_inputs, expected_targets = _sample_rank_partitioned_batch(
+        corpus,
+        "train",
+        8,
+        single_generator,
+        DistributedContext(0, 1, 0, "cpu"),
+    )
+    partitions = []
+    target_partitions = []
+    for rank in range(2):
+        inputs, targets = _sample_rank_partitioned_batch(
+            corpus,
+            "train",
+            4,
+            torch.Generator().manual_seed(123),
+            DistributedContext(rank, 2, rank, "cpu"),
+        )
+        partitions.append(inputs)
+        target_partitions.append(targets)
+    assert torch.equal(torch.cat(partitions), expected_inputs)
+    assert torch.equal(torch.cat(target_partitions), expected_targets)
+
+
 def test_plan_compiles_exact_vocab_aware_constant_tpp_ladder(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -269,6 +303,76 @@ def test_forecast_binding_replaces_placeholder_and_compiles_verified_plan(
 def test_forecast_binding_refuses_missing_manifest(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="manifest does not exist"):
         bind_real_text_scaling_config({}, tmp_path / "missing.json")
+
+
+def test_mistral_jiang_preset_is_gate_eligible_before_gpu_allocation(
+    monkeypatch,
+) -> None:
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "autoscaler"
+        / "jiang_mistral_100m_forecast.json"
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        forecast_campaigns,
+        "token_stream_identity",
+        lambda _path: {
+            "format": "sharded_uint32_le_v1",
+            "fingerprint": "a" * 64,
+            "content_fingerprint": "b" * 64,
+            "tokenizer_id": "mistral_7b_v03",
+            "tokenizer_fingerprint": "c" * 64,
+            "vocab_size": 32_768,
+            "packing": {"contract": "document_eos_concatenation_v1"},
+            "training_tokens": 3_000_000_000,
+            "validation_tokens": 100_000_000,
+        },
+    )
+
+    plan = compile_real_text_scaling_plan(config)
+
+    assert plan["require_gate_eligible_plan"] is True
+    assert plan["fit_parameter_span"] >= plan["minimum_parameter_span"]
+    assert max(row["repetition_ratio"] for row in plan["scales"]) <= 1.0
+    assert plan["scales"][-1]["heldout"] is True
+    assert plan["scales"][-1]["parameters"] == 99_709_568
+    assert all(row["rho_lm_over_d"] == pytest.approx(4.0) for row in plan["scales"])
+    assert all(row["rho_relative_error"] == pytest.approx(0.0) for row in plan["scales"])
+    assert plan["target_forecasts"][-1] == 1_000_000_000
+    assert (
+        plan["target_forecasts"][-1] / plan["scales"][-1]["parameters"]
+        <= plan["maximum_extrapolation_factor"]
+    )
+
+
+def test_gate_eligible_plan_refuses_an_undersized_corpus(monkeypatch) -> None:
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "autoscaler"
+        / "jiang_mistral_100m_forecast.json"
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        forecast_campaigns,
+        "token_stream_identity",
+        lambda _path: {
+            "format": "sharded_uint32_le_v1",
+            "fingerprint": "a" * 64,
+            "content_fingerprint": "b" * 64,
+            "tokenizer_id": "mistral_7b_v03",
+            "tokenizer_fingerprint": "c" * 64,
+            "vocab_size": 32_768,
+            "packing": {},
+            "training_tokens": 1_000_000,
+            "validation_tokens": 100_000,
+        },
+    )
+
+    with pytest.raises(ValueError, match="corpus repetition gate"):
+        compile_real_text_scaling_plan(config)
 
 
 def test_smoke_campaign_runs_accelerated_checkpointed_theory_path(

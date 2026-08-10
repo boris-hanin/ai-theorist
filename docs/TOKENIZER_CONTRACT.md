@@ -8,15 +8,25 @@ mutable repository branch is not sufficient. The Autoscaler therefore treats
 the tokenizer, document-packing rule, and token shards as one verified dataset
 identity.
 
-The contract preserves the original deterministic `byte_v1` path and adds an
-allow-listed production tokenizer. Raw `uint16_bin_v1` and `uint32_bin_v1`
+The contract preserves the original deterministic `byte_v1` path and adds
+allow-listed production tokenizers. Raw `uint16_bin_v1` and `uint32_bin_v1`
 files remain available for local compatibility, but they are explicitly
 reported as unpinned and must not qualify a certified scaling-law result.
 
 ## Approved definitions
 
-`GET /api/tokenizers` returns the backend registry. The initial remote preset
-is:
+`GET /api/tokenizers` returns the backend registry. The forecast default is:
+
+- ID: `mistral_7b_v03`
+- repository: `mistralai/Mistral-7B-v0.3`
+- immutable revision: `caa1feb0e54d415e2df31207e5f4e273e33509b1`
+- vocabulary: 32,768 tokens
+- implementation: `tokenizers==0.21.4`
+- BOS: `<s>` at token ID 1
+- EOS and document separator: `</s>` at token ID 2
+- UNK: `<unk>` at token ID 0; no PAD token
+
+The earlier OLMo contract remains approved for compatibility:
 
 - ID: `olmo2_1124`
 - repository: `allenai/OLMo-2-1124-7B`
@@ -27,9 +37,10 @@ is:
 - PAD: `<|pad|>` at token ID 100,277
 - document separator: `<|endoftext|>` at token ID 100,257
 
-The registry contains the expected SHA-256 digest of `tokenizer.json`,
-`tokenizer_config.json`, `special_tokens_map.json`, `vocab.json`, and
-`merges.txt`. Resolution rejects a mutable revision, a missing file, any asset
+The registry contains the expected SHA-256 digest of every required asset.
+For Mistral these are `tokenizer.json`, `tokenizer_config.json`,
+`special_tokens_map.json`, and `tokenizer.model`; OLMo additionally binds
+`vocab.json` and `merges.txt`. Resolution rejects a mutable revision, a missing file, any asset
 digest mismatch, a vocabulary or special-token mismatch, a different runtime
 version, or a failed fixed-string encoding canary.
 
@@ -67,8 +78,10 @@ Pinned public text is encoded with the following
 5. write little-endian unsigned 32-bit token IDs;
 6. sample only complete windows contained in one shard.
 
-Unsigned 32-bit storage is required because the approved OLMo-2 vocabulary is
-larger than the 65,536 values representable by the legacy uint16 format.
+Unsigned 32-bit storage is the single production stream format. It is required
+for OLMo-2 because that vocabulary is larger than the 65,536 values
+representable by the legacy uint16 format, and using it for Mistral keeps one
+packing and loader contract across approved tokenizers.
 Shards are written atomically and are approximately bounded by the configured
 token limit; an individual document may make a shard exceed that limit rather
 than being silently split.
@@ -107,8 +120,9 @@ between tokenizer and stream manifests.
 
 ## Web workflow
 
-For FineWeb-Edu or OpenWebText, select `OLMo 2 · immutable revision` before
-preparing the snapshot. The preparation job downloads and verifies tokenizer
+For the forecast-grade FineWeb-Edu workflow, select
+`Mistral v0.3 · 32k immutable revision` before preparing the snapshot. The
+preparation job downloads and verifies tokenizer
 assets, materializes sharded streams, and returns the stream manifest path.
 The campaign builder then uses that manifest instead of the raw JSONL paths and
 sets the model vocabulary from the approved contract.
@@ -128,10 +142,27 @@ ai-theorist-autoscale corpus-materialize \
   --progress-jsonl
 ```
 
+When the raw FineWeb snapshot already exists, do not download it again.
+Retokenize its verified raw train/validation files while preserving their
+source-row split and content hashes:
+
+```bash
+ai-theorist-autoscale corpus-retokenize \
+  runs/autoscaler/public-corpora/OLMO_CORPUS/manifest.json \
+  mistral_7b_v03 \
+  --output-root runs/autoscaler/mistral-corpora \
+  --progress-jsonl
+```
+
+The derived identity records the source-manifest fingerprint, new tokenizer
+definition, packing contract, and every output shard. A changed or incomplete
+source manifest is refused before tokenization.
+
 ## Validation obligations
 
 Tests cover deterministic resolution, multi-shard generation, deterministic
 window sampling, exact vocabulary enforcement, ambiguous-input refusal, shard
 tampering, tokenizer-asset tampering, public-corpus integration, and verified
-cache reuse. The real OLMo-2 assets and canary encodings must also be resolved
-once on every new deployment image before expensive training is scheduled.
+cache reuse. The real Mistral and OLMo-2 assets and canary encodings must also
+be resolved once on every new deployment image before expensive training is
+scheduled.

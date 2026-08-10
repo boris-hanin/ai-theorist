@@ -16,6 +16,8 @@ from .pretraining import TokenizedTextCorpus, TokenizedTextSpec
 from .study import atomic_write_json
 from .tokenization import (
     PINNED_TOKENIZER_REGISTRY,
+    TOKEN_STREAM_FORMAT,
+    TOKEN_STREAM_PACKING_CONTRACT,
     builtin_byte_tokenizer_manifest,
     load_token_stream_manifest,
     load_tokenizer_manifest,
@@ -948,6 +950,211 @@ def materialize_public_corpus(
                 "message": (
                     f"Frozen corpus ready · {manifest['training_tokens']:,} train tokens · "
                     f"fingerprint {corpus_fingerprint[:12]}"
+                ),
+            }
+        )
+    return manifest
+
+
+def _load_verified_raw_snapshot(manifest_path: Path) -> Dict[str, Any]:
+    """Load the immutable raw-text portion of a completed public corpus."""
+
+    resolved_manifest = manifest_path.expanduser().resolve()
+    directory = resolved_manifest.parent
+    with resolved_manifest.open("r", encoding="utf-8") as handle:
+        manifest = json.load(handle)
+    if not isinstance(manifest, dict):
+        raise ValueError("source corpus manifest must contain an object")
+    if manifest.get("schema_version") != 3 or manifest.get("status") != "complete":
+        raise ValueError("source corpus manifest must be a completed schema-3 snapshot")
+    observed_fingerprint = manifest.get("manifest_fingerprint")
+    unsigned = dict(manifest)
+    unsigned.pop("manifest_fingerprint", None)
+    expected_fingerprint = sha256(
+        json.dumps(
+            unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    if observed_fingerprint != expected_fingerprint:
+        raise ValueError("source corpus manifest fingerprint mismatch")
+    verified_splits: Dict[str, Dict[str, Any]] = {}
+    for split in ("train", "validation"):
+        metadata = manifest.get("splits", {}).get(split)
+        if not isinstance(metadata, dict):
+            raise ValueError(f"source corpus is missing {split} metadata")
+        path = _path_inside(directory, metadata.get("path"), f"{split} path")
+        if not path.is_file() or _hash_file(path) != metadata.get("file_sha256"):
+            raise ValueError(f"source corpus {split} bytes failed verification")
+        verified_splits[split] = {**metadata, "path": str(path)}
+    if not (
+        int(verified_splits["train"]["last_source_row"])
+        < int(verified_splits["validation"]["first_source_row"])
+        or int(verified_splits["validation"]["last_source_row"])
+        < int(verified_splits["train"]["first_source_row"])
+    ):
+        raise ValueError("source corpus train and validation rows overlap")
+    return {
+        **manifest,
+        "manifest_path": str(resolved_manifest),
+        "splits": verified_splits,
+    }
+
+
+def retokenize_public_corpus(
+    source_manifest_path: Path,
+    *,
+    tokenizer_id: str,
+    output_root: Path,
+    token_shard_tokens: int = 16_777_216,
+    progress: ProgressCallback = None,
+) -> Dict[str, Any]:
+    """Retokenize verified raw text without reacquiring the public dataset."""
+
+    if tokenizer_id not in PINNED_TOKENIZER_REGISTRY:
+        raise ValueError("retokenization requires an allow-listed pinned tokenizer")
+    if (
+        isinstance(token_shard_tokens, bool)
+        or not isinstance(token_shard_tokens, int)
+        or not 1_024 <= token_shard_tokens <= 268_435_456
+    ):
+        raise ValueError("token_shard_tokens must be in [1024, 268435456]")
+    source = _load_verified_raw_snapshot(source_manifest_path)
+    identity_payload = {
+        "source_manifest_fingerprint": source["manifest_fingerprint"],
+        "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(
+            tokenizer_id
+        ),
+        "token_stream_format": TOKEN_STREAM_FORMAT,
+        "packing_contract": TOKEN_STREAM_PACKING_CONTRACT,
+        "token_shard_tokens": token_shard_tokens,
+    }
+    identity = sha256(
+        json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()[:16]
+    directory = output_root / identity
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = directory / "manifest.json"
+    if manifest_path.is_file():
+        try:
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                cached = json.load(handle)
+            fingerprint = cached.get("manifest_fingerprint")
+            unsigned = dict(cached)
+            unsigned.pop("manifest_fingerprint", None)
+            expected = sha256(
+                json.dumps(
+                    unsigned,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            tokenizer_manifest = directory / "tokenizer" / "manifest.json"
+            stream_manifest = directory / "token-streams" / "manifest.json"
+            if (
+                cached.get("status") == "complete"
+                and cached.get("schema_version") == 1
+                and fingerprint == expected
+                and cached.get("source_manifest_fingerprint")
+                == source["manifest_fingerprint"]
+                and cached.get("tokenizer") == tokenizer_id
+                and cached.get("tokenizer_definition_fingerprint")
+                == identity_payload["tokenizer_definition_fingerprint"]
+                and cached.get("token_stream_format") == TOKEN_STREAM_FORMAT
+                and cached.get("packing_contract")
+                == TOKEN_STREAM_PACKING_CONTRACT
+                and cached.get("token_shard_tokens") == token_shard_tokens
+            ):
+                verified_tokenizer = load_tokenizer_manifest(
+                    tokenizer_manifest, verify_assets=True
+                )
+                verified_stream = load_token_stream_manifest(
+                    stream_manifest, verify_files=True
+                )
+                if (
+                    verified_tokenizer.get("id") != tokenizer_id
+                    or verified_tokenizer.get("fingerprint")
+                    != cached.get("tokenizer_fingerprint")
+                    or verified_stream.get("fingerprint")
+                    != cached.get("dataset_identity_fingerprint")
+                    or verified_stream.get("content_fingerprint")
+                    != cached.get("corpus_fingerprint")
+                ):
+                    raise ValueError("retokenized corpus cache identity mismatch")
+                if progress is not None:
+                    progress(
+                        {
+                            "phase": "complete",
+                            "completed": 1,
+                            "total": 1,
+                            "message": "Retokenized corpus already materialized",
+                        }
+                    )
+                return cached
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+
+    tokenizer = resolve_pinned_tokenizer(
+        tokenizer_id, directory / "tokenizer", progress
+    )
+    stream = materialize_pinned_token_streams(
+        tokenizer=tokenizer,
+        train_path=Path(source["splits"]["train"]["path"]),
+        validation_path=Path(source["splits"]["validation"]["path"]),
+        output_directory=directory / "token-streams",
+        text_field="text",
+        shard_token_limit=token_shard_tokens,
+        progress=progress,
+        source_fingerprints={
+            "train": str(source["splits"]["train"]["file_sha256"]),
+            "validation": str(source["splits"]["validation"]["file_sha256"]),
+        },
+    )
+    stream_manifest_path = directory / "token-streams" / "manifest.json"
+    load_token_stream_manifest(stream_manifest_path, verify_files=True)
+    manifest: Dict[str, Any] = {
+        "schema_version": 1,
+        "status": "complete",
+        "kind": "retokenized_public_corpus",
+        "id": identity,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_manifest_path": source["manifest_path"],
+        "source_manifest_fingerprint": source["manifest_fingerprint"],
+        "source": source["source"],
+        "source_splits": source["splits"],
+        "tokenizer": tokenizer_id,
+        "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(
+            tokenizer_id
+        ),
+        "tokenizer_fingerprint": tokenizer.manifest["fingerprint"],
+        "tokenizer_manifest_path": str(tokenizer.manifest_path.resolve()),
+        "tokenizer_vocab_size": tokenizer.manifest["vocab_size"],
+        "token_stream_manifest_path": str(stream_manifest_path.resolve()),
+        "corpus_fingerprint": stream["content_fingerprint"],
+        "dataset_identity_fingerprint": stream["fingerprint"],
+        "training_tokens": stream["splits"]["train"]["tokens"],
+        "validation_tokens": stream["splits"]["validation"]["tokens"],
+        "token_stream_format": TOKEN_STREAM_FORMAT,
+        "packing_contract": TOKEN_STREAM_PACKING_CONTRACT,
+        "token_shard_tokens": token_shard_tokens,
+    }
+    manifest["manifest_fingerprint"] = sha256(
+        json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
+    atomic_write_json(manifest_path, manifest)
+    if progress is not None:
+        progress(
+            {
+                "phase": "complete",
+                "completed": 1,
+                "total": 1,
+                "message": (
+                    f"Retokenized corpus ready · {manifest['training_tokens']:,} "
+                    f"train tokens · fingerprint {manifest['corpus_fingerprint'][:12]}"
                 ),
             }
         )

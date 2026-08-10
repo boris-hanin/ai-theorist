@@ -22,11 +22,15 @@ def main() -> None:
     parser.add_argument("--fused", choices=("true", "false"), default="true")
     parser.add_argument("--checkpoint-steps", type=int, default=0)
     parser.add_argument("--checkpoint-seconds", type=float, default=900)
+    parser.add_argument("--distributed", choices=("none", "ddp"), default="none")
+    parser.add_argument("--num-processes", type=int, default=1)
     args = parser.parse_args()
     if args.steps < 1:
         raise ValueError("steps must be positive")
     if args.checkpoint_steps < 0 or args.checkpoint_seconds < 0:
         raise ValueError("checkpoint cadences must be non-negative")
+    if (args.distributed == "none") != (args.num_processes == 1):
+        raise ValueError("none requires one process and ddp requires multiple processes")
 
     with args.config.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
@@ -45,8 +49,8 @@ def main() -> None:
         {
             "precision": "bf16",
             "attention_backend": "flash",
-            "distributed": "none",
-            "num_processes": 1,
+            "distributed": args.distributed,
+            "num_processes": args.num_processes,
             "gradient_accumulation_steps": 1,
             "checkpoint_interval_steps": args.checkpoint_steps,
             "checkpoint_interval_seconds": args.checkpoint_seconds,
@@ -87,6 +91,8 @@ def main() -> None:
                     f"eta{args.learning_rate:g}-seed{args.seed}"
                 ),
                 "fused": config["optimizer"]["fused"],
+                "distributed": args.distributed,
+                "num_processes": args.num_processes,
             },
             sort_keys=True,
         )

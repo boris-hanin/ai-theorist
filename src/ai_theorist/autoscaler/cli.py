@@ -31,10 +31,15 @@ from .forecast_fleet import (
     run_forecast_fleet_shard,
     select_forecast_fleet_learning_rate,
 )
+from .forecast_qualification import compare_forecast_topologies
 from .horizon_campaigns import run_horizon_transfer_campaign
 from .joint_transfer_campaigns import run_joint_transfer_campaign
 from .pretraining import compile_standard_pretraining_plan
-from .public_corpora import PublicCorpusSpec, materialize_public_corpus
+from .public_corpora import (
+    PublicCorpusSpec,
+    materialize_public_corpus,
+    retokenize_public_corpus,
+)
 from .schema import StudySpec, compile_plan, default_study_spec
 from .seesaw import SchedulePoint, compile_seesaw_schedule
 from .study import atomic_write_json, run_study
@@ -243,6 +248,15 @@ def main() -> None:
     )
     forecast_aggregate.add_argument("--output", type=Path, required=True)
 
+    forecast_compare = subparsers.add_parser(
+        "forecast-compare-topology",
+        help="compare a one-GPU forecast canary with its two-GPU DDP twin",
+    )
+    forecast_compare.add_argument("single_result", type=Path)
+    forecast_compare.add_argument("ddp_result", type=Path)
+    forecast_compare.add_argument("--maximum-loss-delta", type=float, default=1e-3)
+    forecast_compare.add_argument("--output", type=Path)
+
     corpus = subparsers.add_parser(
         "corpus-materialize",
         help="freeze an allow-listed public text corpus for reproducible experiments",
@@ -252,6 +266,18 @@ def main() -> None:
         "--output-root", type=Path, default=Path("runs/autoscaler/public-corpora")
     )
     corpus.add_argument("--progress-jsonl", action="store_true")
+
+    retokenize = subparsers.add_parser(
+        "corpus-retokenize",
+        help="reuse a verified raw public snapshot with another pinned tokenizer",
+    )
+    retokenize.add_argument("source_manifest", type=Path)
+    retokenize.add_argument("tokenizer")
+    retokenize.add_argument(
+        "--output-root", type=Path, default=Path("runs/autoscaler/retokenized-corpora")
+    )
+    retokenize.add_argument("--token-shard-tokens", type=int, default=16_777_216)
+    retokenize.add_argument("--progress-jsonl", action="store_true")
 
     args = parser.parse_args()
     if args.command == "sample-spec":
@@ -577,6 +603,19 @@ def main() -> None:
                 output_directory=args.output,
             )
         )
+    elif args.command == "forecast-compare-topology":
+        single = _read_json(args.single_result)
+        ddp = _read_json(args.ddp_result)
+        if not isinstance(single, dict) or not isinstance(ddp, dict):
+            raise ValueError("forecast topology results must be objects")
+        comparison = compare_forecast_topologies(
+            single,
+            ddp,
+            maximum_absolute_loss_delta=args.maximum_loss_delta,
+        )
+        _write_and_print(comparison, args.output)
+        if comparison["status"] != "passed":
+            raise SystemExit(1)
     elif args.command == "corpus-materialize":
         payload = _read_json(args.config)
         if not isinstance(payload, dict):
@@ -590,6 +629,20 @@ def main() -> None:
                 PublicCorpusSpec.from_dict(payload),
                 args.output_root,
                 progress,
+            )
+        )
+    elif args.command == "corpus-retokenize":
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        _print(
+            retokenize_public_corpus(
+                args.source_manifest,
+                tokenizer_id=args.tokenizer,
+                output_root=args.output_root,
+                token_shard_tokens=args.token_shard_tokens,
+                progress=progress,
             )
         )
 

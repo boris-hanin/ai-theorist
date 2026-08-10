@@ -20,6 +20,8 @@ from .study import atomic_write_json
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 TOKENIZER_MANIFEST_SCHEMA_VERSION = 1
 TOKEN_STREAM_MANIFEST_SCHEMA_VERSION = 1
+TOKEN_STREAM_FORMAT = "sharded_uint32_le_v1"
+TOKEN_STREAM_PACKING_CONTRACT = "document_eos_concatenation_v1"
 PINNED_TOKENIZERS_PACKAGE_VERSION = "0.21.4"
 
 
@@ -194,8 +196,70 @@ OLMO2_1124 = PinnedTokenizerDefinition(
 )
 
 
+MISTRAL_7B_V03 = PinnedTokenizerDefinition(
+    id="mistral_7b_v03",
+    name="Mistral 7B v0.3",
+    implementation="huggingface_tokenizers_json_v1",
+    repository="mistralai/Mistral-7B-v0.3",
+    revision="caa1feb0e54d415e2df31207e5f4e273e33509b1",
+    tokenizer_file="tokenizer.json",
+    package="tokenizers",
+    package_version=PINNED_TOKENIZERS_PACKAGE_VERSION,
+    vocab_size=32_768,
+    special_tokens={
+        "bos": "<s>",
+        "eos": "</s>",
+        "pad": None,
+        "unknown": "<unk>",
+    },
+    special_token_ids={
+        "bos": 1,
+        "eos": 2,
+        "pad": None,
+        "unknown": 0,
+    },
+    document_separator_token_id=2,
+    assets=(
+        TokenizerAssetDefinition(
+            "tokenizer.json",
+            "e553af6fff7d7ad76e830608b218c5c0b0822998d5a1a96099a74cd3c1cb1a49",
+        ),
+        TokenizerAssetDefinition(
+            "tokenizer_config.json",
+            "4b16ec9a87854359a282c521da82655cf96c91f53184d14612aa37deac34378e",
+        ),
+        TokenizerAssetDefinition(
+            "special_tokens_map.json",
+            "6fa06efa2785e450051989a6f8fb4416b10149ded485ddd3f127a40734f5cfd0",
+        ),
+        TokenizerAssetDefinition(
+            "tokenizer.model",
+            "37f00374dea48658ee8f5d0f21895b9bc55cb0103939607c8185bfd1c6ca1f89",
+        ),
+    ),
+    canaries=(
+        TokenizerCanaryDefinition(
+            "Autoscaler",
+            4,
+            "dd6a13bfbe9edf5f3b2e3aa6562787283b3e3c260bce575fe181540fa77c6cdb",
+        ),
+        TokenizerCanaryDefinition(
+            "νGPT scales across width.\n",
+            9,
+            "284082d916ec281416d92f2eba607f013bdc0e0175ee3ac5b9b4ec8bc91c198b",
+        ),
+        TokenizerCanaryDefinition(
+            "</s>",
+            1,
+            "26b25d457597a7b0463f9620f666dd10aa2c4373a505967c7c8d70922a2d6ece",
+        ),
+    ),
+)
+
+
 PINNED_TOKENIZER_REGISTRY: Dict[str, PinnedTokenizerDefinition] = {
     OLMO2_1124.id: OLMO2_1124,
+    MISTRAL_7B_V03.id: MISTRAL_7B_V03,
 }
 
 
@@ -831,7 +895,7 @@ def materialize_pinned_token_streams(
         }
     )
     packing = {
-        "contract": "document_eos_concatenation_v1",
+        "contract": TOKEN_STREAM_PACKING_CONTRACT,
         "add_special_tokens": False,
         "append_document_separator": True,
         "document_separator_token_id": tokenizer.definition.document_separator_token_id,
@@ -842,7 +906,7 @@ def materialize_pinned_token_streams(
     manifest: Dict[str, Any] = {
         "schema_version": TOKEN_STREAM_MANIFEST_SCHEMA_VERSION,
         "status": "complete",
-        "format": "sharded_uint32_le_v1",
+        "format": TOKEN_STREAM_FORMAT,
         "dtype": "uint32_le",
         "tokenizer_id": tokenizer.definition.id,
         "tokenizer_fingerprint": tokenizer.manifest["fingerprint"],
@@ -866,7 +930,7 @@ def load_token_stream_manifest(
         raise ValueError("token stream manifest must contain a JSON object")
     if manifest.get("schema_version") != TOKEN_STREAM_MANIFEST_SCHEMA_VERSION:
         raise ValueError("unsupported token stream manifest schema version")
-    if manifest.get("status") != "complete" or manifest.get("format") != "sharded_uint32_le_v1":
+    if manifest.get("status") != "complete" or manifest.get("format") != TOKEN_STREAM_FORMAT:
         raise ValueError("unsupported or incomplete token stream manifest")
     fingerprint = manifest.get("fingerprint")
     unsigned = dict(manifest)
@@ -892,7 +956,7 @@ def load_token_stream_manifest(
     packing = manifest.get("packing")
     if (
         not isinstance(packing, dict)
-        or packing.get("contract") != "document_eos_concatenation_v1"
+        or packing.get("contract") != TOKEN_STREAM_PACKING_CONTRACT
         or packing.get("document_separator_token_id")
         != tokenizer_manifest.get("special_token_ids", {}).get("document_separator")
     ):

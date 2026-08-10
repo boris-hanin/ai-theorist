@@ -81,6 +81,8 @@ class TheoryScale:
     repetition_ratio: float
     iteration_ratio: float
     heldout: bool
+    rho_lm_over_d: Optional[float]
+    rho_relative_error: Optional[float]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -218,6 +220,9 @@ def _generate_ladder(
             int(ladder.get("hidden_width_multiple", head_dimension)),
             "hidden_width_multiple",
         )
+        rho_tolerance = float(ladder.get("maximum_rho_relative_error", 0.25))
+        if not 0.0 <= rho_tolerance < 1.0:
+            raise ValueError("maximum_rho_relative_error must be in [0,1)")
         for target, depth in zip(targets, depths):
             rows = []
             for residual_width in candidates:
@@ -231,6 +236,7 @@ def _generate_ladder(
                     residual_width=residual_width,
                     hidden_width=hidden_width,
                 )
+                actual_rho = depth * hidden_width / residual_width
                 rows.append(
                     {
                         "target": target,
@@ -239,6 +245,8 @@ def _generate_ladder(
                         "hidden_width": hidden_width,
                         "parameters": parameters,
                         "num_heads": residual_width // head_dimension,
+                        "rho_lm_over_d": actual_rho,
+                        "rho_relative_error": abs(actual_rho / rho - 1.0),
                     }
                 )
             shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
@@ -246,6 +254,7 @@ def _generate_ladder(
             "parameterization": "jiang_completep_adam",
             "theory": asdict(JIANG_COMPLETEP_ADAM_THEORY),
             "rho_lm_over_d": rho,
+            "maximum_rho_relative_error": rho_tolerance,
             "tied_embeddings": True,
             "attention_scale": "QK^T/d_head",
             "residual_branch_scale": "1/L",
@@ -275,6 +284,8 @@ def _generate_ladder(
                         mlp_multiplier=mlp_multiplier,
                     ),
                     "num_heads": width // head_dimension,
+                    "rho_lm_over_d": None,
+                    "rho_relative_error": None,
                 }
                 for width in candidates
             ]
@@ -294,6 +305,13 @@ def _generate_ladder(
             raise ValueError(
                 f"no width <= {maximum_width} places S{index + 1} within the "
                 f"declared parameter tolerance"
+            )
+        if (
+            block_type == "jiang_chizat_transformer"
+            and float(row["rho_relative_error"]) > rho_tolerance
+        ):
+            raise ValueError(
+                f"S{index + 1} violates the declared L*M/D tolerance"
             )
         requested_tokens = tokens_per_parameter * parameters
         presented_tokens = max(
@@ -320,6 +338,16 @@ def _generate_ladder(
                 repetition_ratio=presented_tokens / unique_tokens,
                 iteration_ratio=1.0,
                 heldout=index >= len(shapes) - heldout_count,
+                rho_lm_over_d=(
+                    float(row["rho_lm_over_d"])
+                    if row["rho_lm_over_d"] is not None
+                    else None
+                ),
+                rho_relative_error=(
+                    float(row["rho_relative_error"])
+                    if row["rho_relative_error"] is not None
+                    else None
+                ),
             )
         )
     reference_index = int(ladder.get("reference_scale_index", 0))
@@ -427,6 +455,26 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     maximum_repetition = _positive_float(
         ladder.get("maximum_repetition_ratio", 1.0), "maximum_repetition_ratio"
     )
+    maximum_extrapolation = _positive_float(
+        ladder.get("maximum_extrapolation_factor", 10.0),
+        "maximum_extrapolation_factor",
+    )
+    require_gate_eligible_plan = ladder.get("require_gate_eligible_plan", False)
+    if not isinstance(require_gate_eligible_plan, bool):
+        raise ValueError("require_gate_eligible_plan must be boolean")
+    if require_gate_eligible_plan:
+        if observed_span < minimum_span:
+            raise ValueError(
+                "forecast plan is guaranteed to fail its minimum parameter span gate"
+            )
+        if max(row.repetition_ratio for row in scales) > maximum_repetition:
+            raise ValueError(
+                "forecast plan is guaranteed to fail its corpus repetition gate"
+            )
+        if target_forecasts[-1] / scales[-1].parameters > maximum_extrapolation:
+            raise ValueError(
+                "forecast plan is guaranteed to fail its extrapolation gate"
+            )
     plan_payload = {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "campaign": "real_text_scaling_ladder",
@@ -449,6 +497,8 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "fit_parameter_span": observed_span,
         "minimum_parameter_span": minimum_span,
         "maximum_repetition_ratio": maximum_repetition,
+        "maximum_extrapolation_factor": maximum_extrapolation,
+        "require_gate_eligible_plan": require_gate_eligible_plan,
         "target_forecasts": list(target_forecasts),
         "tuning_trials": len(rates) * len(seeds),
         "scale_trials": len(scales) * len(seeds),
@@ -516,6 +566,32 @@ def bind_real_text_scaling_config(
     return bound, summary
 
 
+def _sample_rank_partitioned_batch(
+    corpus: TokenizedTextCorpus,
+    split: str,
+    local_examples: int,
+    generator: torch.Generator,
+    context: DistributedContext,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Draw one global batch identically, then give each DDP rank its slice.
+
+    Replicating the lightweight memory-mapped draw makes one-GPU and DDP runs
+    consume the same examples in the same order. This is intentionally more
+    conservative than independent rank RNG streams because topology must not
+    silently change the experiment.
+    """
+
+    global_examples = local_examples * context.world_size
+    inputs, targets = corpus.sample_batch(
+        split, global_examples, generator, context.device
+    )
+    if context.world_size == 1:
+        return inputs, targets
+    start = context.rank * local_examples
+    stop = start + local_examples
+    return inputs[start:stop], targets[start:stop]
+
+
 @torch.no_grad()
 def _evaluate(
     model: nn.Module,
@@ -530,16 +606,14 @@ def _evaluate(
 ) -> float:
     model.eval()
     local_examples = validation_examples // context.world_size
-    generator = torch.Generator(device="cpu").manual_seed(
-        900_001 + seed + 1_000_003 * context.rank
-    )
+    generator = torch.Generator(device="cpu").manual_seed(900_001 + seed)
     loss_sum = torch.zeros((), dtype=torch.float64, device=context.device)
     token_count = torch.zeros((), dtype=torch.float64, device=context.device)
     remaining = local_examples
     while remaining:
         current = min(validation_microbatch_examples, remaining)
-        inputs, targets = corpus.sample_batch(
-            "validation", current, generator, context.device
+        inputs, targets = _sample_rank_partitioned_batch(
+            corpus, "validation", current, generator, context
         )
         with _autocast(runtime, context.device):
             logits = model(inputs)
@@ -796,9 +870,7 @@ def _run_trial(
         context.world_size * runtime.gradient_accumulation_steps
     )
     steps = int(scale["optimizer_steps"])
-    generator = torch.Generator(device="cpu").manual_seed(
-        100_003 + seed + 1_000_003 * context.rank
-    )
+    generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     resume_base = cache_directory / f"{run_id}.resume"
     resumed = load_runtime_checkpoint(
         base_path=resume_base,
@@ -851,11 +923,12 @@ def _run_trial(
             group["lr"] = peak_rate * multiplier
         optimizer.zero_grad(set_to_none=True)
         for accumulation_index in range(runtime.gradient_accumulation_steps):
-            inputs, targets = corpus.sample_batch(
+            inputs, targets = _sample_rank_partitioned_batch(
+                corpus,
                 "train",
                 local_microbatch_examples,
                 generator,
-                context.device,
+                context,
             )
             synchronization = (
                 model.no_sync()  # type: ignore[attr-defined]
@@ -986,6 +1059,7 @@ def _run_trial(
                 "optimizer_group_audit": group_audit,
                 "gradient_clipping": "none_source_faithful",
                 "activation_checkpointing": runtime.activation_checkpointing,
+                "sampling_contract": "replicated_global_draw_rank_partition_v1",
                 "resumed_from_step": start_step,
                 "diagnostics": diagnostics,
                 "peak_memory_bytes": (

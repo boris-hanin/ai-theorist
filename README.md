@@ -105,7 +105,7 @@ Batch scaling and its A100 manifests are documented in
 `docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision,
 single-node DDP/FSDP, accumulation, and recovery contracts are in
 `docs/PRETRAINING_RUNTIME.md`.
-Immutable byte and OLMo-2 tokenizer definitions, verified assets, sharded token
+Immutable byte, Mistral-v0.3, and OLMo-2 tokenizer definitions, verified assets, sharded token
 streams, and combined dataset identity are specified in
 `docs/TOKENIZER_CONTRACT.md`.
 Frozen real-text learning-rate schedule and token-horizon transfer is specified

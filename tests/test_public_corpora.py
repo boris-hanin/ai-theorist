@@ -15,6 +15,7 @@ from ai_theorist.autoscaler.public_corpora import (
     PublicCorpusSpec,
     materialize_public_corpus,
     public_corpus_catalog,
+    retokenize_public_corpus,
 )
 from ai_theorist.autoscaler.tokenization import (
     PINNED_TOKENIZERS_PACKAGE_VERSION,
@@ -339,3 +340,29 @@ def test_public_materializer_builds_verified_pinned_token_stream(
 
     cached = materialize_public_corpus(spec, tmp_path / "corpora")
     assert cached == result
+
+    source_manifest = (
+        tmp_path / "corpora" / spec.fingerprint / "manifest.json"
+    )
+    retokenized = retokenize_public_corpus(
+        source_manifest,
+        tokenizer_id=definition.id,
+        output_root=tmp_path / "retokenized",
+        token_shard_tokens=1024,
+    )
+    assert retokenized["kind"] == "retokenized_public_corpus"
+    assert retokenized["source_manifest_fingerprint"] == result[
+        "manifest_fingerprint"
+    ]
+    assert retokenized["dataset_identity_fingerprint"] == result[
+        "dataset_identity_fingerprint"
+    ]
+    assert retokenized["token_stream_format"] == "sharded_uint32_le_v1"
+    assert retokenized["packing_contract"] == "document_eos_concatenation_v1"
+    assert Path(retokenized["token_stream_manifest_path"]).is_file()
+    assert retokenize_public_corpus(
+        source_manifest,
+        tokenizer_id=definition.id,
+        output_root=tmp_path / "retokenized",
+        token_shard_tokens=1024,
+    ) == retokenized

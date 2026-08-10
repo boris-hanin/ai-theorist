@@ -118,13 +118,19 @@ def _materialized_fixture(tmp_path: Path, monkeypatch):
     return definition, resolved, manifest, tmp_path / "token-streams" / "manifest.json"
 
 
-def test_catalog_exposes_immutable_olmo_definition() -> None:
+def test_catalog_exposes_immutable_remote_definitions() -> None:
     catalog = {row["id"]: row for row in tokenizer_catalog()}
     assert catalog["byte_v1"]["tokenizer_fingerprint"]
     olmo = catalog["olmo2_1124"]
     assert len(olmo["revision"]) == 40
     assert olmo["vocab_size"] == 100_278
     assert len(olmo["definition_fingerprint"]) == 64
+    mistral = catalog["mistral_7b_v03"]
+    assert mistral["repository"] == "mistralai/Mistral-7B-v0.3"
+    assert len(mistral["revision"]) == 40
+    assert mistral["vocab_size"] == 32_768
+    assert mistral["document_separator_token_id"] == 2
+    assert len(mistral["definition_fingerprint"]) == 64
 
 
 def test_pinned_tokenizer_resolution_and_sharded_stream_are_reproducible(

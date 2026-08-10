@@ -37,7 +37,8 @@ Public-corpus acquisition has a streaming Parquet backend. Downloads resume by
 HTTP byte range, source Parquet inventory and revision are frozen, document
 provenance is recorded, and raw-text plus token-shard materialization resumes
 only at atomically committed boundaries. The forecast preset uses FineWeb-Edu
-and the pinned OLMo 2 tokenizer.
+and the pinned 32,768-token Mistral v0.3 tokenizer. An already verified raw
+snapshot can be retokenized without reacquiring source data.
 
 Long trials may checkpoint by optimizer-step cadence, wall-clock cadence, or
 both. The production presets use a 15-minute timer instead of checkpointing
@@ -51,8 +52,8 @@ every reference learning-rate/seed probe. Only after those exact cache records
 are complete does the controller select the preregistered mean-loss optimum.
 Phase `ladder` then runs every remaining rung/seed pair and the largest-rung
 wrong-global-LR controls. The selected reference trials are reused rather than
-trained twice, so the supplied three-seed, five-rate, six-rung campaign has 33
-physical trials and 36 logical analysis records.
+trained twice, so the supplied three-seed, five-rate, seven-rung campaign has
+36 physical trials and 39 logical analysis records.
 
 Tasks are assigned by deterministic longest-processing-time balancing using
 the declared `6*N*T` FLOP estimate. Each shard is a single-process worker with
@@ -85,7 +86,7 @@ Use the selected rate for every ladder shard. `forecast-aggregate` first
 proves that every expected cache filename and record contract is present; it
 refuses incomplete or stale fleets before invoking the canonical analysis.
 
-The checked-in 100M presets target independent GPU workers: explicit bf16
+The checked-in 100M preset targets independent GPU workers: explicit bf16
 FlashAttention, fused Adam, one process per trial, vectorized memory-mapped
 token sampling, activation checkpointing, and 15-minute atomic checkpoints.
 Single-node DDP/FSDP remains available through the web builder when one trial
@@ -120,7 +121,7 @@ Materialize the corpus (the operation safely resumes):
 
 ```bash
 ai-theorist-autoscale corpus-materialize \
-  configs/autoscaler/fineweb_edu_olmo2_forecast_corpus.json \
+  configs/autoscaler/fineweb_edu_mistral_forecast_corpus.json \
   --output-root runs/autoscaler/public-corpora \
   --progress-jsonl
 ```
@@ -132,19 +133,42 @@ GPU:
 
 ```bash
 ai-theorist-autoscale forecast-bind \
-  configs/autoscaler/jiang_olmo2_100m_ladder.json \
+  configs/autoscaler/jiang_mistral_100m_forecast.json \
   runs/autoscaler/public-corpora/CORPUS/token-streams/manifest.json \
-  --output runs/autoscaler/jiang-olmo2-100m.json
+  --output runs/autoscaler/jiang-mistral-100m.json
 ```
 
 Launch the resumable campaign:
 
 ```bash
 ai-theorist-autoscale forecast-ladder \
-  runs/autoscaler/jiang-olmo2-100m.json \
+  runs/autoscaler/jiang-mistral-100m.json \
   --device cuda \
-  --output runs/autoscaler/jiang-olmo2-100m \
+  --output runs/autoscaler/jiang-mistral-100m \
   --progress-jsonl
+```
+
+Before trusting a multi-GPU topology, compare the same short campaign on one
+GPU and two-GPU DDP. The qualification preserves the global sample draw and
+partitions it by rank, then checks task coordinates, per-group learning rates,
+validation coordinates, selected reference LR, and loss parity:
+
+```bash
+scripts/qualify_forecast_2gpu_ddp.sh \
+  configs/autoscaler/jiang_mistral_100m_forecast.json \
+  runs/autoscaler/mistral-corpora/CORPUS/token-streams/manifest.json \
+  runs/autoscaler/ddp-qualification
+```
+
+On one node with eight GPUs, production uses one independent trial worker per
+GPU rather than data-parallelizing small models. The controller freezes the
+plan and balanced assignments, completes all tuning workers, selects the LR,
+then completes the ladder workers and refuses partial aggregation:
+
+```bash
+scripts/run_forecast_8gpu_fleet.sh \
+  runs/autoscaler/jiang-mistral-100m.json \
+  runs/autoscaler/jiang-mistral-8gpu
 ```
 
 For the current two-independent-A100 topology,
@@ -157,11 +181,11 @@ resumable after the launcher exits.
 
 The equivalent νGPT preset uses the same independent-worker execution. The web app exposes the same immutable
 fields, public-corpus job, progress, hidden-rung calibration, and forecast
-refusal reasons. The supplied 7M–100M stage intentionally retains the 30×
-span gate: it can qualify transfer and the hidden 100M rung, but it cannot by
-itself certify the displayed 1B target. Extend the frozen ladder through an
-observed roughly 200M rung and reserve a 300M rung before asking that gate to
-pass.
+refusal reasons. The default Jiang ladder compiles exact rungs from 2.2M to
+100M parameters; its fit rungs span more than 30× before the hidden 100M rung.
+The displayed 1B target is a bounded roughly 10× extrapolation, but it remains
+withheld until the real run passes LR, transfer-control, backtest,
+family-agreement, and repetition gates.
 
 ## Remaining scale boundary
 

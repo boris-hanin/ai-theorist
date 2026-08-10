@@ -18,9 +18,9 @@ type Precision = "fp32" | "bf16";
 type AttentionBackend = "auto" | "math" | "flash";
 type DistributedMode = "none" | "ddp" | "fsdp";
 type PretrainingOptimizer = "sgd" | "adam" | "adamw";
-type TokenizerId = "byte_v1" | "uint16_bin_v1" | "uint32_bin_v1" | "olmo2_1124";
+type TokenizerId = "byte_v1" | "uint16_bin_v1" | "uint32_bin_v1" | "olmo2_1124" | "mistral_7b_v03";
 type TokenizerCatalogItem = {
-  id: "byte_v1" | "olmo2_1124";
+  id: "byte_v1" | "olmo2_1124" | "mistral_7b_v03";
   name: string;
   kind: "builtin" | "pinned_remote";
   vocab_size: number;
@@ -373,7 +373,7 @@ type PublicCorpusJob = {
   error: string | null;
   result: null | {
     source: { dataset: string; config: string; revision: string; license: string; data_card_url: string };
-    tokenizer: "byte_v1" | "olmo2_1124";
+    tokenizer: "byte_v1" | "olmo2_1124" | "mistral_7b_v03";
     tokenizer_definition_fingerprint: string;
     tokenizer_fingerprint: string;
     tokenizer_manifest_path: string;
@@ -751,8 +751,8 @@ export function AutoscalerStudio() {
   const [jointFitBatches, setJointFitBatches] = useState("2, 4, 8");
   const [jointHeldoutBatch, setJointHeldoutBatch] = useState(16);
   const [jointSchedule, setJointSchedule] = useState<HorizonSchedule>("linear_warmup_decay_to_zero");
-  const [forecastTargets, setForecastTargets] = useState("7000000, 12000000, 20000000, 35000000, 60000000, 100000000");
-  const [forecastDepths, setForecastDepths] = useState("2, 2, 4, 4, 6, 8");
+  const [forecastTargets, setForecastTargets] = useState("2200000, 4500000, 7500000, 16000000, 30000000, 70000000, 100000000");
+  const [forecastDepths, setForecastDepths] = useState("2, 2, 4, 4, 6, 8, 8");
   const [forecastPredictionTargets, setForecastPredictionTargets] = useState("200000000, 1000000000");
   const [forecastTokensPerParameter, setForecastTokensPerParameter] = useState(20);
   const [forecastContextLength, setForecastContextLength] = useState(512);
@@ -888,9 +888,9 @@ export function AutoscalerStudio() {
   const corpusJobLocked = corpusJob?.status === "queued" || corpusJob?.status === "running";
   const publicCorpusReady = corpusChoice === "local" || corpusJob?.status === "completed";
   const pinnedTokenizer = tokenizerCatalog.find((item) => item.id === tokenizer);
-  const usesPinnedTokenStream = tokenizer === "olmo2_1124";
-  const tokenizerVocabSize = tokenizer === "byte_v1" || tokenizer === "olmo2_1124"
-    ? pinnedTokenizer?.vocab_size ?? (tokenizer === "byte_v1" ? 260 : 100278)
+  const usesPinnedTokenStream = tokenizer === "olmo2_1124" || tokenizer === "mistral_7b_v03";
+  const tokenizerVocabSize = tokenizer === "byte_v1" || usesPinnedTokenStream
+    ? pinnedTokenizer?.vocab_size ?? (tokenizer === "byte_v1" ? 260 : tokenizer === "mistral_7b_v03" ? 32768 : 100278)
     : 32768;
   const corpusPathsReady = usesPinnedTokenStream
     ? tokenStreamManifestPath.trim().length > 0
@@ -934,7 +934,7 @@ export function AutoscalerStudio() {
   const forecastConfigValid = batchCampaign !== "real_text_scaling_ladder" || (
     targetDevice === "cuda"
     && tokenStreamManifestPath.trim().length > 0
-    && parsedForecastTargets.length >= 6
+    && parsedForecastTargets.length >= 7
     && parsedForecastDepths.length === parsedForecastTargets.length
     && parsedForecastTargets.every((value, index) => index === 0 || value > parsedForecastTargets[index - 1])
     && parsedForecastPredictionTargets.length > 0
@@ -1340,14 +1340,14 @@ export function AutoscalerStudio() {
       setDistributedMode("none");
       setGpuCount(2);
       setHorizonParameterization("jiang_chizat");
-      setTokenizer("olmo2_1124");
+      setTokenizer("mistral_7b_v03");
       setTokenStreamManifestPath("");
       setCorpusChoice("fineweb_edu");
       setCorpusTrainMiB(12_288);
       setCorpusValidationMiB(512);
       setCorpusJob(null);
-      setForecastTargets("7000000, 12000000, 20000000, 35000000, 60000000, 100000000");
-      setForecastDepths("2, 2, 4, 4, 6, 8");
+      setForecastTargets("2200000, 4500000, 7500000, 16000000, 30000000, 70000000, 100000000");
+      setForecastDepths("2, 2, 4, 4, 6, 8, 8");
       setForecastPredictionTargets("200000000, 1000000000");
       setForecastTokensPerParameter(20);
       setForecastContextLength(512);
@@ -1519,8 +1519,8 @@ export function AutoscalerStudio() {
           context_length: forecastContextLength,
           head_dimension: 64,
           reference_depth: 2,
-          reference_hidden_width: 256,
-          reference_residual_width: 128,
+          reference_hidden_width: 128,
+          reference_residual_width: 64,
         } : {
           block_type: "normalized_transformer",
           activation: "silu",
@@ -1541,14 +1541,16 @@ export function AutoscalerStudio() {
           target_parameters: parsedForecastTargets,
           depths: parsedForecastDepths,
           ...(useJiangChizat ? { rho_lm_over_d: 4 } : {}),
+          ...(useJiangChizat ? { hidden_width_multiple: 8, maximum_rho_relative_error: 1e-12 } : {}),
           tokens_per_parameter: forecastTokensPerParameter,
           heldout_scale_count: 1,
           reference_scale_index: 0,
-          maximum_parameter_error_fraction: 0.15,
+          maximum_parameter_error_fraction: 0.05,
           minimum_parameter_span: 30,
           maximum_repetition_ratio: 1,
           target_forecasts: parsedForecastPredictionTargets,
-          maximum_extrapolation_factor: 10,
+          maximum_extrapolation_factor: 10.1,
+          require_gate_eligible_plan: true,
           maximum_family_spread: 0.08,
           maximum_backtest_relative_error: 0.1,
         },
@@ -1564,7 +1566,7 @@ export function AutoscalerStudio() {
             jiang_embeddings: 1,
             jiang_norms: 1,
             jiang_attention_qkv: 0.0625,
-            jiang_attention_output: 0.5,
+            jiang_attention_output: 1,
             jiang_ffn_up: 1,
             jiang_ffn_down: 0.0625,
             jiang_other_biases: 1,
@@ -2043,7 +2045,7 @@ export function AutoscalerStudio() {
             </div>
             {(batchCampaign === "standard_pretraining_census" || batchCampaign === "horizon_transfer" || batchCampaign === "real_text_scaling_ladder") && (
               <div className="dataset-contract public-corpus-contract">
-                <label><span>Corpus source</span><select disabled={batchJobLocked || corpusJobLocked} value={corpusChoice} onChange={(event) => { const next = event.target.value as CorpusChoice; setCorpusChoice(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); if (next !== "local") { if (batchCampaign === "real_text_scaling_ladder") { setTokenizer("olmo2_1124"); setCorpusTrainMiB(12_288); setCorpusValidationMiB(512); } else { if (tokenizer === "uint16_bin_v1" || tokenizer === "uint32_bin_v1") setTokenizer("byte_v1"); setCorpusTrainMiB(targetDevice === "cuda" ? 64 : 2); setCorpusValidationMiB(targetDevice === "cuda" ? 8 : 0.5); } } markBatchCampaignEdited(); }}><option value="fineweb_edu">FineWeb-Edu sample-10BT</option><option value="openwebtext">OpenWebText</option><option value="local">Local files / pretokenized</option></select></label>
+                <label><span>Corpus source</span><select disabled={batchJobLocked || corpusJobLocked} value={corpusChoice} onChange={(event) => { const next = event.target.value as CorpusChoice; setCorpusChoice(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); if (next !== "local") { if (batchCampaign === "real_text_scaling_ladder") { setTokenizer("mistral_7b_v03"); setCorpusTrainMiB(12_288); setCorpusValidationMiB(512); } else { if (tokenizer === "uint16_bin_v1" || tokenizer === "uint32_bin_v1") setTokenizer("byte_v1"); setCorpusTrainMiB(targetDevice === "cuda" ? 64 : 2); setCorpusValidationMiB(targetDevice === "cuda" ? 8 : 0.5); } } markBatchCampaignEdited(); }}><option value="fineweb_edu">FineWeb-Edu sample-10BT</option><option value="openwebtext">OpenWebText</option><option value="local">Local files / pretokenized</option></select></label>
                 {corpusChoice === "local" ? <>
                   {usesPinnedTokenStream ? <label><span>Verified token-stream manifest</span><input disabled={batchJobLocked} value={tokenStreamManifestPath} onChange={(event) => { setTokenStreamManifestPath(event.target.value); markBatchCampaignEdited(); }} /></label> : <>
                     <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
@@ -2054,7 +2056,7 @@ export function AutoscalerStudio() {
                   <label><span>Held-out text</span><input disabled={batchJobLocked || corpusJobLocked} type="number" min="0.015625" step="0.5" value={corpusValidationMiB} onChange={(event) => { setCorpusValidationMiB(Math.max(0.015625, Number(event.target.value))); setCorpusJob(null); markBatchCampaignEdited(); }} /><small>MiB</small></label>
                   <button className="corpus-prepare-button" disabled={batchJobLocked || corpusJobLocked} onClick={() => void preparePublicCorpus()}>{corpusJobLocked ? "Preparing frozen snapshot…" : corpusJob?.status === "completed" ? "Snapshot ready" : "Prepare frozen snapshot"}</button>
                 </>}
-                <label><span>Tokenizer</span><select disabled={batchJobLocked || corpusJobLocked || batchCampaign === "real_text_scaling_ladder"} value={tokenizer} onChange={(event) => { const next = event.target.value as TokenizerId; setTokenizer(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}>{batchCampaign !== "real_text_scaling_ladder" && <option value="byte_v1">UTF-8 bytes · built in</option>}<option value="olmo2_1124">OLMo 2 · immutable revision</option>{batchCampaign !== "real_text_scaling_ladder" && corpusChoice === "local" && <><option value="uint16_bin_v1">Legacy uint16 stream · unpinned</option><option value="uint32_bin_v1">Legacy uint32 stream · unpinned</option></>}</select></label>
+                <label><span>Tokenizer</span><select disabled={batchJobLocked || corpusJobLocked || batchCampaign === "real_text_scaling_ladder"} value={tokenizer} onChange={(event) => { const next = event.target.value as TokenizerId; setTokenizer(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}>{batchCampaign !== "real_text_scaling_ladder" && <option value="byte_v1">UTF-8 bytes · built in</option>}<option value="mistral_7b_v03">Mistral v0.3 · 32k immutable revision</option><option value="olmo2_1124">OLMo 2 · 100k immutable revision</option>{batchCampaign !== "real_text_scaling_ladder" && corpusChoice === "local" && <><option value="uint16_bin_v1">Legacy uint16 stream · unpinned</option><option value="uint32_bin_v1">Legacy uint32 stream · unpinned</option></>}</select></label>
                 {pinnedTokenizer && <div className="fixed-callout"><b>{pinnedTokenizer.kind === "pinned_remote" ? "Immutable tokenizer contract" : "Built-in tokenizer contract"}</b><span>{pinnedTokenizer.repository ? `${pinnedTokenizer.repository} · revision ${pinnedTokenizer.revision?.slice(0, 12)} · ` : ""}{formatNumber(pinnedTokenizer.vocab_size)} tokens · definition <code>{pinnedTokenizer.definition_fingerprint.slice(0, 12)}</code></span></div>}
                 {batchCampaign === "standard_pretraining_census" && <>
                   <label><span>Target validation loss</span><input disabled={batchJobLocked} type="number" min="0.01" step="0.1" value={pretrainingTargetLoss} onChange={(event) => { setPretrainingTargetLoss(Number(event.target.value)); markBatchCampaignEdited(); }} /></label>
@@ -2086,7 +2088,7 @@ export function AutoscalerStudio() {
                 <label><span>Global batch examples</span><input disabled={batchJobLocked} type="number" min="1" value={forecastBatchExamples} onChange={(event) => { setForecastBatchExamples(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
                 <label><span>Peak-LR tuning grid</span><input disabled={batchJobLocked} value={horizonRateGrid} onChange={(event) => { setHorizonRateGrid(event.target.value); markBatchCampaignEdited(); }} /></label>
                 <label><span>Forecast parameter targets</span><input disabled={batchJobLocked} value={forecastPredictionTargets} onChange={(event) => { setForecastPredictionTargets(event.target.value); markBatchCampaignEdited(); }} /></label>
-                <div className="fixed-callout"><b>Frozen scientific coordinate</b><span>One pinned tokenizer and token stream · exact vocab-aware parameter counts · constant T/P · one hidden upper rung · competing loss-law families · predictions withheld when any gate fails</span></div>
+                <div className="fixed-callout"><b>Forecast-grade default</b><span>Pinned Mistral 32k tokenizer · seven exact rungs from 2.2M to 100M · over 30× fit span before the hidden upper rung · constant T/P · predictions withheld when any gate fails</span></div>
                 {horizonParameterization === "nugpt" && <div className="fixed-callout"><b>Definition-preserving parallelism</b><span>νGPT uses one GPU or replicated DDP so the full post-step matrix projection remains exact. FSDP is deliberately refused.</span></div>}
               </div>
             )}
@@ -2107,7 +2109,7 @@ export function AutoscalerStudio() {
               <button className="run-button campaign-run" disabled={batchJobLocked || !standardRuntimeValid} onClick={startBatchCampaign}>{batchJobLocked ? "Campaign running" : batchJob?.status === "completed" ? "Run or resume" : "Launch campaign"}<span>→</span></button>
             </div>
             <p className="campaign-location-note">CUDA, DDP, and FSDP execute on the machine hosting the compute service. Remote-cluster dispatch is not implied by this browser control.</p>
-            {!standardRuntimeValid && <p className="validation-error campaign-error">{corpusRequired && corpusChoice !== "local" && corpusJob?.status !== "completed" ? "Prepare the frozen public-corpus snapshot before launching training." : batchCampaign === "real_text_scaling_ladder" ? "Select A100/CUDA and provide a verified token stream; at least six increasing targets with matching depths; larger forecast targets; an increasing LR grid; and a batch divisible by GPUs × accumulation. νGPT does not permit FSDP." : batchCampaign === "horizon_transfer" ? "Provide both corpus paths, at least four increasing divisible horizons, three learning rates, one schedule, and a positive batch." : batchCampaign === "joint_horizon_batch" ? "Provide three increasing fit horizons and batches, larger held-out values, three learning rates, and divisible T/B geometry." : "Provide both corpus paths, a positive target and cadence. FlashAttention requires BF16 on CUDA; distributed runs require at least two CUDA processes."}</p>}
+            {!standardRuntimeValid && <p className="validation-error campaign-error">{corpusRequired && corpusChoice !== "local" && corpusJob?.status !== "completed" ? "Prepare the frozen public-corpus snapshot before launching training." : batchCampaign === "real_text_scaling_ladder" ? "Select A100/CUDA and provide a verified token stream; seven increasing targets with matching depths; larger forecast targets; an increasing LR grid; and a batch divisible by GPUs × accumulation. νGPT does not permit FSDP." : batchCampaign === "horizon_transfer" ? "Provide both corpus paths, at least four increasing divisible horizons, three learning rates, one schedule, and a positive batch." : batchCampaign === "joint_horizon_batch" ? "Provide three increasing fit horizons and batches, larger held-out values, three learning rates, and divisible T/B geometry." : "Provide both corpus paths, a positive target and cadence. FlashAttention requires BF16 on CUDA; distributed runs require at least two CUDA processes."}</p>}
             {batchJobError && <p className="validation-error campaign-error">{batchJobError}</p>}
             {batchJob && (
               <div className={`campaign-status ${batchJob.status}`}>

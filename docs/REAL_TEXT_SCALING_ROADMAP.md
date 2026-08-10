@@ -180,9 +180,11 @@ implemented gates, followed by a genuinely hidden larger-model confirmation.
 
 ### Stage 0: freeze the production contract
 
-The tokenizer portion is implemented: `olmo2_1124` is pinned to an immutable
-revision, verified assets and encoding canaries, and document-delimited uint32
-shards whose packing identity enters every job. The remaining Stage 0 choices
+The tokenizer portion is implemented: `mistral_7b_v03` is the 32,768-token
+forecast default and `olmo2_1124` remains approved. Both are pinned to immutable
+revisions, verified assets and encoding canaries, and document-delimited uint32
+shards whose packing identity enters every job. A verified raw snapshot can be
+retokenized without reacquisition. The remaining Stage 0 choices
 are the larger disjoint corpus snapshot, context length, optimizer, schedule,
 and scaling path. Record unique corpus tokens, presented tokens, repetition,
 updates, and tokens per parameter separately. Preserve the Jiang CompleteP
@@ -212,6 +214,9 @@ hidden from all fitting and selection. Tune at the declared reference scale and
 only use preregistered diagnostic probes elsewhere. The campaign should not
 advance if optima hit LR-grid boundaries, transfer controls fail, validation
 loss is non-monotone beyond uncertainty, or repetition becomes material.
+
+The exact Jiang preset now realizes this design with seven rungs from 2.2M to
+100M parameters. The six fit rungs span 31.4× and the 100M rung is hidden.
 
 ### Stage 4: validate the extrapolator (gates implemented; data pending)
 
