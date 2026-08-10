@@ -196,6 +196,53 @@ def test_self_consistent_manifest_cannot_override_allowlisted_separator(
         load_tokenizer_manifest(resolved.manifest_path)
 
 
+def test_token_sharding_resumes_from_last_atomic_shard(
+    tmp_path: Path, monkeypatch
+) -> None:
+    definition = _test_definition(tmp_path, monkeypatch)
+    resolved = resolve_pinned_tokenizer(definition.id, tmp_path / "tokenizer")
+    train = tmp_path / "train.jsonl"
+    validation = tmp_path / "validation.jsonl"
+    _write_documents(train, 700)
+    _write_documents(validation, 20)
+    original_atomic_write = tokenization.atomic_write_json
+    interrupted = False
+
+    def interrupt_after_checkpoint(path, payload):
+        nonlocal interrupted
+        original_atomic_write(path, payload)
+        if path.name == ".train.tokenization-checkpoint.json" and not interrupted:
+            interrupted = True
+            raise RuntimeError("simulated tokenization interruption")
+
+    monkeypatch.setattr(tokenization, "atomic_write_json", interrupt_after_checkpoint)
+    with pytest.raises(RuntimeError, match="simulated tokenization interruption"):
+        materialize_pinned_token_streams(
+            tokenizer=resolved,
+            train_path=train,
+            validation_path=validation,
+            output_directory=tmp_path / "token-streams",
+            shard_token_limit=1024,
+        )
+    checkpoint = tmp_path / "token-streams" / ".train.tokenization-checkpoint.json"
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    first_shard = tmp_path / "token-streams" / payload["shards"][0]["path"]
+    first_hash = _hash(first_shard)
+
+    monkeypatch.setattr(tokenization, "atomic_write_json", original_atomic_write)
+    manifest = materialize_pinned_token_streams(
+        tokenizer=resolved,
+        train_path=train,
+        validation_path=validation,
+        output_directory=tmp_path / "token-streams",
+        shard_token_limit=1024,
+    )
+    assert manifest["splits"]["train"]["documents"] == 700
+    assert manifest["splits"]["train"]["tokens"] == 1400
+    assert _hash(first_shard) == first_hash
+    assert not checkpoint.exists()
+
+
 def test_manifest_vocab_and_ambiguous_dataset_inputs_are_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:

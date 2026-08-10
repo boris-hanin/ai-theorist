@@ -17,6 +17,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .batch_scaling import BatchRunRecord, OptimizerHyperparameters
 from .critical_batch import (
@@ -161,12 +162,25 @@ class PretrainingRuntimeSpec:
     attention_backend: str = "auto"
     distributed: str = "none"
     num_processes: int = 1
+    gradient_accumulation_steps: int = 1
+    activation_checkpointing: bool = False
+    checkpoint_interval_steps: int = 0
+    resume: bool = True
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PretrainingRuntimeSpec":
         _strict_keys(
             payload,
-            ("precision", "attention_backend", "distributed", "num_processes"),
+            (
+                "precision",
+                "attention_backend",
+                "distributed",
+                "num_processes",
+                "gradient_accumulation_steps",
+                "activation_checkpointing",
+                "checkpoint_interval_steps",
+                "resume",
+            ),
             "pretraining runtime",
         )
         result = cls(**dict(payload))
@@ -174,15 +188,29 @@ class PretrainingRuntimeSpec:
             raise ValueError("precision must be fp32 or bf16")
         if result.attention_backend not in {"auto", "math", "flash"}:
             raise ValueError("attention_backend must be auto, math, or flash")
-        if result.distributed not in {"none", "fsdp"}:
-            raise ValueError("distributed must be none or fsdp")
+        if result.distributed not in {"none", "ddp", "fsdp"}:
+            raise ValueError("distributed must be none, ddp, or fsdp")
         _positive_int(result.num_processes, "num_processes")
         if result.distributed == "none" and result.num_processes != 1:
             raise ValueError("num_processes must be 1 when distributed is none")
-        if result.distributed == "fsdp" and result.num_processes < 2:
-            raise ValueError("FSDP requires at least two processes")
+        if result.distributed in {"ddp", "fsdp"} and result.num_processes < 2:
+            raise ValueError("distributed training requires at least two processes")
         if result.attention_backend == "flash" and result.precision != "bf16":
             raise ValueError("the explicit FlashAttention path requires bf16")
+        _positive_int(
+            result.gradient_accumulation_steps,
+            "gradient_accumulation_steps",
+        )
+        if (
+            isinstance(result.checkpoint_interval_steps, bool)
+            or not isinstance(result.checkpoint_interval_steps, int)
+            or result.checkpoint_interval_steps < 0
+        ):
+            raise ValueError("checkpoint_interval_steps must be a non-negative integer")
+        if not isinstance(result.activation_checkpointing, bool):
+            raise ValueError("activation_checkpointing must be boolean")
+        if not isinstance(result.resume, bool):
+            raise ValueError("resume must be boolean")
         return result
 
 
@@ -538,10 +566,15 @@ class StandardTransformer(nn.Module):
     """Small GPT-style pre-norm decoder using PyTorch SDPA kernels."""
 
     def __init__(
-        self, spec: StandardTransformerSpec, *, attention_backend: str = "auto"
+        self,
+        spec: StandardTransformerSpec,
+        *,
+        attention_backend: str = "auto",
+        activation_checkpointing: bool = False,
     ) -> None:
         super().__init__()
         self.spec = spec
+        self.activation_checkpointing = activation_checkpointing
         self.token_embedding = nn.Embedding(spec.vocab_size, spec.width)
         self.position_embedding = nn.Embedding(spec.context_length, spec.width)
         self.dropout = nn.Dropout(spec.dropout)
@@ -570,7 +603,10 @@ class StandardTransformer(nn.Module):
         hidden = self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
         hidden = self.dropout(hidden)
         for block in self.blocks:
-            hidden = block(hidden)
+            if self.activation_checkpointing and self.training:
+                hidden = activation_checkpoint(block, hidden, use_reentrant=False)
+            else:
+                hidden = block(hidden)
         return self.language_model_head(self.final_norm(hidden))
 
 
@@ -593,12 +629,12 @@ def prepare_distributed(runtime: PretrainingRuntimeSpec, device: str) -> Distrib
             raise RuntimeError("CUDA was requested but is unavailable")
         return DistributedContext(0, 1, 0, device)
     if not torch.cuda.is_available():
-        raise RuntimeError("FSDP requires CUDA")
+        raise RuntimeError("distributed pretraining requires CUDA")
     rank = int(os.environ.get("RANK", "-1"))
     world_size = int(os.environ.get("WORLD_SIZE", "-1"))
     local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
     if min(rank, world_size, local_rank) < 0:
-        raise RuntimeError("FSDP must be launched with torchrun")
+        raise RuntimeError("distributed pretraining must be launched with torchrun")
     if world_size != runtime.num_processes:
         raise RuntimeError(
             f"torchrun world size {world_size} does not match configured {runtime.num_processes}"
@@ -651,16 +687,30 @@ def preflight_runtime(
         "device": device,
         "uses_torch_sdpa": True,
         "flash_attention_requested": runtime.attention_backend == "flash",
+        "gradient_accumulation_steps": runtime.gradient_accumulation_steps,
+        "activation_checkpointing": runtime.activation_checkpointing,
+        "checkpoint_interval_steps": runtime.checkpoint_interval_steps,
+        "mid_trial_resume": runtime.resume and runtime.checkpoint_interval_steps > 0,
     }
 
 
-def _wrap_fsdp(
-    model: StandardTransformer,
+def wrap_distributed_model(
+    model: nn.Module,
     runtime: PretrainingRuntimeSpec,
     context: DistributedContext,
+    block_types: Sequence[type[nn.Module]],
 ) -> nn.Module:
     if runtime.distributed == "none":
         return model
+    if runtime.distributed == "ddp":
+        from torch.nn.parallel import DistributedDataParallel
+
+        return DistributedDataParallel(
+            model,
+            device_ids=[context.local_rank],
+            output_device=context.local_rank,
+            broadcast_buffers=False,
+        )
     from torch.distributed.fsdp import FullyShardedDataParallel, MixedPrecision
     from torch.distributed.fsdp.wrap import ModuleWrapPolicy
 
@@ -675,11 +725,21 @@ def _wrap_fsdp(
     )
     return FullyShardedDataParallel(
         model,
-        auto_wrap_policy=ModuleWrapPolicy({StandardTransformerBlock}),
+        auto_wrap_policy=ModuleWrapPolicy(set(block_types)),
         device_id=torch.device(context.device),
         mixed_precision=mixed_precision,
         use_orig_params=True,
         sync_module_states=True,
+    )
+
+
+def _wrap_fsdp(
+    model: StandardTransformer,
+    runtime: PretrainingRuntimeSpec,
+    context: DistributedContext,
+) -> nn.Module:
+    return wrap_distributed_model(
+        model, runtime, context, (StandardTransformerBlock,)
     )
 
 
@@ -756,6 +816,144 @@ def _atomic_torch_save(payload: Dict[str, Any], path: Path) -> None:
             temporary.unlink()
 
 
+def runtime_checkpoint_path(base_path: Path, context: DistributedContext) -> Path:
+    if context.world_size == 1:
+        return base_path.with_suffix(".pt")
+    return base_path.with_name(
+        f"{base_path.name}.rank-{context.rank:05d}-of-{context.world_size:05d}.pt"
+    )
+
+
+def save_runtime_checkpoint(
+    *,
+    base_path: Path,
+    model: nn.Module,
+    plain_model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    context: DistributedContext,
+    runtime: PretrainingRuntimeSpec,
+    identity_fingerprint: str,
+    step: int,
+    generator: torch.Generator,
+    extra: Mapping[str, Any],
+) -> None:
+    """Atomically persist a same-topology mid-trial restart point.
+
+    Non-distributed runs store one ordinary state dictionary. FSDP runs store
+    one sharded model/optimizer file per local rank, avoiding rank-zero model
+    consolidation and its memory spike. Resumption therefore deliberately
+    requires the same world size.
+    """
+    if runtime.distributed == "fsdp":
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel,
+            ShardedOptimStateDictConfig,
+            ShardedStateDictConfig,
+            StateDictType,
+        )
+
+        with FullyShardedDataParallel.state_dict_type(
+            model,
+            StateDictType.SHARDED_STATE_DICT,
+            ShardedStateDictConfig(offload_to_cpu=True),
+            ShardedOptimStateDictConfig(offload_to_cpu=True),
+        ):
+            model_state = model.state_dict()
+            optimizer_state = FullyShardedDataParallel.optim_state_dict(
+                model, optimizer
+            )
+    else:
+        model_state = {
+            name: value.detach().cpu()
+            for name, value in plain_model.state_dict().items()
+        }
+        optimizer_state = optimizer.state_dict()
+    _atomic_torch_save(
+        {
+            "schema_version": 1,
+            "identity_fingerprint": identity_fingerprint,
+            "world_size": context.world_size,
+            "rank": context.rank,
+            "step": step,
+            "model_state_dict": model_state,
+            "optimizer_state_dict": optimizer_state,
+            "generator_state": generator.get_state().cpu(),
+            "extra": dict(extra),
+        },
+        runtime_checkpoint_path(base_path, context),
+    )
+    if context.world_size > 1:
+        torch.distributed.barrier()
+
+
+def load_runtime_checkpoint(
+    *,
+    base_path: Path,
+    model: nn.Module,
+    plain_model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    context: DistributedContext,
+    runtime: PretrainingRuntimeSpec,
+    identity_fingerprint: str,
+    generator: torch.Generator,
+) -> Optional[Dict[str, Any]]:
+    path = runtime_checkpoint_path(base_path, context)
+    local_exists = path.is_file()
+    if context.world_size > 1:
+        marker = torch.tensor(
+            1 if local_exists else 0,
+            dtype=torch.int32,
+            device=context.device,
+        )
+        torch.distributed.all_reduce(marker, op=torch.distributed.ReduceOp.MIN)
+        local_exists = bool(marker.item())
+    if not runtime.resume or not local_exists:
+        return None
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    if (
+        checkpoint.get("schema_version") != 1
+        or checkpoint.get("identity_fingerprint") != identity_fingerprint
+        or checkpoint.get("world_size") != context.world_size
+        or checkpoint.get("rank") != context.rank
+    ):
+        raise ValueError("runtime checkpoint identity or topology mismatch")
+    if runtime.distributed == "fsdp":
+        from torch.distributed.fsdp import (
+            FullyShardedDataParallel,
+            ShardedOptimStateDictConfig,
+            ShardedStateDictConfig,
+            StateDictType,
+        )
+
+        with FullyShardedDataParallel.state_dict_type(
+            model,
+            StateDictType.SHARDED_STATE_DICT,
+            ShardedStateDictConfig(offload_to_cpu=True),
+            ShardedOptimStateDictConfig(offload_to_cpu=True),
+        ):
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer_state = FullyShardedDataParallel.optim_state_dict_to_load(
+                model, optimizer, checkpoint["optimizer_state_dict"]
+            )
+        optimizer.load_state_dict(optimizer_state)
+    else:
+        plain_model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    generator.set_state(checkpoint["generator_state"])
+    return {
+        "step": int(checkpoint["step"]),
+        "extra": dict(checkpoint.get("extra", {})),
+    }
+
+
+def clear_runtime_checkpoint(
+    base_path: Path, context: DistributedContext
+) -> None:
+    runtime_checkpoint_path(base_path, context).unlink(missing_ok=True)
+    if context.world_size > 1:
+        torch.distributed.barrier()
+
+
 def run_standard_pretraining_trial(
     *,
     model_spec: StandardTransformerSpec,
@@ -786,8 +984,14 @@ def run_standard_pretraining_trial(
     batch_tokens = batch_examples * model_spec.context_length
     if total_tokens % batch_tokens:
         raise ValueError("total_tokens must be divisible by global batch tokens")
-    if batch_examples % context.world_size:
-        raise ValueError("global batch examples must be divisible by world size")
+    data_parallel_microbatches = (
+        context.world_size * runtime.gradient_accumulation_steps
+    )
+    if batch_examples % data_parallel_microbatches:
+        raise ValueError(
+            "global batch examples must be divisible by world size times "
+            "gradient_accumulation_steps"
+        )
     if (initial_state is None) != (initial_optimizer_state is None):
         raise ValueError("model and optimizer checkpoint states must be supplied together")
     if initial_state is not None and runtime.distributed != "none":
@@ -814,9 +1018,10 @@ def run_standard_pretraining_trial(
         "checkpoint_state_schema_version": 2,
         "suffix": cache_suffix,
     }
-    digest = sha256(
+    identity_fingerprint = sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()[:12]
+    ).hexdigest()
+    digest = identity_fingerprint[:12]
     run_id = (
         f"text-{model_spec.width}x{model_spec.depth}-{optimizer_spec.name}"
         f"-b{batch_tokens}-t{total_tokens}-s{seed}-{digest}{cache_suffix}"
@@ -860,7 +1065,9 @@ def run_standard_pretraining_trial(
         torch.set_float32_matmul_precision("high")
         torch.cuda.reset_peak_memory_stats(context.device)
     plain_model = StandardTransformer(
-        model_spec, attention_backend=runtime.attention_backend
+        model_spec,
+        attention_backend=runtime.attention_backend,
+        activation_checkpointing=runtime.activation_checkpointing,
     ).to(context.device)
     if initial_state is not None:
         plain_model.load_state_dict(initial_state)
@@ -869,25 +1076,55 @@ def run_standard_pretraining_trial(
     optimizer = _optimizer(model, optimizer_spec)
     if initial_optimizer_state is not None:
         optimizer.load_state_dict(dict(initial_optimizer_state))
-    local_batch_examples = batch_examples // context.world_size
+    local_batch_examples = batch_examples // data_parallel_microbatches
     generator = torch.Generator(device="cpu").manual_seed(
         100_003 + seed + 1_000_003 * context.rank
     )
     checkpoints: List[Dict[str, float]] = []
     crossing_step = None
-    initial_loss = _evaluate(
-        model,
-        corpus,
-        model_spec,
-        runtime,
-        context,
-        validation_examples,
-        seed,
+    resume_path = (
+        cache_directory / f"{run_id}.resume"
+        if cache_directory is not None
+        else None
     )
-    checkpoints.append({"step": 0.0, "tokens": 0.0, "validation_loss": initial_loss})
+    resumed = None
+    if resume_path is not None:
+        resumed = load_runtime_checkpoint(
+            base_path=resume_path,
+            model=model,
+            plain_model=plain_model,
+            optimizer=optimizer,
+            context=context,
+            runtime=runtime,
+            identity_fingerprint=identity_fingerprint,
+            generator=generator,
+        )
+    start_step = int(resumed["step"]) if resumed is not None else 0
+    elapsed_before_resume = 0.0
+    if resumed is not None:
+        resume_extra = resumed["extra"]
+        checkpoints = [dict(row) for row in resume_extra["validation_checkpoints"]]
+        crossing_step = resume_extra.get("crossing_step")
+        elapsed_before_resume = float(resume_extra.get("elapsed_seconds", 0.0))
+        if not checkpoints or int(checkpoints[0]["step"]) != 0:
+            raise ValueError("runtime checkpoint is missing its initial validation")
+        initial_loss = float(checkpoints[0]["validation_loss"])
+    else:
+        initial_loss = _evaluate(
+            model,
+            corpus,
+            model_spec,
+            runtime,
+            context,
+            validation_examples,
+            seed,
+        )
+        checkpoints.append(
+            {"step": 0.0, "tokens": 0.0, "validation_loss": initial_loss}
+        )
     started = time.monotonic()
     peak_learning_rate = optimizer_spec.learning_rate
-    for step in range(1, steps + 1):
+    for step in range(start_step + 1, steps + 1):
         if step <= warmup_steps and warmup_steps:
             multiplier = step / warmup_steps
         else:
@@ -897,18 +1134,26 @@ def run_standard_pretraining_trial(
             ) * 0.5 * (1.0 + math.cos(math.pi * progress))
         for group in optimizer.param_groups:
             group["lr"] = peak_learning_rate * multiplier
-        inputs, targets = corpus.sample_batch(
-            "train", local_batch_examples, generator, context.device
-        )
         optimizer.zero_grad(set_to_none=True)
-        with _autocast(runtime, context.device):
-            logits = model(inputs)
-            loss = F.cross_entropy(
-                logits.float().reshape(-1, model_spec.vocab_size), targets.reshape(-1)
+        for accumulation_index in range(runtime.gradient_accumulation_steps):
+            inputs, targets = corpus.sample_batch(
+                "train", local_batch_examples, generator, context.device
             )
-        if not torch.isfinite(loss):
-            raise RuntimeError("standard Transformer trial diverged")
-        loss.backward()
+            synchronization = (
+                model.no_sync()  # type: ignore[attr-defined]
+                if context.world_size > 1
+                and accumulation_index + 1 < runtime.gradient_accumulation_steps
+                else nullcontext()
+            )
+            with synchronization, _autocast(runtime, context.device):
+                logits = model(inputs)
+                loss = F.cross_entropy(
+                    logits.float().reshape(-1, model_spec.vocab_size),
+                    targets.reshape(-1),
+                ) / runtime.gradient_accumulation_steps
+            if not torch.isfinite(loss):
+                raise RuntimeError("standard Transformer trial diverged")
+            loss.backward()
         if runtime.distributed == "fsdp":
             model.clip_grad_norm_(1.0)  # type: ignore[attr-defined]
         else:
@@ -937,7 +1182,33 @@ def run_standard_pretraining_trial(
                 and validation_loss <= target_validation_loss
             ):
                 crossing_step = step
-    duration = time.monotonic() - started
+        if (
+            resume_path is not None
+            and runtime.checkpoint_interval_steps
+            and (
+                step % runtime.checkpoint_interval_steps == 0
+                or step == steps
+            )
+        ):
+            save_runtime_checkpoint(
+                base_path=resume_path,
+                model=model,
+                plain_model=plain_model,
+                optimizer=optimizer,
+                context=context,
+                runtime=runtime,
+                identity_fingerprint=identity_fingerprint,
+                step=step,
+                generator=generator,
+                extra={
+                    "validation_checkpoints": checkpoints,
+                    "crossing_step": crossing_step,
+                    "elapsed_seconds": elapsed_before_resume
+                    + time.monotonic()
+                    - started,
+                },
+            )
+    duration = elapsed_before_resume + time.monotonic() - started
     final_loss = checkpoints[-1]["validation_loss"]
     peak_memory = (
         int(torch.cuda.max_memory_allocated(context.device))
@@ -955,7 +1226,7 @@ def run_standard_pretraining_trial(
         total_tokens=total_tokens,
         batch_tokens=batch_tokens,
         microbatch_tokens=local_batch_examples * model_spec.context_length,
-        accumulation_steps=1,
+        accumulation_steps=runtime.gradient_accumulation_steps,
         data_parallel_replicas=context.world_size,
         optimizer_steps=steps,
         nonpadding_tokens_seen=total_tokens,
@@ -978,7 +1249,9 @@ def run_standard_pretraining_trial(
             "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
             "peak_memory_bytes": peak_memory,
             "global_batch_examples": batch_examples,
-            "local_batch_examples": local_batch_examples,
+            "local_microbatch_examples": local_batch_examples,
+            "activation_checkpointing": runtime.activation_checkpointing,
+            "resumed_from_step": start_step,
         },
     )
     state: Mapping[str, Tensor] = {}
@@ -1001,6 +1274,10 @@ def run_standard_pretraining_trial(
                 },
                 state_path,
             )
+    if context.world_size > 1:
+        torch.distributed.barrier()
+    if resume_path is not None:
+        clear_runtime_checkpoint(resume_path, context)
     return record, {
         "state_dict": state,
         "optimizer_state_dict": optimizer_state,
@@ -1103,7 +1380,11 @@ def compile_standard_pretraining_plan(config: Mapping[str, Any]) -> Dict[str, An
             "bf16": True,
             "torch_sdpa": True,
             "explicit_flash_attention": True,
+            "single_node_ddp": True,
             "single_node_fsdp": True,
+            "gradient_accumulation": True,
+            "activation_checkpointing": True,
+            "mid_trial_resume": True,
         },
     }
 

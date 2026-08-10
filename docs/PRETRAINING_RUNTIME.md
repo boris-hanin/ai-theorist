@@ -63,13 +63,17 @@ The attention contract is:
   CUDA, bf16, and a head dimension divisible by eight. A missing compatible
   kernel is an error, not a silent fallback.
 
-`fsdp` is single-node data parallelism launched through `torchrun`. Each
-Transformer block is an FSDP wrapping unit, model states synchronize from rank
-zero, parameters/gradients/buffers use the configured mixed-precision policy,
-and global batch size must divide the process count. Rank zero performs the
-definition-preserving checkpoint-continuation and per-example gradient-noise
-assays while peer ranks wait; these assays intentionally do not inherit
-data-parallel gradient averaging.
+`ddp` and `fsdp` are single-node data-parallel modes launched through
+`torchrun`. DDP keeps a complete replica on each GPU. FSDP wraps each
+Transformer block and shards its state. Global batch size must divide
+`num_processes * gradient_accumulation_steps`. Activation checkpointing is
+applied at the block boundary when requested.
+
+An atomic runtime checkpoint can be written every declared number of optimizer
+steps. It contains the model, optimizer, CPU/CUDA and sampler RNG states, loss
+checkpoints, and elapsed time. DDP writes one complete state per rank; FSDP
+writes one sharded state per rank and therefore requires the same world size on
+resume. Completed trials still use the independent immutable trial cache.
 
 ## Commands
 
@@ -110,11 +114,13 @@ corpus, seeds, model ladder, and token budgets.
 
 ## Web jobs and resumption
 
-The Batch scaling workspace can launch all three neural campaigns:
+The Batch scaling workspace can launch the neural campaigns, including:
 
 - `standard_pretraining_census` for real text;
 - `transformer_census` for the normalized synthetic control;
-- `constant_tpp` for the held-out constant-tokens-per-parameter test.
+- `constant_tpp` for the held-out constant-tokens-per-parameter test;
+- `real_text_scaling_ladder` for exact Jiang or νGPT constant-T/P ladders with
+  hidden upper rungs and forecast refusal gates.
 
 For the real-text census the web plan exposes AdamW, Adam, and SGD, along with
 the target validation loss and checkpoint cadence.  These fields are part of
@@ -135,13 +141,12 @@ completed result unsafe to reuse for the same request.
 
 ## Current boundary
 
-This runtime is intentionally single-node. It does not yet implement
-multi-node rendezvous, activation checkpointing, gradient accumulation,
-sequence/tensor/pipeline parallelism, fused optimizers, data-loader workers,
-packed-document masks, checkpoint consolidation, or elastic/preemptible
-recovery inside a single trial. Job-level trial resumption is implemented;
-mid-trial resumption is not. Those are required before the app represents a
-full modern large-scale pretraining stack.
+This runtime is intentionally single-node. It now implements activation
+checkpointing, gradient accumulation, and same-topology mid-trial recovery,
+but it does not yet implement multi-node rendezvous, sequence/tensor/pipeline
+parallelism, fused optimizers, data-loader workers, packed-document attention
+masks, FSDP checkpoint consolidation, or elastic world-size changes. Those are
+required before the app represents a full frontier-scale pretraining stack.
 The web selector targets the machine hosting the Autoscaler API; it is not an
 SSH scheduler or remote-cluster control plane.  Run the API on the intended GPU
 node (or add a separately authenticated dispatcher) before selecting CUDA.

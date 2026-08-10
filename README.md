@@ -102,8 +102,9 @@ The normalized-Transformer contract is documented separately in
 `docs/normalized-transformer-contract.md`; its A100 manifest is
 `configs/autoscaler/a100_nugpt_adam.json`.
 Batch scaling and its A100 manifests are documented in
-`docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision, and
-single-node FSDP contracts are in `docs/PRETRAINING_RUNTIME.md`.
+`docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision,
+single-node DDP/FSDP, accumulation, and recovery contracts are in
+`docs/PRETRAINING_RUNTIME.md`.
 Immutable byte and OLMo-2 tokenizer definitions, verified assets, sharded token
 streams, and combined dataset identity are specified in
 `docs/TOKENIZER_CONTRACT.md`.
@@ -111,9 +112,10 @@ Frozen real-text learning-rate schedule and token-horizon transfer is specified
 in `docs/HORIZON_TRANSFER.md`, with a CPU smoke manifest and a resumable
 FineWeb-Edu A100 campaign.
 The decision boundary between those transfer assays and larger real-text
-scaling-law forecasts is summarized in `docs/REAL_TEXT_SCALING_ROADMAP.md`,
-including the proposed 100M ladders, hidden-scale validation, and forecast
-refusal gates for 1B, 5B, and 10B targets.
+scaling-law forecasts is summarized in `docs/REAL_TEXT_SCALING_ROADMAP.md`.
+The implemented 100M constant-T/P campaign, hidden-scale validation,
+architecture-specific optimizer contracts, and explicit 1B forecast refusal
+gates are specified in `docs/FORECAST_GRADE_SCALING.md`.
 
 The deep-linear and nonlinear suites are more expensive:
 

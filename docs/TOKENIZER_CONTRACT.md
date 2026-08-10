@@ -73,6 +73,11 @@ Shards are written atomically and are approximately bounded by the configured
 token limit; an individual document may make a shard exceed that limit rather
 than being silently split.
 
+After every completed shard, the materializer checkpoints the source JSONL
+byte offset, source digest, tokenizer fingerprint, document count, token count,
+and all completed shard hashes. Restart verifies that prefix and resumes at the
+next document; an incomplete orphan shard is never admitted to the manifest.
+
 `token-streams/manifest.json` records the packing contract, dtype, vocabulary,
 tokenizer manifest reference, tokenizer fingerprint, per-split document and
 token counts, and each shard's byte count, token bounds, and SHA-256 digest.

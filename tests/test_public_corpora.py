@@ -4,6 +4,8 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Whitespace
@@ -32,6 +34,16 @@ def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
         PublicCorpusSpec.from_dict({"train_bytes": 1})
     with pytest.raises(ValueError, match="Unknown public corpus"):
         PublicCorpusSpec.from_dict({"url": "https://example.com"})
+    large = PublicCorpusSpec.from_dict(
+        {
+            "train_bytes": 2_000_000_000,
+            "validation_bytes": 100_000_000,
+            "maximum_documents_per_split": 2_000_000,
+            "acquisition_backend": "parquet",
+        }
+    )
+    assert large.train_bytes == 2_000_000_000
+    assert large.acquisition_backend == "parquet"
 
 
 def test_json_request_retries_rate_limits(monkeypatch) -> None:
@@ -115,6 +127,63 @@ def test_split_materialization_resumes_from_fsynced_checkpoint(
     assert requested_offsets == [0, 100, 100]
     assert metadata["documents"] == 150
     assert len(output_path.read_text(encoding="utf-8").splitlines()) == 150
+
+
+def test_parquet_materializer_streams_batches_with_global_row_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parquet_path = tmp_path / "fixture.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "text": [f"document-{index}-" + "x" * 20 for index in range(50)],
+                "id": [f"id-{index}" for index in range(50)],
+            }
+        ),
+        parquet_path,
+    )
+    inventory = {
+        "files": [
+            {
+                "url": "https://example.test/fixture.parquet",
+                "filename": "fixture.parquet",
+                "bytes": parquet_path.stat().st_size,
+            }
+        ],
+        "fingerprint": "f" * 64,
+    }
+
+    def local_file(_entry, _directory):
+        return {
+            "path": str(parquet_path),
+            "url": "https://example.test/fixture.parquet",
+            "bytes": parquet_path.stat().st_size,
+            "sha256": sha256(parquet_path.read_bytes()).hexdigest(),
+        }
+
+    monkeypatch.setattr(public_corpora, "_download_parquet_file", local_file)
+    output = tmp_path / "slice.jsonl"
+    metadata, _ = public_corpora._materialize_split_parquet(
+        catalog=public_corpora.PUBLIC_CORPUS_CATALOG["fineweb_edu"],
+        inventory=inventory,
+        parquet_cache=tmp_path / "cache",
+        start_offset=10,
+        target_bytes=100,
+        maximum_documents=20,
+        output_path=output,
+        split_name="training corpus",
+        progress=None,
+        completed_bytes=0,
+        total_bytes=100,
+        source_revision="a" * 40,
+        source_batch_rows=128,
+    )
+    rows = [__import__("json").loads(line) for line in output.read_text().splitlines()]
+    assert rows[0]["source_row"] == 10
+    assert rows[0]["source_id"] == "id-10"
+    assert metadata["first_source_row"] == 10
+    assert metadata["source_inventory_fingerprint"] == "f" * 64
+    assert metadata["source_parquet_files"][0]["sha256"]
 
 
 def test_materializer_freezes_disjoint_rows_and_reuses_verified_cache(

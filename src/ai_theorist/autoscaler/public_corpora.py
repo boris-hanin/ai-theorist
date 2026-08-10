@@ -66,6 +66,8 @@ class PublicCorpusSpec:
     validation_bytes: int = 4_194_304
     maximum_documents_per_split: int = 50_000
     token_shard_tokens: int = 16_777_216
+    acquisition_backend: str = "viewer_rows"
+    source_batch_rows: int = 8_192
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PublicCorpusSpec":
@@ -76,6 +78,8 @@ class PublicCorpusSpec:
             "validation_bytes",
             "maximum_documents_per_split",
             "token_shard_tokens",
+            "acquisition_backend",
+            "source_batch_rows",
         }
         extras = sorted(set(payload) - allowed)
         if extras:
@@ -90,16 +94,21 @@ class PublicCorpusSpec:
                 "tokenizer must be byte_v1 or one of "
                 + ", ".join(sorted(PINNED_TOKENIZER_REGISTRY))
             )
+        if result.acquisition_backend not in {"viewer_rows", "parquet"}:
+            raise ValueError(
+                "acquisition_backend must be viewer_rows or parquet"
+            )
         for name, value, minimum, maximum in (
-            ("train_bytes", result.train_bytes, 65_536, 536_870_912),
-            ("validation_bytes", result.validation_bytes, 16_384, 67_108_864),
+            ("train_bytes", result.train_bytes, 65_536, 2_199_023_255_552),
+            ("validation_bytes", result.validation_bytes, 16_384, 274_877_906_944),
             (
                 "maximum_documents_per_split",
                 result.maximum_documents_per_split,
                 100,
-                100_000,
+                100_000_000,
             ),
             ("token_shard_tokens", result.token_shard_tokens, 1_024, 268_435_456),
+            ("source_batch_rows", result.source_batch_rows, 128, 131_072),
         ):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
@@ -185,6 +194,94 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _parquet_inventory(catalog: Mapping[str, Any]) -> Dict[str, Any]:
+    query = urlencode({"dataset": catalog["dataset"]})
+    payload = _json_request(
+        "https://datasets-server.huggingface.co/parquet?" + query,
+        timeout=120.0,
+    )
+    rows = payload.get("parquet_files")
+    if not isinstance(rows, list):
+        raise RuntimeError("dataset server did not return a parquet inventory")
+    files = []
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or row.get("config") != catalog["config"]
+            or row.get("split") != catalog["split"]
+        ):
+            continue
+        url = row.get("url")
+        filename = row.get("filename")
+        size = row.get("size")
+        if not isinstance(url, str) or not url.startswith("https://"):
+            raise RuntimeError("parquet inventory contains an invalid URL")
+        if not isinstance(filename, str) or not filename:
+            filename = Path(url.split("?", 1)[0]).name
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            size = None
+        files.append({"url": url, "filename": filename, "bytes": size})
+    if not files:
+        raise RuntimeError("no parquet files matched the selected dataset config/split")
+    fingerprint = sha256(
+        json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {"files": files, "fingerprint": fingerprint}
+
+
+def _download_parquet_file(
+    entry: Mapping[str, Any], directory: Path
+) -> Dict[str, Any]:
+    directory.mkdir(parents=True, exist_ok=True)
+    url = str(entry["url"])
+    expected_bytes = entry.get("bytes")
+    key = sha256(url.encode("utf-8")).hexdigest()[:20]
+    output_path = directory / f"{key}.parquet"
+    partial_path = output_path.with_suffix(".parquet.partial")
+    if output_path.is_file():
+        if expected_bytes is None or output_path.stat().st_size == int(expected_bytes):
+            return {
+                "path": str(output_path.resolve()),
+                "url": url,
+                "bytes": output_path.stat().st_size,
+                "sha256": _hash_file(output_path),
+            }
+        output_path.unlink()
+    start = partial_path.stat().st_size if partial_path.is_file() else 0
+    headers = {
+        "Accept": "application/octet-stream",
+        "User-Agent": "ai-theorist-autoscaler/0.1 parquet-materializer",
+    }
+    if start:
+        headers["Range"] = f"bytes={start}-"
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=300.0) as response:
+        response_status = getattr(response, "status", None)
+        status = int(response_status if response_status is not None else response.getcode())
+        if start and status != 206:
+            start = 0
+        mode = "ab" if start else "wb"
+        with partial_path.open(mode) as handle:
+            while True:
+                chunk = response.read(8 * 1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+    if expected_bytes is not None and partial_path.stat().st_size != int(expected_bytes):
+        raise RuntimeError(
+            "downloaded parquet size disagrees with the frozen inventory"
+        )
+    os.replace(partial_path, output_path)
+    return {
+        "path": str(output_path.resolve()),
+        "url": url,
+        "bytes": output_path.stat().st_size,
+        "sha256": _hash_file(output_path),
+    }
+
+
 def _path_inside(directory: Path, value: Any, label: str) -> Path:
     path = Path(str(value)).resolve()
     try:
@@ -201,7 +298,7 @@ def _cached_manifest(directory: Path) -> Optional[Dict[str, Any]]:
     try:
         with manifest_path.open("r", encoding="utf-8") as handle:
             manifest = json.load(handle)
-        if manifest.get("status") != "complete" or manifest.get("schema_version") != 2:
+        if manifest.get("status") != "complete" or manifest.get("schema_version") != 3:
             return None
         observed_fingerprint = manifest.get("manifest_fingerprint")
         unsigned = dict(manifest)
@@ -415,6 +512,207 @@ def _materialize_split(
     )
 
 
+def _materialize_split_parquet(
+    *,
+    catalog: Mapping[str, Any],
+    inventory: Mapping[str, Any],
+    parquet_cache: Path,
+    start_offset: int,
+    target_bytes: int,
+    maximum_documents: int,
+    output_path: Path,
+    split_name: str,
+    progress: ProgressCallback,
+    completed_bytes: int,
+    total_bytes: int,
+    source_revision: str,
+    source_batch_rows: int,
+) -> Tuple[Dict[str, Any], int]:
+    try:
+        import pyarrow.parquet as parquet
+    except ImportError as exc:
+        raise RuntimeError(
+            "parquet acquisition requires pyarrow; install the project runtime dependencies"
+        ) from exc
+    partial_path = output_path.with_name(f".{output_path.name}.partial")
+    checkpoint_path = output_path.with_name(f".{output_path.name}.partial.json")
+    contract = {
+        "schema_version": 1,
+        "source_revision": source_revision,
+        "inventory_fingerprint": inventory["fingerprint"],
+        "start_offset": start_offset,
+        "target_bytes": target_bytes,
+        "maximum_documents": maximum_documents,
+        "source_batch_rows": source_batch_rows,
+    }
+    checkpoint: Optional[Dict[str, Any]] = None
+    if checkpoint_path.is_file() and partial_path.is_file():
+        try:
+            with checkpoint_path.open("r", encoding="utf-8") as handle:
+                candidate = json.load(handle)
+            if all(candidate.get(key) == value for key, value in contract.items()):
+                position = int(candidate["file_position"])
+                if 0 <= position <= partial_path.stat().st_size:
+                    checkpoint = candidate
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            checkpoint = None
+    if checkpoint is None:
+        document_count = 0
+        text_bytes = 0
+        first_row: Optional[int] = None
+        last_row: Optional[int] = None
+        next_source_row = start_offset
+        source_files: List[Dict[str, Any]] = []
+        handle = partial_path.open("wb")
+    else:
+        document_count = int(checkpoint["document_count"])
+        text_bytes = int(checkpoint["text_bytes"])
+        first_row = checkpoint.get("first_row")
+        last_row = checkpoint.get("last_row")
+        next_source_row = int(checkpoint["next_source_row"])
+        source_files = list(checkpoint.get("source_files", []))
+        handle = partial_path.open("r+b")
+        handle.truncate(int(checkpoint["file_position"]))
+        handle.seek(0, os.SEEK_END)
+        if progress is not None:
+            progress(
+                {
+                    "phase": "materializing",
+                    "completed": min(
+                        total_bytes, completed_bytes + min(text_bytes, target_bytes)
+                    ),
+                    "total": total_bytes,
+                    "message": (
+                        f"Resuming {split_name}: {document_count:,} documents, "
+                        f"{text_bytes / (1024 * 1024):.1f} MiB"
+                    ),
+                }
+            )
+    known_file_urls = {str(row.get("url")) for row in source_files}
+    global_row = 0
+    with handle:
+        for entry in inventory["files"]:
+            local_file = _download_parquet_file(entry, parquet_cache)
+            parquet_file = parquet.ParquetFile(local_file["path"])
+            file_rows = int(parquet_file.metadata.num_rows)
+            file_end = global_row + file_rows
+            if file_end <= next_source_row:
+                global_row = file_end
+                continue
+            if local_file["url"] not in known_file_urls:
+                source_files.append(local_file)
+                known_file_urls.add(local_file["url"])
+            columns = [str(catalog["text_field"])]
+            if catalog.get("id_field"):
+                columns.append(str(catalog["id_field"]))
+            batch_start = global_row
+            for batch in parquet_file.iter_batches(
+                batch_size=source_batch_rows, columns=columns
+            ):
+                batch_rows = len(batch)
+                batch_end = batch_start + batch_rows
+                if batch_end <= next_source_row:
+                    batch_start = batch_end
+                    continue
+                values = batch.to_pydict()
+                texts = values[str(catalog["text_field"])]
+                source_ids = (
+                    values[str(catalog["id_field"])]
+                    if catalog.get("id_field")
+                    else [None] * batch_rows
+                )
+                for local_index, text in enumerate(texts):
+                    row_index = batch_start + local_index
+                    if row_index < next_source_row or row_index < start_offset:
+                        continue
+                    if not isinstance(text, str) or not text:
+                        continue
+                    record = {
+                        "text": text,
+                        "source_row": row_index,
+                        "source_id": source_ids[local_index],
+                    }
+                    handle.write(
+                        (
+                            json.dumps(
+                                record,
+                                ensure_ascii=False,
+                                separators=(",", ":"),
+                            )
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                    text_bytes += len(text.encode("utf-8"))
+                    document_count += 1
+                    first_row = row_index if first_row is None else first_row
+                    last_row = row_index
+                    if (
+                        text_bytes >= target_bytes
+                        or document_count >= maximum_documents
+                    ):
+                        break
+                next_source_row = batch_end
+                handle.flush()
+                os.fsync(handle.fileno())
+                atomic_write_json(
+                    checkpoint_path,
+                    {
+                        **contract,
+                        "next_source_row": next_source_row,
+                        "document_count": document_count,
+                        "text_bytes": text_bytes,
+                        "first_row": first_row,
+                        "last_row": last_row,
+                        "file_position": handle.tell(),
+                        "source_files": source_files,
+                    },
+                )
+                if progress is not None:
+                    progress(
+                        {
+                            "phase": "materializing",
+                            "completed": min(
+                                total_bytes,
+                                completed_bytes + min(text_bytes, target_bytes),
+                            ),
+                            "total": total_bytes,
+                            "message": (
+                                f"Preparing {split_name}: {document_count:,} documents, "
+                                f"{text_bytes / (1024 * 1024):.1f} MiB"
+                            ),
+                        }
+                    )
+                if text_bytes >= target_bytes or document_count >= maximum_documents:
+                    break
+                batch_start = batch_end
+            global_row = file_end
+            if text_bytes >= target_bytes or document_count >= maximum_documents:
+                break
+        if text_bytes < target_bytes:
+            raise RuntimeError(
+                f"{split_name} reached the parquet inventory/document cap before "
+                "the byte target"
+            )
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(partial_path, output_path)
+    checkpoint_path.unlink(missing_ok=True)
+    return (
+        {
+            "path": str(output_path.resolve()),
+            "documents": document_count,
+            "text_bytes": text_bytes,
+            "file_bytes": output_path.stat().st_size,
+            "first_source_row": first_row,
+            "last_source_row": last_row,
+            "file_sha256": _hash_file(output_path),
+            "source_parquet_files": source_files,
+            "source_inventory_fingerprint": inventory["fingerprint"],
+        },
+        text_bytes,
+    )
+
+
 def materialize_public_corpus(
     spec: PublicCorpusSpec,
     output_root: Path,
@@ -447,37 +745,82 @@ def materialize_public_corpus(
             }
         )
     revision_before = _source_revision(str(catalog["dataset"]))
+    inventory_before = (
+        _parquet_inventory(catalog)
+        if spec.acquisition_backend == "parquet"
+        else None
+    )
     train_path = directory / "train.jsonl"
     validation_path = directory / "validation.jsonl"
-    train, _ = _materialize_split(
-        catalog=catalog,
-        start_offset=int(catalog["train_offset"]),
-        target_bytes=spec.train_bytes,
-        maximum_documents=spec.maximum_documents_per_split,
-        output_path=train_path,
-        split_name="training corpus",
-        progress=progress,
-        completed_bytes=0,
-        total_bytes=total_bytes,
-        source_revision=revision_before,
-    )
-    validation, _ = _materialize_split(
-        catalog=catalog,
-        start_offset=int(catalog["validation_offset"]),
-        target_bytes=spec.validation_bytes,
-        maximum_documents=spec.maximum_documents_per_split,
-        output_path=validation_path,
-        split_name="held-out corpus",
-        progress=progress,
-        completed_bytes=spec.train_bytes,
-        total_bytes=total_bytes,
-        source_revision=revision_before,
-    )
+    if inventory_before is None:
+        train, _ = _materialize_split(
+            catalog=catalog,
+            start_offset=int(catalog["train_offset"]),
+            target_bytes=spec.train_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=train_path,
+            split_name="training corpus",
+            progress=progress,
+            completed_bytes=0,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+        )
+        validation, _ = _materialize_split(
+            catalog=catalog,
+            start_offset=int(catalog["validation_offset"]),
+            target_bytes=spec.validation_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=validation_path,
+            split_name="held-out corpus",
+            progress=progress,
+            completed_bytes=spec.train_bytes,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+        )
+    else:
+        parquet_cache = directory / "source-parquet"
+        train, _ = _materialize_split_parquet(
+            catalog=catalog,
+            inventory=inventory_before,
+            parquet_cache=parquet_cache,
+            start_offset=int(catalog["train_offset"]),
+            target_bytes=spec.train_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=train_path,
+            split_name="training corpus",
+            progress=progress,
+            completed_bytes=0,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+            source_batch_rows=spec.source_batch_rows,
+        )
+        validation, _ = _materialize_split_parquet(
+            catalog=catalog,
+            inventory=inventory_before,
+            parquet_cache=parquet_cache,
+            start_offset=int(catalog["validation_offset"]),
+            target_bytes=spec.validation_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=validation_path,
+            split_name="held-out corpus",
+            progress=progress,
+            completed_bytes=spec.train_bytes,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+            source_batch_rows=spec.source_batch_rows,
+        )
     revision_after = _source_revision(str(catalog["dataset"]))
     if revision_before != revision_after:
         raise RuntimeError(
             "FineWeb source revision changed during materialization; rerun to freeze one revision"
         )
+    if inventory_before is not None:
+        inventory_after = _parquet_inventory(catalog)
+        if inventory_before["fingerprint"] != inventory_after["fingerprint"]:
+            raise RuntimeError(
+                "parquet source inventory changed during materialization; rerun "
+                "to freeze one conversion"
+            )
     if not (
         int(train["last_source_row"]) < int(validation["first_source_row"])
         or int(validation["last_source_row"]) < int(train["first_source_row"])
@@ -534,6 +877,10 @@ def materialize_public_corpus(
             text_field="text",
             shard_token_limit=spec.token_shard_tokens,
             progress=postprocess_progress,
+            source_fingerprints={
+                "train": str(train["file_sha256"]),
+                "validation": str(validation["file_sha256"]),
+            },
         )
         token_stream_manifest_path = token_stream_directory / "manifest.json"
         load_token_stream_manifest(token_stream_manifest_path, verify_files=True)
@@ -544,19 +891,29 @@ def materialize_public_corpus(
             token_stream_manifest["splits"]["validation"]["tokens"]
         )
     manifest: Dict[str, Any] = {
-        "schema_version": 2,
+        "schema_version": 3,
         "status": "complete",
         "id": spec.fingerprint,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "spec": asdict(spec),
         "source": {
-            "provider": "Hugging Face Dataset Viewer API",
+            "provider": (
+                "Hugging Face Parquet export"
+                if spec.acquisition_backend == "parquet"
+                else "Hugging Face Dataset Viewer API"
+            ),
             "dataset": catalog["dataset"],
             "config": catalog["config"],
             "split": catalog["split"],
             "revision": revision_before,
             "license": catalog["license"],
             "data_card_url": catalog["data_card_url"],
+            "acquisition_backend": spec.acquisition_backend,
+            "parquet_inventory_fingerprint": (
+                inventory_before["fingerprint"]
+                if inventory_before is not None
+                else None
+            ),
         },
         "tokenizer": spec.tokenizer,
         "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(

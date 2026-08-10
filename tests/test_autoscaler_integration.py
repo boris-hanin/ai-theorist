@@ -123,7 +123,7 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
         with urlopen(health_request, timeout=3) as response:
             health = json.load(response)
             assert health["status"] == "ok"
-            assert health["schema_version"] == 2
+            assert health["schema_version"] == 4
             assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
 
         with urlopen(f"{base}/api/corpora/catalog", timeout=3) as response:
@@ -265,7 +265,7 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
             ) as response:
                 campaign_job = json.load(response)
         assert campaign_job["status"] == "completed", campaign_job.get("error")
-        assert campaign_job["campaign_job_identity_version"] == 2
+        assert campaign_job["campaign_job_identity_version"] == 4
         assert campaign_job["result"]["dataset"]["training_tokens"] > 32
         assert len(campaign_job["result"]["scale_optimizer_analyses"]) == 1
         assert campaign_job["config"]["optimizers"][0]["name"] == "adam"

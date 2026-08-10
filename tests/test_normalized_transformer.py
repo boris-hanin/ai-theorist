@@ -4,6 +4,7 @@ import math
 
 import pytest
 import torch
+from torch.nn import functional as F
 
 from ai_theorist.autoscaler.normalized_transformer import (
     NormalizedTransformer,
@@ -128,6 +129,52 @@ def test_ngpt_attention_is_causal():
         changed_logits = model(changed)
     assert torch.equal(original_logits[:, :-1], changed_logits[:, :-1])
     assert not torch.equal(original_logits[:, -1], changed_logits[:, -1])
+
+
+def test_ngpt_accelerated_sdpa_matches_reference_outputs_and_gradients():
+    spec = tiny_ngpt_spec()
+    scale = spec.scales[1]
+    reference = NormalizedTransformer(
+        spec.architecture,
+        scale,
+        attention_backend="math",
+        capture_attention_diagnostics=False,
+    ).train()
+    accelerated = NormalizedTransformer(
+        spec.architecture,
+        scale,
+        attention_backend="auto",
+        capture_attention_diagnostics=False,
+    ).train()
+    accelerated.load_state_dict(reference.state_dict())
+    tokens = torch.randint(
+        0,
+        spec.architecture.vocab_size,
+        (2, spec.architecture.context_length),
+        generator=torch.Generator().manual_seed(23),
+    )
+    targets = tokens.roll(-1, dims=1)
+    reference_logits = reference(tokens)
+    accelerated_logits = accelerated(tokens)
+    torch.testing.assert_close(accelerated_logits, reference_logits, rtol=1e-5, atol=1e-6)
+    F.cross_entropy(
+        reference_logits.reshape(-1, spec.architecture.vocab_size),
+        targets.reshape(-1),
+    ).backward()
+    F.cross_entropy(
+        accelerated_logits.reshape(-1, spec.architecture.vocab_size),
+        targets.reshape(-1),
+    ).backward()
+    for (reference_name, reference_parameter), (accelerated_name, accelerated_parameter) in zip(
+        reference.named_parameters(), accelerated.named_parameters()
+    ):
+        assert accelerated_name == reference_name
+        torch.testing.assert_close(
+            accelerated_parameter.grad,
+            reference_parameter.grad,
+            rtol=2e-5,
+            atol=2e-6,
+        )
 
 
 def test_synthetic_language_data_and_training_are_deterministic():

@@ -16,6 +16,10 @@ from .horizon_campaigns import (
     compile_horizon_transfer_plan,
     run_horizon_transfer_campaign,
 )
+from .forecast_campaigns import (
+    compile_real_text_scaling_plan,
+    run_real_text_scaling_campaign,
+)
 from .joint_transfer_campaigns import (
     compile_joint_transfer_plan,
     run_joint_transfer_campaign,
@@ -36,6 +40,7 @@ CAMPAIGNS = {
     "horizon_transfer",
     "joint_horizon_batch",
     "standard_pretraining_census",
+    "real_text_scaling_ladder",
 }
 
 
@@ -44,6 +49,8 @@ def compile_campaign_plan(campaign: str, config: Mapping[str, Any]) -> Dict[str,
         raise ValueError(f"unknown campaign: {campaign}")
     if campaign == "standard_pretraining_census":
         return compile_standard_pretraining_plan(config)
+    if campaign == "real_text_scaling_ladder":
+        return compile_real_text_scaling_plan(config)
     if campaign == "horizon_transfer":
         required = (
             "architecture",
@@ -105,9 +112,10 @@ def compile_fsdp_launch(
     config_path: Path,
     output_path: Path,
     num_processes: int,
+    campaign: str = "standard_pretraining_census",
 ) -> list:
     if num_processes < 2:
-        raise ValueError("FSDP launch requires at least two processes")
+        raise ValueError("distributed launch requires at least two processes")
     return [
         sys.executable,
         "-m",
@@ -120,10 +128,13 @@ def compile_fsdp_launch(
         str(config_path),
         "--output",
         str(output_path),
+        "--campaign",
+        campaign,
     ]
 
 
-def _run_fsdp(
+def _run_distributed(
+    campaign: str,
     config: Mapping[str, Any],
     output_dir: Path,
     progress: ProgressCallback,
@@ -132,7 +143,9 @@ def _run_fsdp(
     config_path = output_dir / "worker-config.json"
     result_path = output_dir / "result.json"
     atomic_write_json(config_path, dict(config))
-    command = compile_fsdp_launch(config_path, result_path, runtime.num_processes)
+    command = compile_fsdp_launch(
+        config_path, result_path, runtime.num_processes, campaign
+    )
     environment = dict(os.environ)
     environment["PYTHONUNBUFFERED"] = "1"
     process = subprocess.Popen(
@@ -156,11 +169,11 @@ def _run_fsdp(
     return_code = process.wait()
     if return_code:
         raise RuntimeError(
-            "FSDP worker failed with exit code "
+            "distributed worker failed with exit code "
             f"{return_code}: " + "\n".join(tail)
         )
     if not result_path.is_file():
-        raise RuntimeError("FSDP worker completed without a result")
+        raise RuntimeError("distributed worker completed without a result")
     with result_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
@@ -202,10 +215,18 @@ def run_campaign_job(
         result = run_joint_transfer_campaign(
             configured, device=device, progress=progress
         )
+    elif campaign == "real_text_scaling_ladder":
+        runtime = PretrainingRuntimeSpec.from_dict(configured.get("runtime", {}))
+        if runtime.distributed in {"ddp", "fsdp"}:
+            result = _run_distributed(campaign, configured, output_dir, progress)
+        else:
+            result = run_real_text_scaling_campaign(
+                configured, device=device, progress=progress
+            )
     else:
         runtime = PretrainingRuntimeSpec.from_dict(configured.get("runtime", {}))
-        if runtime.distributed == "fsdp":
-            result = _run_fsdp(configured, output_dir, progress)
+        if runtime.distributed in {"ddp", "fsdp"}:
+            result = _run_distributed(campaign, configured, output_dir, progress)
         else:
             result = run_standard_pretraining_batch_census(
                 configured, device=device, progress=progress

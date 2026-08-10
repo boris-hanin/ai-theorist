@@ -171,3 +171,30 @@ def test_one_adam_step_is_finite():
     final = F.cross_entropy(model(tokens).reshape(-1, 16), targets.reshape(-1))
     assert torch.isfinite(initial)
     assert torch.isfinite(final)
+
+
+def test_accelerated_sdpa_matches_reference_outputs_and_gradients():
+    reference = make_model(
+        attention_backend="math", capture_attention_diagnostics=False
+    ).train()
+    accelerated = make_model(
+        attention_backend="auto", capture_attention_diagnostics=False
+    ).train()
+    accelerated.load_state_dict(reference.state_dict())
+    tokens = torch.randint(0, 16, (2, 8), generator=torch.Generator().manual_seed(19))
+    targets = tokens.roll(-1, dims=1)
+    reference_logits = reference(tokens)
+    accelerated_logits = accelerated(tokens)
+    torch.testing.assert_close(accelerated_logits, reference_logits, rtol=1e-5, atol=1e-6)
+    F.cross_entropy(reference_logits.reshape(-1, 16), targets.reshape(-1)).backward()
+    F.cross_entropy(accelerated_logits.reshape(-1, 16), targets.reshape(-1)).backward()
+    for (reference_name, reference_parameter), (accelerated_name, accelerated_parameter) in zip(
+        reference.named_parameters(), accelerated.named_parameters()
+    ):
+        assert accelerated_name == reference_name
+        torch.testing.assert_close(
+            accelerated_parameter.grad,
+            reference_parameter.grad,
+            rtol=2e-5,
+            atol=2e-6,
+        )

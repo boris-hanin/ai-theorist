@@ -606,6 +606,41 @@ def _iter_documents(path: Path, text_field: str) -> Iterator[str]:
     yield path.read_text(encoding="utf-8")
 
 
+def _iter_documents_with_offsets(
+    path: Path, text_field: str, start_offset: int
+) -> Iterator[Tuple[str, int]]:
+    if path.suffix.lower() != ".jsonl":
+        if start_offset:
+            raise ValueError("plain-text tokenization cannot resume at a nonzero offset")
+        yield path.read_text(encoding="utf-8"), path.stat().st_size
+        return
+    with path.open("rb") as handle:
+        if start_offset < 0 or start_offset > path.stat().st_size:
+            raise ValueError("tokenization checkpoint source offset is invalid")
+        handle.seek(start_offset)
+        line_number = 0
+        while True:
+            raw = handle.readline()
+            if not raw:
+                break
+            line_number += 1
+            next_offset = handle.tell()
+            if not raw.strip():
+                continue
+            try:
+                row = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise ValueError(
+                    f"{path}: malformed UTF-8 JSONL after byte offset {start_offset}"
+                ) from exc
+            if not isinstance(row, dict) or not isinstance(row.get(text_field), str):
+                raise ValueError(
+                    f"{path}: record after byte offset {start_offset} must contain "
+                    f"string field {text_field!r}"
+                )
+            yield row[text_field], next_offset
+
+
 def _write_token_shard(path: Path, token_ids: Sequence[int]) -> Dict[str, Any]:
     if not token_ids:
         raise ValueError("cannot write an empty token shard")
@@ -635,23 +670,82 @@ def _materialize_token_split(
     tokenizer: ResolvedTokenizer,
     shard_token_limit: int,
     progress: ProgressCallback,
+    source_fingerprint: Optional[str] = None,
 ) -> Dict[str, Any]:
-    shards: List[Dict[str, Any]] = []
+    source_fingerprint = source_fingerprint or _hash_file(source_path)
+    checkpoint_path = output_directory / f".{split}.tokenization-checkpoint.json"
+    contract = {
+        "schema_version": 1,
+        "split": split,
+        "source_path": str(source_path.resolve()),
+        "source_bytes": source_path.stat().st_size,
+        "source_sha256": source_fingerprint,
+        "text_field": text_field,
+        "tokenizer_fingerprint": tokenizer.manifest["fingerprint"],
+        "shard_token_limit": shard_token_limit,
+    }
+    checkpoint: Optional[Dict[str, Any]] = None
+    if checkpoint_path.is_file():
+        try:
+            with checkpoint_path.open("r", encoding="utf-8") as handle:
+                candidate = json.load(handle)
+            if all(candidate.get(key) == value for key, value in contract.items()):
+                checkpoint = candidate
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            checkpoint = None
+    if checkpoint is None:
+        shards: List[Dict[str, Any]] = []
+        documents = 0
+        total_tokens = 0
+        source_offset = 0
+    else:
+        shards = list(checkpoint.get("shards", []))
+        documents = int(checkpoint.get("documents", 0))
+        total_tokens = int(checkpoint.get("tokens", 0))
+        source_offset = int(checkpoint.get("source_offset", 0))
+        for shard in shards:
+            path = _safe_manifest_path(
+                output_directory, shard.get("path"), "tokenization checkpoint shard"
+            )
+            if (
+                not path.is_file()
+                or path.stat().st_size != int(shard.get("bytes", -1))
+                or _hash_file(path) != shard.get("sha256")
+            ):
+                raise ValueError(
+                    "tokenization checkpoint references a missing or altered shard"
+                )
+    retained = {str(row["path"]) for row in shards}
+    for orphan in output_directory.glob(f"{split}-*.bin"):
+        if orphan.name not in retained:
+            orphan.unlink()
     buffer = array("I")
     if buffer.itemsize != 4:
         raise RuntimeError("token sharding requires a 32-bit unsigned array implementation")
-    documents = 0
-    total_tokens = 0
+    buffer_end_offset = source_offset
 
     def flush() -> None:
-        nonlocal buffer
+        nonlocal buffer, source_offset
         if not buffer:
             return
         shard_path = output_directory / f"{split}-{len(shards):05d}.bin"
         shards.append(_write_token_shard(shard_path, buffer))
+        source_offset = buffer_end_offset
+        atomic_write_json(
+            checkpoint_path,
+            {
+                **contract,
+                "source_offset": source_offset,
+                "documents": documents,
+                "tokens": total_tokens,
+                "shards": shards,
+            },
+        )
         buffer = array("I")
 
-    for document in _iter_documents(source_path, text_field):
+    for document, next_offset in _iter_documents_with_offsets(
+        source_path, text_field, source_offset
+    ):
         encoded = tokenizer.encode_document(document)
         if not encoded:
             raise ValueError("the pinned tokenizer produced an empty document")
@@ -660,6 +754,7 @@ def _materialize_token_split(
         if buffer and len(buffer) + len(encoded) > shard_token_limit:
             flush()
         buffer.extend(encoded)
+        buffer_end_offset = next_offset
         documents += 1
         total_tokens += len(encoded)
         if progress is not None and documents % 1000 == 0:
@@ -674,9 +769,11 @@ def _materialize_token_split(
     flush()
     if not shards:
         raise ValueError(f"{split} corpus contains no tokenizable documents")
+    checkpoint_path.unlink(missing_ok=True)
     return {
         "documents": documents,
         "tokens": total_tokens,
+        "source_sha256": source_fingerprint,
         "shards": shards,
     }
 
@@ -690,10 +787,20 @@ def materialize_pinned_token_streams(
     text_field: str = "text",
     shard_token_limit: int = 16_777_216,
     progress: ProgressCallback = None,
+    source_fingerprints: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, Any]:
     if shard_token_limit < 1024:
         raise ValueError("shard_token_limit must be at least 1024")
     output_directory.mkdir(parents=True, exist_ok=True)
+    existing_manifest_path = output_directory / "manifest.json"
+    if existing_manifest_path.is_file():
+        try:
+            return load_token_stream_manifest(
+                existing_manifest_path, verify_files=True
+            )
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+    source_fingerprints = dict(source_fingerprints or {})
     train = _materialize_token_split(
         split="train",
         source_path=train_path,
@@ -702,6 +809,7 @@ def materialize_pinned_token_streams(
         tokenizer=tokenizer,
         shard_token_limit=shard_token_limit,
         progress=progress,
+        source_fingerprint=source_fingerprints.get("train"),
     )
     validation = _materialize_token_split(
         split="validation",
@@ -711,6 +819,7 @@ def materialize_pinned_token_streams(
         tokenizer=tokenizer,
         shard_token_limit=shard_token_limit,
         progress=progress,
+        source_fingerprint=source_fingerprints.get("validation"),
     )
     content_fingerprint = _fingerprint(
         {

@@ -33,7 +33,7 @@ from .tokenization import token_stream_identity, tokenizer_catalog
 # Increment when job interpretation changes in a way that makes a persisted
 # result unsafe to reuse for an identical request (for example, a new
 # estimator qualification gate). Trial-level cache formats version separately.
-CAMPAIGN_JOB_IDENTITY_VERSION = 3
+CAMPAIGN_JOB_IDENTITY_VERSION = 4
 
 
 def _campaign_data_identity(config: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
@@ -243,6 +243,8 @@ class CampaignStore:
         transfers = result.get("transfer_results")
         certified_horizon_rules = result.get("certified_schedule_rules")
         certified_joint_rules = result.get("certified_joint_rules")
+        forecasts = result.get("forecasts")
+        hidden_backtests = result.get("hidden_scale_backtests")
         dataset = result.get("dataset") if isinstance(result.get("dataset"), dict) else {}
         return {
             "id": job.get("id"),
@@ -274,6 +276,23 @@ class CampaignStore:
                 "corpus_fingerprint": dataset.get("fingerprint"),
                 "dataset_identity_fingerprint": dataset.get("identity_fingerprint"),
                 "tokenizer_fingerprint": dataset.get("tokenizer_fingerprint"),
+                "forecastable": bool(result.get("forecastable", False)),
+                "certified_forecasts": sum(
+                    bool(item.get("certified")) for item in forecasts
+                )
+                if isinstance(forecasts, list)
+                else 0,
+                "forecast_count": len(forecasts)
+                if isinstance(forecasts, list)
+                else 0,
+                "passed_hidden_backtests": sum(
+                    bool(item.get("passed")) for item in hidden_backtests
+                )
+                if isinstance(hidden_backtests, list)
+                else 0,
+                "hidden_backtest_count": len(hidden_backtests)
+                if isinstance(hidden_backtests, list)
+                else 0,
             }
             if result
             else None,
@@ -564,7 +583,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/")
         if path == "/api/health":
-            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 3})
+            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 4})
             return
         if path == "/api/default-spec":
             self._send(200, {"spec": default_study_spec(quick=True).to_dict()})

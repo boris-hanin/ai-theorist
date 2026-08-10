@@ -150,37 +150,31 @@ Jiang decoder ties them. All target parameter counts must therefore be
 recomputed after freezing the tokenizer and context contract.
 
 A 100M model is plausible on one 80GB A100. Runtime throughput, the token
-budget, and the number of seeds and LR probes are the binding costs. The current
-efficient pretraining path supports bf16, PyTorch SDPA/FlashAttention, and
-single-node FSDP, but the theory-faithful normalized and Jiang runners do not
-yet use that path. They still need bf16/SDPA integration, activation
-checkpointing, gradient accumulation, resumable optimizer checkpoints, and a
-measured tokens-per-second benchmark. The two available one-GPU hosts cannot
-exercise the existing single-node FSDP implementation as a multi-GPU job, and
-multi-node rendezvous is not implemented.
+budget, and the number of seeds and LR probes are the binding costs. The
+theory-faithful normalized and Jiang runners now use bf16 SDPA, activation
+checkpointing, gradient accumulation, and atomic same-topology optimizer/RNG
+resumption. Jiang permits single-node FSDP. νGPT deliberately uses a single
+GPU or replicated DDP because its post-step full-matrix sphere projection is
+not yet definition-preserving under sharding. Measured tokens-per-second
+benchmarking on the intended cluster and multi-node rendezvous remain open.
 
 ## Required product and statistical work
 
-The current generic study path restricts normalized-Transformer scaling studies
-to synthetic Markov data. The real-text horizon runners hold model size fixed,
-and the Jiang real-text model ladder is a specialized campaign rather than a
-first-class web study. These paths must be unified before the web app can launch
-and audit the proposed campaign.
+The web job system now has a first-class `real_text_scaling_ladder` campaign.
+It compiles exact vocabulary-aware Jiang and νGPT shapes, trains on verified
+pinned token streams, records the full architecture-specific optimizer-group
+contract, reserves an upper rung, and exposes the audit and refusal results in
+the app.
 
-The current loss fitter uses estimated compute `C = 6NT`, fits
-`L(C) = E + A C^(-alpha)`, and forecasts one adjacent compute step. Its bootstrap
-mostly propagates seed noise. It does not yet represent model-form uncertainty
-or support explicit 1B/5B/10B parameter targets. Long-range forecasts need:
-
-- target coordinates `(N,T,B,architecture,optimizer,schedule)` rather than a
-  bare parameter count;
-- rolling upper-rung holdouts and at least one completely hidden larger model;
-- an explicit maximum extrapolation factor;
-- comparison of plausible floor-power, pure-power, and broken-power fits;
-- prediction intervals that widen with extrapolation distance and include
-  model-form disagreement, not just seed error;
-- refusal when fit families disagree, a target is too far beyond the largest
-  observation, or transfer/control gates fail.
+The forecast campaign compares pure-power, floor-power, and broken-power
+families, runs rolling upper-rung backtests, propagates seed and family
+uncertainty, and accepts explicit parameter targets. It refuses a numeric
+prediction when fit, backtest, family-spread, repetition, or extrapolation
+limits fail. The remaining work is empirical qualification on the larger
+ladder, not another silent extrapolator. The complete contract is in
+`docs/FORECAST_GRADE_SCALING.md`. Long-range forecasts still need actual runs
+whose full `(N,T,B,architecture,optimizer,schedule)` coordinates pass those
+implemented gates, followed by a genuinely hidden larger-model confirmation.
 
 ## Staged campaign
 
@@ -194,7 +188,7 @@ and scaling path. Record unique corpus tokens, presented tokens, repetition,
 updates, and tokens per parameter separately. Preserve the Jiang CompleteP
 group formulas and the normalized Transformer's own parameterization in full.
 
-### Stage 1: unify and benchmark the runtime
+### Stage 1: unify and benchmark the runtime (implementation complete)
 
 Move both theory-faithful models onto the real-text bf16 SDPA/FlashAttention
 path without changing their parameterization. Add gradient accumulation,
@@ -211,7 +205,7 @@ may use the qualified one-third horizon rule as a candidate. Jiang must treat
 flat duration scaling as the present evidence-backed default and test new
 duration rules rather than importing one-third.
 
-### Stage 3: extend the observed ladder to about 100M
+### Stage 3: extend the observed ladder to about 100M (campaign ready)
 
 Use six to eight model rungs spanning at least 30x, with one or two upper rungs
 hidden from all fitting and selection. Tune at the declared reference scale and
@@ -219,7 +213,7 @@ only use preregistered diagnostic probes elsewhere. The campaign should not
 advance if optima hit LR-grid boundaries, transfer controls fail, validation
 loss is non-monotone beyond uncertainty, or repetition becomes material.
 
-### Stage 4: validate the extrapolator
+### Stage 4: validate the extrapolator (gates implemented; data pending)
 
 Fit all candidate laws below the hidden rung and score their predictive loss,
 interval coverage, rank ordering, and calibration at that rung. Repeat as

@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 authors = [{name = "Boris Hanin"}]
 dependencies = [
   "numpy>=1.26,<3",
+  "pyarrow>=16,<22",
   "scipy>=1.13,<2",
   "tokenizers==0.21.4",
   "torch>=2.2",

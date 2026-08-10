@@ -20,6 +20,7 @@ from .batch_scaling import (
 )
 from .critical_batch import CriticalBatchEstimate
 from .campaign_jobs import run_campaign_job
+from .forecast_campaigns import compile_real_text_scaling_plan
 from .horizon_campaigns import run_horizon_transfer_campaign
 from .joint_transfer_campaigns import run_joint_transfer_campaign
 from .pretraining import compile_standard_pretraining_plan
@@ -163,6 +164,23 @@ def main() -> None:
         "--output", type=Path, default=Path("runs/autoscaler/pretraining-census")
     )
     pretrain.add_argument("--progress-jsonl", action="store_true")
+
+    forecast_plan = subparsers.add_parser(
+        "forecast-plan",
+        help="validate a pinned real-text Jiang or nGPT scaling ladder",
+    )
+    forecast_plan.add_argument("config", type=Path)
+
+    forecast = subparsers.add_parser(
+        "forecast-ladder",
+        help="run a forecast-gated real-text Jiang or nGPT scaling ladder",
+    )
+    forecast.add_argument("config", type=Path)
+    forecast.add_argument("--device", default="cpu")
+    forecast.add_argument(
+        "--output", type=Path, default=Path("runs/autoscaler/forecast-ladder")
+    )
+    forecast.add_argument("--progress-jsonl", action="store_true")
 
     corpus = subparsers.add_parser(
         "corpus-materialize",
@@ -393,6 +411,27 @@ def main() -> None:
                 print(json.dumps(event, sort_keys=True), flush=True)
         result = run_campaign_job(
             "standard_pretraining_census",
+            payload,
+            device=args.device,
+            output_dir=args.output,
+            progress=progress,
+        )
+        _print(result)
+    elif args.command == "forecast-plan":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-plan config must be an object")
+        _print(compile_real_text_scaling_plan(payload))
+    elif args.command == "forecast-ladder":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-ladder config must be an object")
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        result = run_campaign_job(
+            "real_text_scaling_ladder",
             payload,
             device=args.device,
             output_dir=args.output,

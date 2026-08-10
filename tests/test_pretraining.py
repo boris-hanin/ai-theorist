@@ -4,6 +4,7 @@ import time
 import numpy as np
 import pytest
 import torch
+import ai_theorist.autoscaler.pretraining as pretraining
 
 from ai_theorist.autoscaler.batch_scaling import OptimizerHyperparameters
 from ai_theorist.autoscaler.api import CampaignStore
@@ -172,6 +173,117 @@ def test_standard_trial_supports_fp32_and_cpu_bf16(tmp_path) -> None:
     assert bf16.final_validation_loss > 0
 
 
+def test_gradient_accumulation_matches_full_batch(tmp_path) -> None:
+    corpus = TokenizedTextCorpus(_corpus_spec(tmp_path), context_length=4)
+    context = DistributedContext(0, 1, 0, "cpu")
+    optimizer = OptimizerHyperparameters("adam", 0.001, beta2=0.99)
+    full, _ = run_standard_pretraining_trial(
+        model_spec=_model_spec(),
+        corpus=corpus,
+        runtime=PretrainingRuntimeSpec(attention_backend="math"),
+        distributed_context=context,
+        optimizer_spec=optimizer,
+        total_tokens=32,
+        batch_examples=4,
+        seed=13,
+        validation_interval=1,
+        validation_examples=4,
+    )
+    accumulated, _ = run_standard_pretraining_trial(
+        model_spec=_model_spec(),
+        corpus=corpus,
+        runtime=PretrainingRuntimeSpec(
+            attention_backend="math",
+            gradient_accumulation_steps=2,
+            activation_checkpointing=True,
+        ),
+        distributed_context=context,
+        optimizer_spec=optimizer,
+        total_tokens=32,
+        batch_examples=4,
+        seed=13,
+        validation_interval=1,
+        validation_examples=4,
+    )
+    assert accumulated.final_validation_loss == pytest.approx(
+        full.final_validation_loss, rel=1e-6, abs=1e-7
+    )
+    assert accumulated.accumulation_steps == 2
+    assert accumulated.metadata["activation_checkpointing"] is True
+
+
+def test_midtrial_checkpoint_resumes_exact_optimizer_and_sampling_state(
+    tmp_path, monkeypatch
+) -> None:
+    corpus = TokenizedTextCorpus(_corpus_spec(tmp_path), context_length=4)
+    context = DistributedContext(0, 1, 0, "cpu")
+    optimizer = OptimizerHyperparameters("adam", 0.001, beta2=0.99)
+    runtime = PretrainingRuntimeSpec(
+        attention_backend="math",
+        checkpoint_interval_steps=1,
+        resume=True,
+    )
+    interrupted_cache = tmp_path / "interrupted"
+    original_save = pretraining.save_runtime_checkpoint
+    calls = 0
+
+    def interrupt_after_first_checkpoint(**kwargs):
+        nonlocal calls
+        original_save(**kwargs)
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("simulated worker interruption")
+
+    monkeypatch.setattr(
+        pretraining, "save_runtime_checkpoint", interrupt_after_first_checkpoint
+    )
+    with pytest.raises(RuntimeError, match="simulated worker interruption"):
+        run_standard_pretraining_trial(
+            model_spec=_model_spec(),
+            corpus=corpus,
+            runtime=runtime,
+            distributed_context=context,
+            optimizer_spec=optimizer,
+            total_tokens=32,
+            batch_examples=2,
+            seed=17,
+            validation_interval=1,
+            validation_examples=4,
+            cache_directory=interrupted_cache,
+        )
+    monkeypatch.setattr(pretraining, "save_runtime_checkpoint", original_save)
+    resumed, _ = run_standard_pretraining_trial(
+        model_spec=_model_spec(),
+        corpus=corpus,
+        runtime=runtime,
+        distributed_context=context,
+        optimizer_spec=optimizer,
+        total_tokens=32,
+        batch_examples=2,
+        seed=17,
+        validation_interval=1,
+        validation_examples=4,
+        cache_directory=interrupted_cache,
+    )
+    clean, _ = run_standard_pretraining_trial(
+        model_spec=_model_spec(),
+        corpus=corpus,
+        runtime=runtime,
+        distributed_context=context,
+        optimizer_spec=optimizer,
+        total_tokens=32,
+        batch_examples=2,
+        seed=17,
+        validation_interval=1,
+        validation_examples=4,
+        cache_directory=tmp_path / "clean",
+    )
+    assert resumed.metadata["resumed_from_step"] == 1
+    assert resumed.final_validation_loss == clean.final_validation_loss
+    assert resumed.validation_checkpoints == clean.validation_checkpoints
+    assert not list(interrupted_cache.glob("*.resume.pt"))
+
+
 def test_flash_requires_cuda_and_fsdp_plan_is_explicit(tmp_path, monkeypatch) -> None:
     with pytest.raises(ValueError, match="FlashAttention requires a CUDA"):
         preflight_runtime(
@@ -215,6 +327,10 @@ def test_flash_requires_cuda_and_fsdp_plan_is_explicit(tmp_path, monkeypatch) ->
     plan = compile_standard_pretraining_plan(config)
     assert plan["runtime"]["distributed"] == "fsdp"
     assert plan["capabilities"]["single_node_fsdp"] is True
+    assert plan["capabilities"]["single_node_ddp"] is True
+    assert plan["capabilities"]["gradient_accumulation"] is True
+    assert plan["capabilities"]["activation_checkpointing"] is True
+    assert plan["capabilities"]["mid_trial_resume"] is True
 
 
 def test_real_text_batch_census_runs_all_three_estimators(tmp_path) -> None:

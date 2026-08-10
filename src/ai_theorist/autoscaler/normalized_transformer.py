@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import math
+from contextlib import nullcontext
 from typing import Dict, Iterable, List, Tuple
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_group
 from .schema import ArchitectureTemplate, DatasetSpec, ScaleLevel
@@ -68,6 +70,8 @@ class NormalizedTransformerBlock(nn.Module):
         *,
         depth_multiplier: float,
         parameterization: str,
+        attention_backend: str = "math",
+        capture_attention_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if width % num_heads:
@@ -77,6 +81,10 @@ class NormalizedTransformerBlock(nn.Module):
         self.head_dim = width // num_heads
         self.mlp_width = mlp_multiplier * width
         self.depth_multiplier = depth_multiplier
+        if attention_backend not in {"auto", "math", "flash"}:
+            raise ValueError("attention_backend must be auto, math, or flash")
+        self.attention_backend = attention_backend
+        self.capture_attention_diagnostics = capture_attention_diagnostics
         if parameterization not in {"nugpt", "baseline_ngpt"}:
             raise ValueError("parameterization must be nugpt or baseline_ngpt")
         self.parameterization = parameterization
@@ -118,14 +126,41 @@ class NormalizedTransformerBlock(nn.Module):
         )
         q = coordinate_scale * unit_norm(q)
         k = coordinate_scale * unit_norm(k)
-        scores = torch.matmul(q, k.transpose(-2, -1)) * math.sqrt(self.head_dim)
-        causal_mask = torch.ones(time, time, device=hidden.device, dtype=torch.bool).triu(1)
-        scores = scores.masked_fill(causal_mask, float("-inf"))
-        probabilities = scores.softmax(dim=-1)
-        with torch.no_grad():
-            entropy = -(probabilities.float() * probabilities.float().clamp_min(1e-12).log())
-            self._last_attention_entropy.copy_(entropy.sum(dim=-1).mean())
-        attended = torch.matmul(probabilities, v)
+        kernel_context = nullcontext()
+        if self.attention_backend != "auto":
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+
+            backend = (
+                SDPBackend.FLASH_ATTENTION
+                if self.attention_backend == "flash"
+                else SDPBackend.MATH
+            )
+            kernel_context = sdpa_kernel([backend])
+        # nGPT deliberately uses sqrt(d_head) as the scale on normalized Q/K.
+        with kernel_context:
+            attended = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=0.0,
+                is_causal=True,
+                scale=math.sqrt(self.head_dim),
+            )
+        if self.capture_attention_diagnostics:
+            with torch.no_grad():
+                scores = torch.matmul(q, k.transpose(-2, -1)) * math.sqrt(
+                    self.head_dim
+                )
+                causal_mask = torch.ones(
+                    time, time, device=hidden.device, dtype=torch.bool
+                ).triu(1)
+                scores = scores.masked_fill(causal_mask, float("-inf"))
+                probabilities = scores.softmax(dim=-1)
+                entropy = -(
+                    probabilities.float()
+                    * probabilities.float().clamp_min(1e-12).log()
+                )
+                self._last_attention_entropy.copy_(entropy.sum(dim=-1).mean())
         attended = attended.transpose(1, 2).contiguous().view(batch, time, self.width)
         return self.attention_output(attended)
 
@@ -167,11 +202,15 @@ class NormalizedTransformer(nn.Module):
         scale: ScaleLevel,
         *,
         parameterization: str = "nugpt",
+        attention_backend: str = "math",
+        activation_checkpointing: bool = False,
+        capture_attention_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if parameterization not in {"nugpt", "baseline_ngpt"}:
             raise ValueError("parameterization must be nugpt or baseline_ngpt")
         self.parameterization = parameterization
+        self.activation_checkpointing = activation_checkpointing
         self.width = scale.width
         self.depth = scale.repeats
         self.reference_width = architecture.reference_width
@@ -188,6 +227,8 @@ class NormalizedTransformer(nn.Module):
                 architecture.mlp_multiplier,
                 depth_multiplier=self.depth_multiplier,
                 parameterization=parameterization,
+                attention_backend=attention_backend,
+                capture_attention_diagnostics=capture_attention_diagnostics,
             )
             for _ in range(scale.repeats)
         )
@@ -391,7 +432,10 @@ class NormalizedTransformer(nn.Module):
             raise ValueError("token sequence exceeds configured context length")
         hidden = unit_norm(self.token_embedding(tokens))
         for block in self.blocks:
-            hidden = block(hidden)
+            if self.activation_checkpointing and self.training:
+                hidden = activation_checkpoint(block, hidden, use_reentrant=False)
+            else:
+                hidden = block(hidden)
         logits = self.language_model_head(hidden)
         effective_logit_scale = self.logit_scale * (
             self.logit_initial_value / self.rescaler_parameter_scale

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 import math
 from typing import Dict, Iterable, List, Literal, Mapping, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_group
 
@@ -93,6 +95,8 @@ class JiangChizatAttention(nn.Module):
         *,
         value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
         bias: bool = True,
+        attention_backend: str = "math",
+        capture_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if (
@@ -104,6 +108,10 @@ class JiangChizatAttention(nn.Module):
         self.num_heads = shape.num_heads
         self.head_dimension = shape.head_dimension
         self.value_initialization_multiplier = value_initialization_multiplier
+        if attention_backend not in {"auto", "math", "flash"}:
+            raise ValueError("attention_backend must be auto, math, or flash")
+        self.attention_backend = attention_backend
+        self.capture_diagnostics = capture_diagnostics
         self.qkv = nn.Linear(self.width, 3 * self.width, bias=bias)
         self.output = nn.Linear(self.width, self.width, bias=bias)
         self.last_attention_logits: Optional[Tensor] = None
@@ -139,23 +147,47 @@ class JiangChizatAttention(nn.Module):
             ).transpose(1, 2)
 
         q, k, v = (split_heads(value) for value in (q, k, v))
-        # Jiang et al. use QK^T / d_head, not the standard / sqrt(d_head).
-        logits = torch.matmul(q, k.transpose(-2, -1)) / self.head_dimension
-        causal_mask = torch.ones(time, time, dtype=torch.bool, device=hidden.device).triu(1)
-        logits = logits.masked_fill(causal_mask, float("-inf"))
-        probabilities = logits.softmax(dim=-1)
-        self.last_attention_logits = logits.detach()
-        self.last_attention_probabilities = probabilities.detach()
-        with torch.no_grad():
-            finite_logits = logits.masked_fill(~torch.isfinite(logits), 0.0).float()
-            finite_count = torch.isfinite(logits).sum().clamp_min(1)
-            self.last_logit_rms.copy_((finite_logits.square().sum() / finite_count).sqrt())
-            entropy = -(
-                probabilities.float()
-                * probabilities.float().clamp_min(1e-12).log()
-            ).sum(dim=-1)
-            self.last_entropy.copy_(entropy.mean())
-        attended = torch.matmul(probabilities, v)
+        kernel_context = nullcontext()
+        if self.attention_backend != "auto":
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+
+            backend = (
+                SDPBackend.FLASH_ATTENTION
+                if self.attention_backend == "flash"
+                else SDPBackend.MATH
+            )
+            kernel_context = sdpa_kernel([backend])
+        # Passing the scale explicitly preserves Jiang et al.'s QK^T/d_head
+        # convention under every SDPA backend.
+        with kernel_context:
+            attended = F.scaled_dot_product_attention(
+                q,
+                k,
+                v,
+                dropout_p=0.0,
+                is_causal=True,
+                scale=1.0 / self.head_dimension,
+            )
+        if self.capture_diagnostics:
+            with torch.no_grad():
+                logits = torch.matmul(q, k.transpose(-2, -1)) / self.head_dimension
+                causal_mask = torch.ones(
+                    time, time, dtype=torch.bool, device=hidden.device
+                ).triu(1)
+                logits = logits.masked_fill(causal_mask, float("-inf"))
+                probabilities = logits.softmax(dim=-1)
+                self.last_attention_logits = logits.detach()
+                self.last_attention_probabilities = probabilities.detach()
+                finite_logits = logits.masked_fill(~torch.isfinite(logits), 0.0).float()
+                finite_count = torch.isfinite(logits).sum().clamp_min(1)
+                self.last_logit_rms.copy_(
+                    (finite_logits.square().sum() / finite_count).sqrt()
+                )
+                entropy = -(
+                    probabilities.float()
+                    * probabilities.float().clamp_min(1e-12).log()
+                ).sum(dim=-1)
+                self.last_entropy.copy_(entropy.mean())
         attended = attended.transpose(1, 2).contiguous().view(batch, time, self.width)
         return self.output(attended)
 
@@ -169,6 +201,8 @@ class JiangChizatBlock(nn.Module):
         disable_attention: bool = False,
         value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
         down_initialization_multiplier: float = JIANG_REPORTED_DOWN_INIT_MULTIPLIER,
+        attention_backend: str = "math",
+        capture_attention_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if down_initialization not in {"mean_field", "fan_in"}:
@@ -185,6 +219,8 @@ class JiangChizatBlock(nn.Module):
             shape,
             value_initialization_multiplier=value_initialization_multiplier,
             bias=True,
+            attention_backend=attention_backend,
+            capture_diagnostics=capture_attention_diagnostics,
         )
         self.ffn_norm = nn.LayerNorm(shape.residual_width)
         self.ffn_up = nn.Linear(shape.residual_width, shape.hidden_width, bias=True)
@@ -232,6 +268,9 @@ class JiangChizatTransformer(nn.Module):
         disable_attention: bool = False,
         value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
         down_initialization_multiplier: float = JIANG_REPORTED_DOWN_INIT_MULTIPLIER,
+        attention_backend: str = "math",
+        activation_checkpointing: bool = False,
+        capture_attention_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if vocab_size < 8 or context_length < 2:
@@ -242,6 +281,7 @@ class JiangChizatTransformer(nn.Module):
         self.reference = reference
         self.vocab_size = vocab_size
         self.context_length = context_length
+        self.activation_checkpointing = activation_checkpointing
         self.token_embedding = nn.Embedding(vocab_size, shape.residual_width)
         self.position_embedding = nn.Embedding(context_length, shape.residual_width)
         nn.init.normal_(
@@ -261,6 +301,8 @@ class JiangChizatTransformer(nn.Module):
                 disable_attention=disable_attention,
                 value_initialization_multiplier=value_initialization_multiplier,
                 down_initialization_multiplier=down_initialization_multiplier,
+                attention_backend=attention_backend,
+                capture_attention_diagnostics=capture_attention_diagnostics,
             )
             for _ in range(shape.depth)
         )
@@ -274,7 +316,10 @@ class JiangChizatTransformer(nn.Module):
         positions = torch.arange(tokens.shape[1], device=tokens.device)
         hidden = self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
         for block in self.blocks:
-            hidden = block(hidden)
+            if self.activation_checkpointing and self.training:
+                hidden = activation_checkpoint(block, hidden, use_reentrant=False)
+            else:
+                hidden = block(hidden)
         return self.final_norm(hidden)
 
     def forward(self, tokens: Tensor) -> Tensor:

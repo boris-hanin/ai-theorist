@@ -14,10 +14,11 @@ from widely separated, non-overlapping source-row ranges and written to
 separate JSONL files.  A completed snapshot is re-used only after both files
 pass their recorded SHA-256 checks.
 
-Transient dataset-server failures use bounded exponential backoff.  Each
-completed 100-document page is fsynced with a checkpoint tied to the source
-revision and materialization contract, so an interrupted download resumes from
-the last verified source row.
+Transient dataset-server failures use bounded exponential backoff. Small
+campaigns checkpoint Dataset Viewer pages. Forecast-scale campaigns freeze the
+Hugging Face Parquet inventory, resume each source file with HTTP byte ranges,
+stream record batches, and fsync a source-row checkpoint. Both paths resume
+only from an atomically committed record on the same source revision.
 
 Historical public-data campaigns used deterministic `byte_v1`. The web
 materializer now also supports the allow-listed `olmo2_1124` tokenizer at a
