@@ -86,6 +86,29 @@ def test_memory_mapped_uint16_token_stream(tmp_path) -> None:
     assert torch.equal(inputs[:, 1:], targets[:, :-1])
 
 
+def test_memory_mapped_uint32_stream_preserves_large_token_ids(tmp_path) -> None:
+    train = tmp_path / "train-u32.bin"
+    validation = tmp_path / "validation-u32.bin"
+    values = np.array([0, 65_535, 100_257, 100_277] * 20, dtype="<u4")
+    values.tofile(train)
+    values.tofile(validation)
+    corpus = TokenizedTextCorpus(
+        TokenizedTextSpec(
+            str(train),
+            str(validation),
+            tokenizer="uint32_bin_v1",
+        ),
+        context_length=4,
+        vocab_size=100_278,
+    )
+    inputs, targets = corpus.sample_batch(
+        "train", 16, torch.Generator().manual_seed(4), "cpu"
+    )
+    assert int(torch.maximum(inputs.max(), targets.max())) > 65_535
+    assert torch.equal(inputs[:, 1:], targets[:, :-1])
+    assert corpus.tokenizer_is_pinned is False
+
+
 def test_standard_transformer_is_causal_and_ties_embeddings() -> None:
     spec = _model_spec()
     model = StandardTransformer(spec, attention_backend="math").eval()

@@ -186,11 +186,13 @@ or support explicit 1B/5B/10B parameter targets. Long-range forecasts need:
 
 ### Stage 0: freeze the production contract
 
-Pin a GPT-2- or OLMo-class tokenizer, a document-aware packed binary stream,
-disjoint validation data, context length, optimizer, schedule, and scaling path.
-Record unique corpus tokens, presented tokens, repetition, updates, and tokens
-per parameter separately. Preserve the Jiang CompleteP group formulas and the
-normalized Transformer's own parameterization in full.
+The tokenizer portion is implemented: `olmo2_1124` is pinned to an immutable
+revision, verified assets and encoding canaries, and document-delimited uint32
+shards whose packing identity enters every job. The remaining Stage 0 choices
+are the larger disjoint corpus snapshot, context length, optimizer, schedule,
+and scaling path. Record unique corpus tokens, presented tokens, repetition,
+updates, and tokens per parameter separately. Preserve the Jiang CompleteP
+group formulas and the normalized Transformer's own parameterization in full.
 
 ### Stage 1: unify and benchmark the runtime
 

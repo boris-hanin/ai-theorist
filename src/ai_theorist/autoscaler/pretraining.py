@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
@@ -29,6 +30,12 @@ from .critical_batch import (
     estimate_steps_to_target_critical_batch,
 )
 from .study import atomic_write_json
+from .tokenization import (
+    PINNED_TOKENIZER_REGISTRY,
+    builtin_byte_tokenizer_manifest,
+    load_token_stream_manifest,
+    token_stream_identity,
+)
 
 
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
@@ -101,24 +108,47 @@ class StandardTransformerSpec:
 
 @dataclass(frozen=True)
 class TokenizedTextSpec:
-    train_path: str
-    validation_path: str
+    train_path: str = ""
+    validation_path: str = ""
     tokenizer: str = "byte_v1"
     text_field: str = "text"
     maximum_bytes: int = 536_870_912
+    token_stream_manifest_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "TokenizedTextSpec":
         _strict_keys(
             payload,
-            ("train_path", "validation_path", "tokenizer", "text_field", "maximum_bytes"),
+            (
+                "train_path",
+                "validation_path",
+                "tokenizer",
+                "text_field",
+                "maximum_bytes",
+                "token_stream_manifest_path",
+            ),
             "tokenized text dataset",
         )
         result = cls(**dict(payload))
-        if not result.train_path or not result.validation_path:
-            raise ValueError("train_path and validation_path are required")
-        if result.tokenizer not in {"byte_v1", "uint16_bin_v1"}:
-            raise ValueError("tokenizer must be byte_v1 or uint16_bin_v1")
+        has_manifest = bool(
+            result.token_stream_manifest_path
+            and result.token_stream_manifest_path.strip()
+        )
+        has_paths = bool(result.train_path and result.validation_path)
+        if has_manifest == has_paths:
+            raise ValueError(
+                "provide either token_stream_manifest_path or both train_path and "
+                "validation_path"
+            )
+        if has_manifest:
+            if result.tokenizer not in PINNED_TOKENIZER_REGISTRY:
+                raise ValueError(
+                    "token_stream_manifest_path requires an allow-listed pinned tokenizer"
+                )
+        elif result.tokenizer not in {"byte_v1", "uint16_bin_v1", "uint32_bin_v1"}:
+            raise ValueError(
+                "raw datasets require byte_v1, uint16_bin_v1, or uint32_bin_v1"
+            )
         if not result.text_field:
             raise ValueError("text_field must be non-empty")
         _positive_int(result.maximum_bytes, "maximum_bytes", 1024)
@@ -176,6 +206,72 @@ class ByteTokenizer:
         return values.decode("utf-8", errors="replace")
 
 
+class _ShardedTokenStream:
+    def __init__(
+        self,
+        manifest_path: Path,
+        split: str,
+        context_length: int,
+        maximum_bytes: int,
+    ) -> None:
+        manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+        metadata = manifest["splits"][split]
+        total_bytes = sum(int(row["bytes"]) for row in metadata["shards"])
+        if total_bytes > maximum_bytes:
+            raise ValueError(
+                f"{split} token shards exceed dataset.maximum_bytes {maximum_bytes}"
+            )
+        self.shards = tuple(
+            np.memmap(
+                manifest_path.parent / row["path"],
+                mode="c",
+                dtype="<u4",
+            )
+            for row in metadata["shards"]
+        )
+        self.lengths = tuple(int(array.size) for array in self.shards)
+        self.valid_starts = tuple(max(0, length - context_length) for length in self.lengths)
+        self.cumulative_valid_starts = np.cumsum(self.valid_starts, dtype=np.int64)
+        self.total_valid_starts = int(self.cumulative_valid_starts[-1])
+        self._numel = sum(self.lengths)
+        self.maximum_token = max(
+            int(row["maximum_token_id"]) for row in metadata["shards"]
+        )
+        if self.total_valid_starts <= 0:
+            raise ValueError(f"{split} token shards contain no complete context window")
+
+    def numel(self) -> int:
+        return self._numel
+
+    def sample_windows(
+        self,
+        batch_size: int,
+        context_length: int,
+        generator: torch.Generator,
+    ) -> Tensor:
+        global_starts = torch.randint(
+            0,
+            self.total_valid_starts,
+            (batch_size,),
+            generator=generator,
+        ).numpy()
+        windows = np.empty((batch_size, context_length + 1), dtype=np.int64)
+        for row_index, global_start in enumerate(global_starts):
+            shard_index = bisect_right(
+                self.cumulative_valid_starts, int(global_start)
+            )
+            preceding = (
+                int(self.cumulative_valid_starts[shard_index - 1])
+                if shard_index
+                else 0
+            )
+            local_start = int(global_start) - preceding
+            windows[row_index] = self.shards[shard_index][
+                local_start : local_start + context_length + 1
+            ]
+        return torch.from_numpy(windows)
+
+
 def _read_documents(path: Path, text_field: str, maximum_bytes: int) -> List[str]:
     if not path.is_file():
         raise ValueError(f"text dataset does not exist: {path}")
@@ -204,17 +300,60 @@ class TokenizedTextCorpus:
     def __init__(
         self, spec: TokenizedTextSpec, context_length: int, vocab_size: int = 260
     ) -> None:
+        spec = TokenizedTextSpec.from_dict(asdict(spec))
         self.spec = spec
         self.context_length = context_length
         self.tokenizer = ByteTokenizer()
-        if spec.tokenizer == "uint16_bin_v1":
-            self.train_tokens = self._map_binary(Path(spec.train_path))
-            self.validation_tokens = self._map_binary(Path(spec.validation_path))
+        self.tokenizer_is_pinned = False
+        self.tokenizer_fingerprint: Optional[str] = None
+        self.tokenizer_manifest: Optional[Dict[str, Any]] = None
+        if spec.token_stream_manifest_path:
+            manifest_path = Path(spec.token_stream_manifest_path)
+            manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+            if manifest["tokenizer_id"] != spec.tokenizer:
+                raise ValueError(
+                    "dataset tokenizer does not match the token stream manifest"
+                )
+            if int(manifest["vocab_size"]) != vocab_size:
+                raise ValueError(
+                    f"token stream requires vocab_size {manifest['vocab_size']}"
+                )
+            tokenizer_manifest_path = (
+                manifest_path.parent / manifest["tokenizer_manifest_path"]
+            ).resolve()
+            with tokenizer_manifest_path.open("r", encoding="utf-8") as handle:
+                self.tokenizer_manifest = json.load(handle)
+            self.tokenizer_is_pinned = True
+            self.tokenizer_fingerprint = str(manifest["tokenizer_fingerprint"])
+            self.train_tokens = _ShardedTokenStream(
+                manifest_path, "train", context_length, spec.maximum_bytes
+            )
+            self.validation_tokens = _ShardedTokenStream(
+                manifest_path, "validation", context_length, spec.maximum_bytes
+            )
+            self._fingerprint = str(manifest["content_fingerprint"])
+            self._identity_fingerprint = str(manifest["fingerprint"])
+        elif spec.tokenizer in {"uint16_bin_v1", "uint32_bin_v1"}:
+            dtype = np.uint16 if spec.tokenizer == "uint16_bin_v1" else np.dtype("<u4")
+            self.train_tokens = self._map_binary(Path(spec.train_path), dtype)
+            self.validation_tokens = self._map_binary(Path(spec.validation_path), dtype)
             self._fingerprint = sha256(
                 (
                     self._hash_file(Path(spec.train_path))
                     + self._hash_file(Path(spec.validation_path))
                 ).encode("ascii")
+            ).hexdigest()
+            self._identity_fingerprint = sha256(
+                json.dumps(
+                    {
+                        "format": spec.tokenizer,
+                        "content_fingerprint": self._fingerprint,
+                        "vocab_size": vocab_size,
+                        "tokenizer_pinned": False,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
             ).hexdigest()
         else:
             train_documents = _read_documents(
@@ -229,6 +368,21 @@ class TokenizedTextCorpus:
             digest.update(self.train_tokens.numpy().tobytes())
             digest.update(self.validation_tokens.numpy().tobytes())
             self._fingerprint = digest.hexdigest()
+            self.tokenizer_manifest = builtin_byte_tokenizer_manifest()
+            self.tokenizer_fingerprint = str(self.tokenizer_manifest["fingerprint"])
+            self.tokenizer_is_pinned = True
+            self._identity_fingerprint = sha256(
+                json.dumps(
+                    {
+                        "format": "byte_v1",
+                        "content_fingerprint": self._fingerprint,
+                        "tokenizer_fingerprint": self.tokenizer_fingerprint,
+                        "packing": "bos_document_eos_separator_v1",
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
         for split, tokens in (
             ("training", self.train_tokens),
             ("validation", self.validation_tokens),
@@ -238,7 +392,11 @@ class TokenizedTextCorpus:
             # NumPy supports uint16 reductions directly while PyTorch's CPU
             # uint16 reduction coverage varies by release. This remains a
             # zero-copy scan for memory-mapped token streams.
-            maximum_token = int(tokens.numpy().max())
+            maximum_token = (
+                tokens.maximum_token
+                if isinstance(tokens, _ShardedTokenStream)
+                else int(tokens.numpy().max())
+            )
             if maximum_token >= vocab_size:
                 raise ValueError(
                     f"{split} token id {maximum_token} is outside vocab_size {vocab_size}"
@@ -252,13 +410,17 @@ class TokenizedTextCorpus:
             tokens.extend(self.tokenizer.encode(document))
         return torch.tensor(tokens, dtype=torch.long)
 
-    def _map_binary(self, path: Path) -> Tensor:
+    def _map_binary(self, path: Path, dtype: Any) -> Tensor:
         if not path.is_file():
             raise ValueError(f"binary token stream does not exist: {path}")
         size = path.stat().st_size
-        if size <= 0 or size > self.spec.maximum_bytes or size % 2:
-            raise ValueError("uint16 token streams must have a positive even byte size within maximum_bytes")
-        array = np.memmap(path, mode="c", dtype=np.uint16)
+        item_size = np.dtype(dtype).itemsize
+        if size <= 0 or size > self.spec.maximum_bytes or size % item_size:
+            raise ValueError(
+                "binary token streams must have a positive aligned byte size "
+                "within maximum_bytes"
+            )
+        array = np.memmap(path, mode="c", dtype=dtype)
         return torch.from_numpy(array)
 
     @staticmethod
@@ -276,6 +438,10 @@ class TokenizedTextCorpus:
     def fingerprint(self) -> str:
         return self._fingerprint
 
+    @property
+    def identity_fingerprint(self) -> str:
+        return self._identity_fingerprint
+
     def sample_batch(
         self,
         split: str,
@@ -284,11 +450,15 @@ class TokenizedTextCorpus:
         device: str,
     ) -> Tuple[Tensor, Tensor]:
         tokens = self.train_tokens if split == "train" else self.validation_tokens
+        if isinstance(tokens, _ShardedTokenStream):
+            windows = tokens.sample_windows(batch_size, self.context_length, generator)
+            windows = windows.to(device, non_blocking=device.startswith("cuda"))
+            return windows[:, :-1], windows[:, 1:]
         maximum_start = tokens.numel() - self.context_length - 1
         starts = torch.randint(0, maximum_start + 1, (batch_size,), generator=generator)
         offsets = torch.arange(self.context_length + 1)
         indices = starts[:, None] + offsets[None, :]
-        if tokens.dtype == torch.uint16:
+        if tokens.dtype in {torch.uint16, torch.uint32}:
             # PyTorch does not implement advanced CPU indexing for uint16 on
             # every supported release. Index the memmap through NumPy and copy
             # only the sampled windows into the model's int64 token dtype.
@@ -630,7 +800,7 @@ def run_standard_pretraining_trial(
 
     identity = {
         "model": asdict(model_spec),
-        "dataset_fingerprint": corpus.fingerprint,
+        "dataset_fingerprint": corpus.identity_fingerprint,
         "runtime": asdict(runtime),
         "optimizer": optimizer_spec.to_dict(),
         "total_tokens": total_tokens,
@@ -802,7 +972,10 @@ def run_standard_pretraining_trial(
         metadata={
             **runtime_diagnostics,
             "tokenizer": corpus.spec.tokenizer,
-            "dataset_fingerprint": corpus.fingerprint,
+            "dataset_fingerprint": corpus.identity_fingerprint,
+            "corpus_content_fingerprint": corpus.fingerprint,
+            "tokenizer_fingerprint": corpus.tokenizer_fingerprint,
+            "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
             "peak_memory_bytes": peak_memory,
             "global_batch_examples": batch_examples,
             "local_batch_examples": local_batch_examples,
@@ -867,6 +1040,17 @@ def compile_standard_pretraining_plan(config: Mapping[str, Any]) -> Dict[str, An
         raise ValueError(
             f"byte_v1 requires vocab_size {ByteTokenizer.vocab_size}"
         )
+    stream_identity = (
+        token_stream_identity(Path(dataset.token_stream_manifest_path))
+        if dataset.token_stream_manifest_path
+        else None
+    )
+    if stream_identity is not None and stream_identity["vocab_size"] != model.vocab_size:
+        raise ValueError(
+            f"token stream requires vocab_size {stream_identity['vocab_size']}"
+        )
+    if stream_identity is not None and stream_identity["tokenizer_id"] != dataset.tokenizer:
+        raise ValueError("dataset tokenizer does not match the token stream manifest")
     scales = []
     for index, payload in enumerate(config["scales"]):
         if not isinstance(payload, Mapping):
@@ -908,6 +1092,7 @@ def compile_standard_pretraining_plan(config: Mapping[str, Any]) -> Dict[str, An
         "campaign": "standard_text_pretraining_batch_census",
         "model": asdict(model),
         "dataset": asdict(dataset),
+        "dataset_identity": stream_identity,
         "runtime": asdict(runtime),
         "scales": scales,
         "batch_examples": list(batches),
@@ -1223,6 +1408,9 @@ def run_standard_pretraining_batch_census(
             "dataset": {
                 "tokenizer": dataset_spec.tokenizer,
                 "fingerprint": corpus.fingerprint,
+                "identity_fingerprint": corpus.identity_fingerprint,
+                "tokenizer_fingerprint": corpus.tokenizer_fingerprint,
+                "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
                 "training_tokens": int(corpus.train_tokens.numel()),
                 "validation_tokens": int(corpus.validation_tokens.numel()),
             },

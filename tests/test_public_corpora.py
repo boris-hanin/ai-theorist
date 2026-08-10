@@ -1,14 +1,24 @@
+from hashlib import sha256
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
 
 from ai_theorist.autoscaler import public_corpora
 from ai_theorist.autoscaler.public_corpora import (
     PublicCorpusSpec,
     materialize_public_corpus,
     public_corpus_catalog,
+)
+from ai_theorist.autoscaler.tokenization import (
+    PINNED_TOKENIZERS_PACKAGE_VERSION,
+    PinnedTokenizerDefinition,
+    TokenizerAssetDefinition,
+    TokenizerCanaryDefinition,
 )
 
 
@@ -155,3 +165,108 @@ def test_materializer_freezes_disjoint_rows_and_reuses_verified_cache(
     cached = materialize_public_corpus(spec, tmp_path)
     assert cached == result
     assert len(calls) == call_count
+
+
+def test_public_materializer_builds_verified_pinned_token_stream(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def token_hash(token_ids) -> str:
+        digest = sha256()
+        for token_id in token_ids:
+            digest.update(int(token_id).to_bytes(4, "little"))
+        return digest.hexdigest()
+
+    seed_tokenizer = Tokenizer(
+        WordLevel(
+            {
+                "[UNK]": 0,
+                "Document": 1,
+                "<|endoftext|>": 2,
+                "<|extra_id_0|>": 3,
+            },
+            unk_token="[UNK]",
+        )
+    )
+    seed_tokenizer.pre_tokenizer = Whitespace()
+    seed_path = tmp_path / "seed-tokenizer.json"
+    seed_tokenizer.save(str(seed_path))
+    asset_hash = sha256(seed_path.read_bytes()).hexdigest()
+    definition = PinnedTokenizerDefinition(
+        id="test_public_pinned",
+        name="Test public tokenizer",
+        implementation="huggingface_tokenizers_json_v1",
+        repository="example/test-tokenizer",
+        revision="b" * 40,
+        tokenizer_file="tokenizer.json",
+        package="tokenizers",
+        package_version=PINNED_TOKENIZERS_PACKAGE_VERSION,
+        vocab_size=4,
+        special_tokens={
+            "bos": None,
+            "eos": "<|endoftext|>",
+            "pad": None,
+            "unknown": "[UNK]",
+            "extra_id_0": "<|extra_id_0|>",
+        },
+        special_token_ids={
+            "bos": None,
+            "eos": 2,
+            "pad": None,
+            "unknown": 0,
+            "extra_id_0": 3,
+        },
+        document_separator_token_id=2,
+        assets=(TokenizerAssetDefinition("tokenizer.json", asset_hash),),
+        canaries=(TokenizerCanaryDefinition("Document", 1, token_hash([1])),),
+    )
+    monkeypatch.setitem(
+        public_corpora.PINNED_TOKENIZER_REGISTRY, definition.id, definition
+    )
+    original_resolver = public_corpora.resolve_pinned_tokenizer
+
+    def local_resolver(tokenizer_id, output_directory, progress=None):
+        assets = output_directory / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / "tokenizer.json").write_bytes(seed_path.read_bytes())
+        return original_resolver(tokenizer_id, output_directory, progress)
+
+    def fake_request(url: str, timeout: float = 60.0):
+        if "api/datasets" in url:
+            return {"sha": "c" * 40}
+        query = parse_qs(urlparse(url).query)
+        offset = int(query["offset"][0])
+        length = int(query["length"][0])
+        return {
+            "rows": [
+                {
+                    "row_idx": row_index,
+                    "row": {
+                        "text": "Document " + ("scaling data " * 100),
+                        "id": f"doc-{row_index}",
+                    },
+                    "truncated_cells": [],
+                }
+                for row_index in range(offset, offset + length)
+            ]
+        }
+
+    monkeypatch.setattr(public_corpora, "resolve_pinned_tokenizer", local_resolver)
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    spec = PublicCorpusSpec(
+        source="fineweb_edu",
+        tokenizer=definition.id,
+        train_bytes=65_536,
+        validation_bytes=16_384,
+        maximum_documents_per_split=100,
+        token_shard_tokens=1024,
+    )
+    result = materialize_public_corpus(spec, tmp_path / "corpora")
+    assert result["tokenizer"] == definition.id
+    assert result["tokenizer_vocab_size"] == 4
+    assert result["token_stream_manifest_path"]
+    assert len(result["tokenizer_fingerprint"]) == 64
+    assert len(result["dataset_identity_fingerprint"]) == 64
+    assert result["training_tokens"] > 0
+
+    cached = materialize_public_corpus(spec, tmp_path / "corpora")
+    assert cached == result

@@ -19,11 +19,13 @@ completed 100-document page is fsynced with a checkpoint tied to the source
 revision and materialization contract, so an interrupted download resumes from
 the last verified source row.
 
-The public data is currently tokenized with the deterministic `byte_v1`
-tokenizer.  This makes the first real-data campaign self-contained and removes
-tokenizer-version drift, but it is not yet the final modern tokenizer baseline.
-The next tokenizer milestone should add a pinned OLMo 2 or GPT-2 tokenizer and
-store its model/configuration alongside the token stream.
+Historical public-data campaigns used deterministic `byte_v1`. The web
+materializer now also supports the allow-listed `olmo2_1124` tokenizer at a
+full immutable repository revision. It verifies tokenizer assets and encoding
+canaries, materializes document-delimited uint32 shards, and folds the
+tokenizer and packing fingerprints into dataset and job identity. See
+`TOKENIZER_CONTRACT.md` for the exact contract. Historical byte-token evidence
+remains valid under its original explicitly reported tokenizer.
 
 The command-line equivalent of the web action is:
 

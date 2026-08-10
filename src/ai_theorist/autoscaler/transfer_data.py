@@ -24,8 +24,8 @@ class FrozenLanguageModelData:
 
 def load_frozen_text_windows(
     *,
-    train_path: Path,
-    validation_path: Path,
+    train_path: Optional[Path],
+    validation_path: Optional[Path],
     tokenizer: str,
     vocab_size: int,
     context_length: int,
@@ -34,13 +34,19 @@ def load_frozen_text_windows(
     seed: int,
     device: torch.device,
     maximum_bytes: int = 536_870_912,
+    token_stream_manifest_path: Optional[Path] = None,
 ) -> FrozenLanguageModelData:
     corpus = TokenizedTextCorpus(
         TokenizedTextSpec(
-            train_path=str(train_path),
-            validation_path=str(validation_path),
+            train_path=str(train_path) if train_path is not None else "",
+            validation_path=str(validation_path) if validation_path is not None else "",
             tokenizer=tokenizer,
             maximum_bytes=maximum_bytes,
+            token_stream_manifest_path=(
+                str(token_stream_manifest_path)
+                if token_stream_manifest_path is not None
+                else None
+            ),
         ),
         context_length=context_length,
         vocab_size=vocab_size,
@@ -57,10 +63,20 @@ def load_frozen_text_windows(
         y_validation.to(device),
         {
             "kind": "frozen_real_text_windows",
-            "train_path": str(train_path.resolve()),
-            "validation_path": str(validation_path.resolve()),
+            "train_path": str(train_path.resolve()) if train_path is not None else None,
+            "validation_path": (
+                str(validation_path.resolve()) if validation_path is not None else None
+            ),
+            "token_stream_manifest_path": (
+                str(token_stream_manifest_path.resolve())
+                if token_stream_manifest_path is not None
+                else None
+            ),
             "tokenizer": tokenizer,
             "corpus_fingerprint": corpus.fingerprint,
+            "dataset_identity_fingerprint": corpus.identity_fingerprint,
+            "tokenizer_fingerprint": corpus.tokenizer_fingerprint,
+            "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
             "corpus_training_tokens": int(corpus.train_tokens.numel()),
             "corpus_validation_tokens": int(corpus.validation_tokens.numel()),
             "sampled_training_windows": n_train,
@@ -84,10 +100,17 @@ def resolve_transfer_data(
     device: torch.device,
     synthetic_builder,
     maximum_bytes: int = 536_870_912,
+    token_stream_manifest_path: Optional[Path] = None,
 ) -> FrozenLanguageModelData:
     if (train_path is None) != (validation_path is None):
         raise ValueError("train_path and validation_path must be supplied together")
-    if train_path is not None and validation_path is not None:
+    has_paths = train_path is not None and validation_path is not None
+    has_manifest = token_stream_manifest_path is not None
+    if has_manifest and has_paths:
+        raise ValueError(
+            "supply either a token stream manifest or train/validation paths"
+        )
+    if has_paths or token_stream_manifest_path is not None:
         return load_frozen_text_windows(
             train_path=train_path,
             validation_path=validation_path,
@@ -99,6 +122,7 @@ def resolve_transfer_data(
             seed=dataset_seed,
             device=device,
             maximum_bytes=maximum_bytes,
+            token_stream_manifest_path=token_stream_manifest_path,
         )
     tensors = synthetic_builder(
         vocab_size=vocab_size,

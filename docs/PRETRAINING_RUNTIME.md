@@ -28,12 +28,20 @@ Two deterministic formats are supported:
 - `uint16_bin_v1`: a headerless little-endian `uint16` token stream. It is
   memory mapped and intended for a production tokenizer prepared outside the
   app. Set the model vocabulary large enough for the greatest token ID.
+- `uint32_bin_v1`: the equivalent legacy 32-bit local stream. Like the uint16
+  path, it pins content but not the tokenizer that created it.
+- `sharded_uint32_le_v1`: a manifest-backed stream created by an allow-listed
+  pinned tokenizer. The manifest verifies every asset, canary, special-token
+  ID, packing choice, and token shard before a job receives an identity.
 
 Training and validation must be separate files. Each pair is content hashed,
 and the hash is part of every cache key. The bundled files under
 `data/pretraining/` are only a deterministic end-to-end fixture; they are not
 a research corpus. A serious run should point to a versioned pretokenized
-corpus and retain its tokenizer vocabulary/configuration beside the run.
+corpus and retain its tokenizer vocabulary/configuration beside the run. Raw
+binary formats are reported as unpinned and cannot support a certified result.
+The complete approved-tokenizer and sharding contract is in
+`docs/TOKENIZER_CONTRACT.md`.
 
 The web campaign workspace can now prepare a frozen FineWeb-Edu sample-10BT or
 OpenWebText snapshot without manually entering server paths.  The materializer

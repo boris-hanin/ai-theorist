@@ -14,6 +14,15 @@ from urllib.request import Request, urlopen
 
 from .pretraining import TokenizedTextCorpus, TokenizedTextSpec
 from .study import atomic_write_json
+from .tokenization import (
+    PINNED_TOKENIZER_REGISTRY,
+    builtin_byte_tokenizer_manifest,
+    load_token_stream_manifest,
+    load_tokenizer_manifest,
+    materialize_pinned_token_streams,
+    resolve_pinned_tokenizer,
+    tokenizer_definition_fingerprint,
+)
 
 
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
@@ -52,17 +61,21 @@ PUBLIC_CORPUS_CATALOG: Dict[str, Dict[str, Any]] = {
 @dataclass(frozen=True)
 class PublicCorpusSpec:
     source: str = "fineweb_edu"
+    tokenizer: str = "byte_v1"
     train_bytes: int = 33_554_432
     validation_bytes: int = 4_194_304
     maximum_documents_per_split: int = 50_000
+    token_shard_tokens: int = 16_777_216
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PublicCorpusSpec":
         allowed = {
             "source",
+            "tokenizer",
             "train_bytes",
             "validation_bytes",
             "maximum_documents_per_split",
+            "token_shard_tokens",
         }
         extras = sorted(set(payload) - allowed)
         if extras:
@@ -71,6 +84,11 @@ class PublicCorpusSpec:
         if result.source not in PUBLIC_CORPUS_CATALOG:
             raise ValueError(
                 "source must be one of " + ", ".join(sorted(PUBLIC_CORPUS_CATALOG))
+            )
+        if result.tokenizer not in {"byte_v1", *PINNED_TOKENIZER_REGISTRY}:
+            raise ValueError(
+                "tokenizer must be byte_v1 or one of "
+                + ", ".join(sorted(PINNED_TOKENIZER_REGISTRY))
             )
         for name, value, minimum, maximum in (
             ("train_bytes", result.train_bytes, 65_536, 536_870_912),
@@ -81,6 +99,7 @@ class PublicCorpusSpec:
                 100,
                 100_000,
             ),
+            ("token_shard_tokens", result.token_shard_tokens, 1_024, 268_435_456),
         ):
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError(f"{name} must be an integer")
@@ -90,7 +109,16 @@ class PublicCorpusSpec:
 
     @property
     def fingerprint(self) -> str:
-        payload = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        payload = json.dumps(
+            {
+                **asdict(self),
+                "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(
+                    self.tokenizer
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -157,6 +185,15 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _path_inside(directory: Path, value: Any, label: str) -> Path:
+    path = Path(str(value)).resolve()
+    try:
+        path.relative_to(directory.resolve())
+    except ValueError as exc:
+        raise ValueError(f"{label} escapes the corpus directory") from exc
+    return path
+
+
 def _cached_manifest(directory: Path) -> Optional[Dict[str, Any]]:
     manifest_path = directory / "manifest.json"
     if not manifest_path.is_file():
@@ -164,13 +201,35 @@ def _cached_manifest(directory: Path) -> Optional[Dict[str, Any]]:
     try:
         with manifest_path.open("r", encoding="utf-8") as handle:
             manifest = json.load(handle)
-        if manifest.get("status") != "complete":
+        if manifest.get("status") != "complete" or manifest.get("schema_version") != 2:
+            return None
+        observed_fingerprint = manifest.get("manifest_fingerprint")
+        unsigned = dict(manifest)
+        unsigned.pop("manifest_fingerprint", None)
+        expected_fingerprint = sha256(
+            json.dumps(
+                unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode("utf-8")
+        ).hexdigest()
+        if observed_fingerprint != expected_fingerprint:
             return None
         for split in ("train", "validation"):
             metadata = manifest["splits"][split]
-            path = Path(metadata["path"])
+            path = _path_inside(directory, metadata["path"], f"{split} path")
             if not path.is_file() or _hash_file(path) != metadata["file_sha256"]:
                 return None
+        tokenizer_manifest_path = _path_inside(
+            directory, manifest["tokenizer_manifest_path"], "tokenizer manifest path"
+        )
+        load_tokenizer_manifest(tokenizer_manifest_path, verify_assets=True)
+        stream_manifest_path = manifest.get("token_stream_manifest_path")
+        if stream_manifest_path:
+            load_token_stream_manifest(
+                _path_inside(
+                    directory, stream_manifest_path, "token stream manifest path"
+                ),
+                verify_files=True,
+            )
         return manifest
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
         return None
@@ -424,21 +483,68 @@ def materialize_public_corpus(
         or int(validation["last_source_row"]) < int(train["first_source_row"])
     ):
         raise RuntimeError("training and validation source-row ranges overlap")
+    tokenizer_directory = directory / "tokenizer"
+    token_stream_manifest_path: Optional[Path] = None
 
-    corpus = TokenizedTextCorpus(
-        TokenizedTextSpec(
-            str(train_path.resolve()),
-            str(validation_path.resolve()),
-            tokenizer="byte_v1",
+    def postprocess_progress(event: Dict[str, Any]) -> None:
+        if progress is not None:
+            progress(
+                {
+                    **event,
+                    "completed": total_bytes,
+                    "total": total_bytes,
+                }
+            )
+
+    if spec.tokenizer == "byte_v1":
+        tokenizer_directory.mkdir(parents=True, exist_ok=True)
+        tokenizer_manifest = builtin_byte_tokenizer_manifest()
+        tokenizer_manifest_path = tokenizer_directory / "manifest.json"
+        atomic_write_json(tokenizer_manifest_path, tokenizer_manifest)
+        corpus = TokenizedTextCorpus(
+            TokenizedTextSpec(
+                str(train_path.resolve()),
+                str(validation_path.resolve()),
+                tokenizer="byte_v1",
+                text_field="text",
+                maximum_bytes=max(
+                    train_path.stat().st_size, validation_path.stat().st_size
+                )
+                + 1024,
+            ),
+            context_length=128,
+            vocab_size=260,
+        )
+        corpus_fingerprint = corpus.fingerprint
+        dataset_identity_fingerprint = corpus.identity_fingerprint
+        training_tokens = int(corpus.train_tokens.numel())
+        validation_tokens = int(corpus.validation_tokens.numel())
+    else:
+        resolved_tokenizer = resolve_pinned_tokenizer(
+            spec.tokenizer, tokenizer_directory, postprocess_progress
+        )
+        tokenizer_manifest = resolved_tokenizer.manifest
+        tokenizer_manifest_path = resolved_tokenizer.manifest_path
+        token_stream_directory = directory / "token-streams"
+        token_stream_manifest = materialize_pinned_token_streams(
+            tokenizer=resolved_tokenizer,
+            train_path=train_path,
+            validation_path=validation_path,
+            output_directory=token_stream_directory,
             text_field="text",
-            maximum_bytes=max(train_path.stat().st_size, validation_path.stat().st_size)
-            + 1024,
-        ),
-        context_length=128,
-        vocab_size=260,
-    )
+            shard_token_limit=spec.token_shard_tokens,
+            progress=postprocess_progress,
+        )
+        token_stream_manifest_path = token_stream_directory / "manifest.json"
+        load_token_stream_manifest(token_stream_manifest_path, verify_files=True)
+        corpus_fingerprint = str(token_stream_manifest["content_fingerprint"])
+        dataset_identity_fingerprint = str(token_stream_manifest["fingerprint"])
+        training_tokens = int(token_stream_manifest["splits"]["train"]["tokens"])
+        validation_tokens = int(
+            token_stream_manifest["splits"]["validation"]["tokens"]
+        )
     manifest: Dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "complete",
         "id": spec.fingerprint,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -452,12 +558,29 @@ def materialize_public_corpus(
             "license": catalog["license"],
             "data_card_url": catalog["data_card_url"],
         },
-        "tokenizer": "byte_v1",
-        "corpus_fingerprint": corpus.fingerprint,
-        "training_tokens": int(corpus.train_tokens.numel()),
-        "validation_tokens": int(corpus.validation_tokens.numel()),
+        "tokenizer": spec.tokenizer,
+        "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(
+            spec.tokenizer
+        ),
+        "tokenizer_fingerprint": tokenizer_manifest["fingerprint"],
+        "tokenizer_manifest_path": str(tokenizer_manifest_path.resolve()),
+        "tokenizer_vocab_size": tokenizer_manifest["vocab_size"],
+        "token_stream_manifest_path": (
+            str(token_stream_manifest_path.resolve())
+            if token_stream_manifest_path is not None
+            else None
+        ),
+        "corpus_fingerprint": corpus_fingerprint,
+        "dataset_identity_fingerprint": dataset_identity_fingerprint,
+        "training_tokens": training_tokens,
+        "validation_tokens": validation_tokens,
         "splits": {"train": train, "validation": validation},
     }
+    manifest["manifest_fingerprint"] = sha256(
+        json.dumps(
+            manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+    ).hexdigest()
     atomic_write_json(directory / "manifest.json", manifest)
     if progress is not None:
         progress(
@@ -467,7 +590,7 @@ def materialize_public_corpus(
                 "total": total_bytes,
                 "message": (
                     f"Frozen corpus ready · {manifest['training_tokens']:,} train tokens · "
-                    f"fingerprint {corpus.fingerprint[:12]}"
+                    f"fingerprint {corpus_fingerprint[:12]}"
                 ),
             }
         )

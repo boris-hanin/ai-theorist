@@ -18,6 +18,18 @@ type Precision = "fp32" | "bf16";
 type AttentionBackend = "auto" | "math" | "flash";
 type DistributedMode = "none" | "fsdp";
 type PretrainingOptimizer = "sgd" | "adam" | "adamw";
+type TokenizerId = "byte_v1" | "uint16_bin_v1" | "uint32_bin_v1" | "olmo2_1124";
+type TokenizerCatalogItem = {
+  id: "byte_v1" | "olmo2_1124";
+  name: string;
+  kind: "builtin" | "pinned_remote";
+  vocab_size: number;
+  repository?: string;
+  revision: string | null;
+  definition_fingerprint: string;
+  tokenizer_fingerprint: string | null;
+  document_separator_token_id: number;
+};
 type CorpusChoice = "fineweb_edu" | "openwebtext" | "local";
 type Scale = { name: string; width: number; repeats: number; expert_width?: number };
 
@@ -184,6 +196,9 @@ type BatchCampaignResult = {
   dataset?: {
     tokenizer: string;
     fingerprint: string;
+    identity_fingerprint?: string;
+    tokenizer_fingerprint?: string | null;
+    tokenizer_is_pinned?: boolean;
     training_tokens: number;
     validation_tokens: number;
   };
@@ -311,7 +326,7 @@ type BatchCampaignJob = {
   result: BatchCampaignResult | null;
   error: string | null;
   config?: {
-    dataset?: { train_path?: string; validation_path?: string; tokenizer?: "byte_v1" | "uint16_bin_v1" };
+    dataset?: { train_path?: string; validation_path?: string; tokenizer?: TokenizerId; token_stream_manifest_path?: string };
     runtime?: { precision?: Precision; attention_backend?: AttentionBackend; distributed?: DistributedMode; num_processes?: number };
     optimizers?: { name?: PretrainingOptimizer }[];
     target_validation_loss?: number;
@@ -325,7 +340,13 @@ type PublicCorpusJob = {
   error: string | null;
   result: null | {
     source: { dataset: string; config: string; revision: string; license: string; data_card_url: string };
-    tokenizer: "byte_v1";
+    tokenizer: "byte_v1" | "olmo2_1124";
+    tokenizer_definition_fingerprint: string;
+    tokenizer_fingerprint: string;
+    tokenizer_manifest_path: string;
+    tokenizer_vocab_size: number;
+    token_stream_manifest_path: string | null;
+    dataset_identity_fingerprint: string;
     corpus_fingerprint: string;
     training_tokens: number;
     validation_tokens: number;
@@ -668,7 +689,9 @@ export function AutoscalerStudio() {
   const [corpusError, setCorpusError] = useState<string | null>(null);
   const [trainingPath, setTrainingPath] = useState("data/pretraining/sample_train.txt");
   const [validationPath, setValidationPath] = useState("data/pretraining/sample_validation.txt");
-  const [tokenizer, setTokenizer] = useState<"byte_v1" | "uint16_bin_v1">("byte_v1");
+  const [tokenizer, setTokenizer] = useState<TokenizerId>("byte_v1");
+  const [tokenizerCatalog, setTokenizerCatalog] = useState<TokenizerCatalogItem[]>([]);
+  const [tokenStreamManifestPath, setTokenStreamManifestPath] = useState("");
   const [precision, setPrecision] = useState<Precision>("fp32");
   const [attentionBackend, setAttentionBackend] = useState<AttentionBackend>("math");
   const [distributedMode, setDistributedMode] = useState<DistributedMode>("none");
@@ -817,6 +840,14 @@ export function AutoscalerStudio() {
   const batchJobLocked = batchJob?.status === "queued" || batchJob?.status === "running";
   const corpusJobLocked = corpusJob?.status === "queued" || corpusJob?.status === "running";
   const publicCorpusReady = corpusChoice === "local" || corpusJob?.status === "completed";
+  const pinnedTokenizer = tokenizerCatalog.find((item) => item.id === tokenizer);
+  const usesPinnedTokenStream = tokenizer === "olmo2_1124";
+  const tokenizerVocabSize = tokenizer === "byte_v1" || tokenizer === "olmo2_1124"
+    ? pinnedTokenizer?.vocab_size ?? (tokenizer === "byte_v1" ? 260 : 100278)
+    : 32768;
+  const corpusPathsReady = usesPinnedTokenStream
+    ? tokenStreamManifestPath.trim().length > 0
+    : trainingPath.trim().length > 0 && validationPath.trim().length > 0;
   const parsedHorizonValues = parsePositiveNumberList(horizonValues).map((value) => Math.round(value));
   const parsedHorizonRates = parsePositiveNumberList(horizonRateGrid);
   const horizonBatchTokens = horizonBatchExamples * (targetDevice === "cuda" ? 64 : 8);
@@ -852,8 +883,7 @@ export function AutoscalerStudio() {
   const corpusRequired = batchCampaign === "standard_pretraining_census" || batchCampaign === "horizon_transfer";
   const standardRuntimeValid = horizonConfigValid && jointConfigValid && (!corpusRequired
     || (publicCorpusReady
-      && trainingPath.trim().length > 0
-      && validationPath.trim().length > 0
+      && corpusPathsReady
       && (batchCampaign !== "standard_pretraining_census" || (Number.isFinite(pretrainingTargetLoss)
         && pretrainingTargetLoss > 0
         && Number.isInteger(pretrainingValidationInterval)
@@ -866,6 +896,13 @@ export function AutoscalerStudio() {
     fetch(`${API_BASE}/api/health`, { signal: controller.signal })
       .then((response) => setApiOnline(response.ok))
       .catch(() => setApiOnline(false));
+    fetch(`${API_BASE}/api/tokenizers`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Tokenizer registry unavailable");
+        const payload = await response.json() as { tokenizers: TokenizerCatalogItem[] };
+        setTokenizerCatalog(payload.tokenizers);
+      })
+      .catch(() => setTokenizerCatalog([]));
     return () => controller.abort();
   }, []);
 
@@ -906,9 +943,10 @@ export function AutoscalerStudio() {
         if (!response.ok) throw new Error(payload.error ?? "The corpus monitor lost contact with compute.");
         setCorpusJob(payload);
         if (payload.status === "completed" && payload.result) {
+          setTokenizer(payload.result.tokenizer);
           setTrainingPath(payload.result.splits.train.path);
           setValidationPath(payload.result.splits.validation.path);
-          setTokenizer("byte_v1");
+          setTokenStreamManifestPath(payload.result.token_stream_manifest_path ?? "");
         }
       } catch (caught) {
         setCorpusError(caught instanceof Error ? caught.message : "Could not refresh the corpus job.");
@@ -1301,6 +1339,8 @@ export function AutoscalerStudio() {
             train_bytes: Math.max(65_536, Math.round(corpusTrainMiB * 1024 * 1024)),
             validation_bytes: Math.max(16_384, Math.round(corpusValidationMiB * 1024 * 1024)),
             maximum_documents_per_split: 50_000,
+            tokenizer,
+            token_shard_tokens: 16_777_216,
           },
         }),
       });
@@ -1308,9 +1348,10 @@ export function AutoscalerStudio() {
       if (!response.ok) throw new Error(payload.error ?? "The public corpus could not be prepared.");
       setCorpusJob(payload);
       if (payload.status === "completed" && payload.result) {
+        setTokenizer(payload.result.tokenizer);
         setTrainingPath(payload.result.splits.train.path);
         setValidationPath(payload.result.splits.validation.path);
-        setTokenizer("byte_v1");
+        setTokenStreamManifestPath(payload.result.token_stream_manifest_path ?? "");
       }
     } catch (caught) {
       setCorpusError(caught instanceof Error ? caught.message : "The public corpus service is unavailable.");
@@ -1343,7 +1384,7 @@ export function AutoscalerStudio() {
       return {
         architecture: useJiangChizat ? (onA100 ? {
           block_type: "jiang_chizat_transformer",
-          vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+          vocab_size: tokenizerVocabSize,
           context_length: 64,
           head_dimension: 64,
           reference_depth: 2,
@@ -1354,7 +1395,7 @@ export function AutoscalerStudio() {
           residual_width: 128,
         } : {
           block_type: "jiang_chizat_transformer",
-          vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+          vocab_size: tokenizerVocabSize,
           context_length: 8,
           head_dimension: 4,
           reference_depth: 1,
@@ -1363,11 +1404,12 @@ export function AutoscalerStudio() {
           depth: 1,
           hidden_width: 16,
           residual_width: 16,
-        }) : (onA100 ? { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768, context_length: 64, head_dimension: 64, mlp_multiplier: 4, reference_width: 128, reference_depth: 4 } : { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768 }),
+        }) : (onA100 ? { ...syntheticArchitecture, vocab_size: tokenizerVocabSize, context_length: 64, head_dimension: 64, mlp_multiplier: 4, reference_width: 128, reference_depth: 4 } : { ...syntheticArchitecture, vocab_size: tokenizerVocabSize }),
         dataset: {
           task_type: "tokenized_text",
-          train_path: trainingPath.trim(),
-          validation_path: validationPath.trim(),
+          ...(usesPinnedTokenStream
+            ? { token_stream_manifest_path: tokenStreamManifestPath.trim() }
+            : { train_path: trainingPath.trim(), validation_path: validationPath.trim() }),
           tokenizer,
           n_train: onA100 ? 16384 : 256,
           n_validation: onA100 ? 1024 : 128,
@@ -1490,7 +1532,7 @@ export function AutoscalerStudio() {
     const totalTokens = onA100 ? largestBatch * context * 128 : 2048;
     return {
       model: {
-        vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+        vocab_size: tokenizerVocabSize,
         context_length: context,
         width: onA100 ? 128 : 32,
         depth: onA100 ? 4 : 2,
@@ -1500,8 +1542,9 @@ export function AutoscalerStudio() {
         tie_embeddings: true,
       },
       dataset: {
-        train_path: trainingPath.trim(),
-        validation_path: validationPath.trim(),
+        ...(usesPinnedTokenStream
+          ? { token_stream_manifest_path: tokenStreamManifestPath.trim() }
+          : { train_path: trainingPath.trim(), validation_path: validationPath.trim() }),
         tokenizer,
         maximum_bytes: onA100 ? 68_719_476_736 : 536_870_912,
       },
@@ -1777,22 +1820,25 @@ export function AutoscalerStudio() {
             </div>
             {(batchCampaign === "standard_pretraining_census" || batchCampaign === "horizon_transfer") && (
               <div className="dataset-contract public-corpus-contract">
-                <label><span>Corpus source</span><select disabled={batchJobLocked || corpusJobLocked} value={corpusChoice} onChange={(event) => { const next = event.target.value as CorpusChoice; setCorpusChoice(next); setCorpusJob(null); setCorpusError(null); if (next !== "local") { setTokenizer("byte_v1"); setCorpusTrainMiB(targetDevice === "cuda" ? 64 : 2); setCorpusValidationMiB(targetDevice === "cuda" ? 8 : 0.5); } markBatchCampaignEdited(); }}><option value="fineweb_edu">FineWeb-Edu sample-10BT</option><option value="openwebtext">OpenWebText</option><option value="local">Local files / pretokenized</option></select></label>
+                <label><span>Corpus source</span><select disabled={batchJobLocked || corpusJobLocked} value={corpusChoice} onChange={(event) => { const next = event.target.value as CorpusChoice; setCorpusChoice(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); if (next !== "local") { if (tokenizer === "uint16_bin_v1" || tokenizer === "uint32_bin_v1") setTokenizer("byte_v1"); setCorpusTrainMiB(targetDevice === "cuda" ? 64 : 2); setCorpusValidationMiB(targetDevice === "cuda" ? 8 : 0.5); } markBatchCampaignEdited(); }}><option value="fineweb_edu">FineWeb-Edu sample-10BT</option><option value="openwebtext">OpenWebText</option><option value="local">Local files / pretokenized</option></select></label>
                 {corpusChoice === "local" ? <>
-                  <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
-                  <label><span>Validation corpus</span><input disabled={batchJobLocked} value={validationPath} onChange={(event) => { setValidationPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                  {usesPinnedTokenStream ? <label><span>Verified token-stream manifest</span><input disabled={batchJobLocked} value={tokenStreamManifestPath} onChange={(event) => { setTokenStreamManifestPath(event.target.value); markBatchCampaignEdited(); }} /></label> : <>
+                    <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                    <label><span>Validation corpus</span><input disabled={batchJobLocked} value={validationPath} onChange={(event) => { setValidationPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                  </>}
                 </> : <>
                   <label><span>Training text</span><input disabled={batchJobLocked || corpusJobLocked} type="number" min="0.0625" step="0.5" value={corpusTrainMiB} onChange={(event) => { setCorpusTrainMiB(Math.max(0.0625, Number(event.target.value))); setCorpusJob(null); markBatchCampaignEdited(); }} /><small>MiB</small></label>
                   <label><span>Held-out text</span><input disabled={batchJobLocked || corpusJobLocked} type="number" min="0.015625" step="0.5" value={corpusValidationMiB} onChange={(event) => { setCorpusValidationMiB(Math.max(0.015625, Number(event.target.value))); setCorpusJob(null); markBatchCampaignEdited(); }} /><small>MiB</small></label>
                   <button className="corpus-prepare-button" disabled={batchJobLocked || corpusJobLocked} onClick={() => void preparePublicCorpus()}>{corpusJobLocked ? "Preparing frozen snapshot…" : corpusJob?.status === "completed" ? "Snapshot ready" : "Prepare frozen snapshot"}</button>
                 </>}
-                <label><span>Tokenizer</span><select disabled={batchJobLocked || corpusChoice !== "local"} value={tokenizer} onChange={(event) => { const next = event.target.value as "byte_v1" | "uint16_bin_v1"; setTokenizer(next); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}><option value="byte_v1">UTF-8 byte tokenizer</option><option value="uint16_bin_v1">Pretokenized uint16 stream</option></select></label>
+                <label><span>Tokenizer</span><select disabled={batchJobLocked || corpusJobLocked} value={tokenizer} onChange={(event) => { const next = event.target.value as TokenizerId; setTokenizer(next); setCorpusJob(null); setCorpusError(null); setTokenStreamManifestPath(""); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}><option value="byte_v1">UTF-8 bytes · built in</option><option value="olmo2_1124">OLMo 2 · immutable revision</option>{corpusChoice === "local" && <><option value="uint16_bin_v1">Legacy uint16 stream · unpinned</option><option value="uint32_bin_v1">Legacy uint32 stream · unpinned</option></>}</select></label>
+                {pinnedTokenizer && <div className="fixed-callout"><b>{pinnedTokenizer.kind === "pinned_remote" ? "Immutable tokenizer contract" : "Built-in tokenizer contract"}</b><span>{pinnedTokenizer.repository ? `${pinnedTokenizer.repository} · revision ${pinnedTokenizer.revision?.slice(0, 12)} · ` : ""}{formatNumber(pinnedTokenizer.vocab_size)} tokens · definition <code>{pinnedTokenizer.definition_fingerprint.slice(0, 12)}</code></span></div>}
                 {batchCampaign === "standard_pretraining_census" && <>
                   <label><span>Target validation loss</span><input disabled={batchJobLocked} type="number" min="0.01" step="0.1" value={pretrainingTargetLoss} onChange={(event) => { setPretrainingTargetLoss(Number(event.target.value)); markBatchCampaignEdited(); }} /></label>
                   <label><span>Validation cadence</span><input disabled={batchJobLocked} type="number" min="1" step="1" value={pretrainingValidationInterval} onChange={(event) => { setPretrainingValidationInterval(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
                 </>}
                 {corpusJobLocked && <div className="corpus-progress"><div className="progress-track"><span style={{ width: `${Math.min(100, 100 * corpusJob.progress.completed / Math.max(1, corpusJob.progress.total))}%` }} /></div><small>{corpusJob.progress.message}</small></div>}
-                {corpusJob?.status === "completed" && corpusJob.result && <div className="corpus-provenance"><span><b>{formatNumber(corpusJob.result.training_tokens)}</b> training tokens</span><span><b>{formatNumber(corpusJob.result.validation_tokens)}</b> held-out tokens</span><span><b>{corpusJob.result.corpus_fingerprint.slice(0, 12)}</b> content fingerprint</span><span><b>{corpusJob.result.source.revision.slice(0, 12)}</b> source revision</span><small>{corpusJob.result.source.dataset} · {corpusJob.result.source.config} · {corpusJob.result.source.license} · disjoint source rows</small></div>}
+                {corpusJob?.status === "completed" && corpusJob.result && <div className="corpus-provenance"><span><b>{formatNumber(corpusJob.result.training_tokens)}</b> training tokens</span><span><b>{formatNumber(corpusJob.result.validation_tokens)}</b> held-out tokens</span><span><b>{corpusJob.result.corpus_fingerprint.slice(0, 12)}</b> content fingerprint</span><span><b>{corpusJob.result.tokenizer_fingerprint.slice(0, 12)}</b> tokenizer fingerprint</span><span><b>{corpusJob.result.dataset_identity_fingerprint.slice(0, 12)}</b> combined identity</span><span><b>{corpusJob.result.source.revision.slice(0, 12)}</b> source revision</span><small>{corpusJob.result.source.dataset} · {corpusJob.result.source.config} · {corpusJob.result.source.license} · disjoint source rows</small></div>}
                 {corpusJob?.status === "failed" && <p className="validation-error campaign-error">{corpusJob.error}</p>}
                 {corpusError && <p className="validation-error campaign-error">{corpusError}</p>}
               </div>
@@ -1833,7 +1879,7 @@ export function AutoscalerStudio() {
                 {batchJobLocked && <small>{batchJob.progress.completed} / {batchJob.progress.total || "?"} grid trials · cached trials resume automatically</small>}
                 {batchJob.status === "failed" && <p>{batchJob.error}</p>}
                 {batchJob.status === "interrupted" && <p>{batchJob.error} Launch again to continue from its trial cache.</p>}
-                {batchJob.result?.dataset && <div className="campaign-data-result"><span><b>{formatNumber(batchJob.result.dataset.training_tokens)}</b> training tokens</span><span><b>{formatNumber(batchJob.result.dataset.validation_tokens)}</b> validation tokens</span><span><b>{batchJob.result.dataset.tokenizer.replaceAll("_", " ")}</b> tokenizer</span><span><b>{batchJob.result.dataset.fingerprint.slice(0, 12)}</b> corpus fingerprint</span></div>}
+                {batchJob.result?.dataset && <div className="campaign-data-result"><span><b>{formatNumber(batchJob.result.dataset.training_tokens)}</b> training tokens</span><span><b>{formatNumber(batchJob.result.dataset.validation_tokens)}</b> validation tokens</span><span><b>{batchJob.result.dataset.tokenizer.replaceAll("_", " ")}</b> tokenizer</span><span><b>{batchJob.result.dataset.fingerprint.slice(0, 12)}</b> content fingerprint</span>{batchJob.result.dataset.tokenizer_fingerprint && <span><b>{batchJob.result.dataset.tokenizer_fingerprint.slice(0, 12)}</b> tokenizer fingerprint</span>}{batchJob.result.dataset.identity_fingerprint && <span><b>{batchJob.result.dataset.identity_fingerprint.slice(0, 12)}</b> combined identity</span>}</div>}
                 {batchAnalyses.length > 0 && <div className="campaign-analysis-list">{batchAnalyses.map((analysis) => <div key={`${analysis.scale.name}-${analysis.optimizer}`}><span><strong>{analysis.scale.name}</strong><small>{analysis.optimizer}</small></span><b className={analysis.consensus.qualified ? "qualified" : "refused"}>{analysis.consensus.qualified && analysis.consensus.critical_batch_tokens ? `${formatNumber(analysis.consensus.critical_batch_tokens)} tokens` : "Withheld"}</b><small>{analysis.consensus.qualified ? "Estimator consensus" : analysis.consensus.refusal_reasons.join(" · ")}</small></div>)}</div>}
                 {batchJob.result?.geometry && batchJob.result.campaign === "constant_tokens_per_parameter_heldout_transfer" && (
                   <div className="tpp-result">

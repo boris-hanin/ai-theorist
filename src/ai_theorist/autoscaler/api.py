@@ -27,12 +27,33 @@ from .public_corpora import (
 )
 from .schema import SpecError, StudySpec, compile_plan, default_study_spec
 from .study import atomic_write_json, run_study
+from .tokenization import token_stream_identity, tokenizer_catalog
 
 
 # Increment when job interpretation changes in a way that makes a persisted
 # result unsafe to reuse for an identical request (for example, a new
 # estimator qualification gate). Trial-level cache formats version separately.
-CAMPAIGN_JOB_IDENTITY_VERSION = 2
+CAMPAIGN_JOB_IDENTITY_VERSION = 3
+
+
+def _campaign_data_identity(config: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    dataset = config.get("dataset")
+    if not isinstance(dataset, Mapping):
+        return None
+    manifest_path = dataset.get("token_stream_manifest_path")
+    if not isinstance(manifest_path, str) or not manifest_path.strip():
+        return None
+    identity = token_stream_identity(Path(manifest_path))
+    if dataset.get("tokenizer") != identity["tokenizer_id"]:
+        raise ValueError("campaign tokenizer does not match the token stream manifest")
+    model = config.get("model")
+    architecture = config.get("architecture")
+    model_contract = model if isinstance(model, Mapping) else architecture
+    if isinstance(model_contract, Mapping) and model_contract.get("vocab_size") != identity["vocab_size"]:
+        raise ValueError(
+            f"campaign model requires vocab_size {identity['vocab_size']} for its token stream"
+        )
+    return identity
 
 
 class StudyStore:
@@ -251,6 +272,8 @@ class CampaignStore:
                 if isinstance(certified_joint_rules, list)
                 else 0,
                 "corpus_fingerprint": dataset.get("fingerprint"),
+                "dataset_identity_fingerprint": dataset.get("identity_fingerprint"),
+                "tokenizer_fingerprint": dataset.get("tokenizer_fingerprint"),
             }
             if result
             else None,
@@ -261,12 +284,19 @@ class CampaignStore:
         self, campaign: str, config: Mapping[str, Any], device: str
     ) -> Dict[str, Any]:
         plan = compile_campaign_plan(campaign, config)
+        planned_identity = plan.get("dataset_identity")
+        data_identity = (
+            dict(planned_identity)
+            if isinstance(planned_identity, Mapping)
+            else _campaign_data_identity(config)
+        )
         identity = json.dumps(
             {
                 "campaign_job_identity_version": CAMPAIGN_JOB_IDENTITY_VERSION,
                 "campaign": campaign,
                 "config": config,
                 "device": device,
+                "data_identity": data_identity,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -291,6 +321,7 @@ class CampaignStore:
                 "created_at": now,
                 "updated_at": now,
                 "config": dict(config),
+                "data_identity": data_identity,
                 "plan": plan,
                 "progress": {
                     "phase": "queued",
@@ -533,7 +564,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path = urlparse(self.path).path.rstrip("/")
         if path == "/api/health":
-            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 2})
+            self._send(200, {"status": "ok", "product": "ai-theorist-autoscaler", "schema_version": 3})
             return
         if path == "/api/default-spec":
             self._send(200, {"spec": default_study_spec(quick=True).to_dict()})
@@ -543,6 +574,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/corpora/catalog":
             self._send(200, {"sources": public_corpus_catalog()})
+            return
+        if path == "/api/tokenizers":
+            self._send(200, {"tokenizers": tokenizer_catalog()})
             return
         if path == "/api/corpora":
             self._send(200, {"corpora": self.server.corpus_store.list()})

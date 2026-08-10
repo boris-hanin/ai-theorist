@@ -351,21 +351,30 @@ def _horizon_dataset(
         "n_validation",
         "seed",
         "maximum_bytes",
+        "token_stream_manifest_path",
     }
     extras = sorted(set(payload) - allowed)
     if extras:
         raise ValueError(f"unknown tokenized-text dataset field(s): {', '.join(extras)}")
     tokenizer = str(payload.get("tokenizer", "byte_v1"))
-    if tokenizer not in {"byte_v1", "uint16_bin_v1"}:
-        raise ValueError("dataset.tokenizer must be byte_v1 or uint16_bin_v1")
+    if tokenizer not in {"byte_v1", "uint16_bin_v1", "uint32_bin_v1", "olmo2_1124"}:
+        raise ValueError(
+            "dataset.tokenizer must be byte_v1, a raw binary format, or olmo2_1124"
+        )
     if tokenizer == "byte_v1" and vocab_size != 260:
         raise ValueError("byte_v1 real-text horizon campaigns require vocab_size 260")
-    train_path = Path(str(payload.get("train_path", "")))
-    validation_path = Path(str(payload.get("validation_path", "")))
-    if not str(payload.get("train_path", "")).strip() or not str(
-        payload.get("validation_path", "")
-    ).strip():
-        raise ValueError("tokenized-text horizon campaigns require train_path and validation_path")
+    manifest_value = str(payload.get("token_stream_manifest_path", "")).strip()
+    train_value = str(payload.get("train_path", "")).strip()
+    validation_value = str(payload.get("validation_path", "")).strip()
+    has_paths = bool(train_value and validation_value)
+    if bool(manifest_value) == has_paths:
+        raise ValueError(
+            "tokenized-text horizon campaigns require either a token stream manifest "
+            "or train/validation paths"
+        )
+    train_path = Path(train_value) if has_paths else None
+    validation_path = Path(validation_value) if has_paths else None
+    token_stream_manifest_path = Path(manifest_value) if manifest_value else None
     n_train = _positive_int(payload.get("n_train"), "dataset.n_train")
     n_validation = _positive_int(payload.get("n_validation"), "dataset.n_validation")
     if n_train < 8 or n_validation < 8:
@@ -385,6 +394,7 @@ def _horizon_dataset(
         seed=seed,
         device=torch.device(device),
         maximum_bytes=maximum_bytes,
+        token_stream_manifest_path=token_stream_manifest_path,
     )
     trial_spec = DatasetSpec(
         task_type="synthetic_markov",
@@ -401,6 +411,9 @@ def _horizon_dataset(
         "task_type": "tokenized_text",
         "tokenizer": tokenizer,
         "corpus_fingerprint": metadata["corpus_fingerprint"],
+        "dataset_identity_fingerprint": metadata["dataset_identity_fingerprint"],
+        "tokenizer_fingerprint": metadata["tokenizer_fingerprint"],
+        "tokenizer_is_pinned": metadata["tokenizer_is_pinned"],
         "corpus_training_tokens": metadata["corpus_training_tokens"],
         "corpus_validation_tokens": metadata["corpus_validation_tokens"],
         "sampled_training_windows": n_train,
@@ -412,6 +425,9 @@ def _horizon_dataset(
         "kind": metadata["kind"],
         "tokenizer": tokenizer,
         "fingerprint": metadata["corpus_fingerprint"],
+        "identity_fingerprint": metadata["dataset_identity_fingerprint"],
+        "tokenizer_fingerprint": metadata["tokenizer_fingerprint"],
+        "tokenizer_is_pinned": metadata["tokenizer_is_pinned"],
         "training_tokens": metadata["corpus_training_tokens"],
         "validation_tokens": metadata["corpus_validation_tokens"],
         "sampled_training_windows": n_train,
@@ -422,6 +438,7 @@ def _horizon_dataset(
         "sampling_policy": metadata["sampling_policy"],
         "train_path": metadata["train_path"],
         "validation_path": metadata["validation_path"],
+        "token_stream_manifest_path": metadata["token_stream_manifest_path"],
     }
     return HorizonDataset(trial_spec, frozen, identity, result)
 
@@ -707,6 +724,10 @@ def run_horizon_transfer_campaign(
         device=device,
     )
     dataset = horizon_data.trial_spec
+    dataset_provenance_qualified = (
+        horizon_data.result is None
+        or bool(horizon_data.result.get("tokenizer_is_pinned"))
+    )
     optimizer_payload = dict(config["optimizer"])
     if optimizer_payload.get("name") != "adam":
         raise ValueError(
@@ -1012,6 +1033,7 @@ def run_horizon_transfer_campaign(
                 not fit_reasons
                 and bool(heldout_oracle["optimum_is_interior"])
                 and row["relative_oracle_regret"] <= maximum_regret
+                and dataset_provenance_qualified
             )
             row["mechanism_discrimination_certified"] = (
                 row["transfer_certified"]
@@ -1078,13 +1100,20 @@ def run_horizon_transfer_campaign(
         "fit_horizon_span_ratio": fit_span,
         "heldout_horizon": horizons[-1],
         "execution_order": plan["execution_order"],
+        "dataset_provenance_qualified": dataset_provenance_qualified,
         "schedule_analyses": schedule_analyses,
         "certified_schedule_rules": certified,
         "recommendation": certified[0] if certified else None,
         "refusal_reasons": (
             []
             if certified
-            else ["no schedule/horizon rule passed the preregistered held-out gates"]
+            else [
+                (
+                    "tokenizer provenance is unpinned"
+                    if not dataset_provenance_qualified
+                    else "no schedule/horizon rule passed the preregistered held-out gates"
+                )
+            ]
         ),
         "records": [record.to_dict() for record in records],
     }
