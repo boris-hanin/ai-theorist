@@ -235,19 +235,28 @@ def select_best_pair(records: Sequence[Trial], label: str) -> Tuple[float, float
     candidates = sorted({(record.eta_u, record.eta_v) for record in records if record.label == label})
     if not candidates:
         raise ValueError(f"no primary records for shape {label}")
+
+    expected_seeds = {record.seed for record in records if record.label == label}
+
+    def complete_paired_score(pair: Tuple[float, float]) -> float:
+        rows = [
+            record
+            for record in records
+            if record.label == label
+            and record.eta_u == pair[0]
+            and record.eta_v == pair[1]
+        ]
+        if (
+            {record.seed for record in rows} != expected_seeds
+            or any(record.diverged for record in rows)
+            or any(not math.isfinite(record.final_validation_loss) for record in rows)
+        ):
+            return math.inf
+        return mean_metric(rows, "final_validation_loss")
+
     return min(
         candidates,
-        key=lambda pair: mean_metric(
-            (
-                record
-                for record in records
-                if record.label == label
-                and record.eta_u == pair[0]
-                and record.eta_v == pair[1]
-                and not record.diverged
-            ),
-            "final_validation_loss",
-        ),
+        key=complete_paired_score,
     )
 
 
@@ -267,6 +276,7 @@ def summarize(
     rows = []
     drifts = []
     oracle_ratios = []
+    complete_reference_pair_by_shape = []
     for named_shape in shapes:
         pair = best_pairs[named_shape.label]
         drift = max(
@@ -290,6 +300,13 @@ def summarize(
             and record.eta_v == reference_pair[1]
             and not record.diverged
         ]
+        expected_seed_count = len(
+            {record.seed for record in primary if record.label == named_shape.label}
+        )
+        complete_reference_pair_by_shape.append(
+            len(fixed_records) == expected_seed_count
+            and all(math.isfinite(record.final_validation_loss) for record in fixed_records)
+        )
         oracle_loss = mean_metric(oracle_records, "final_validation_loss")
         fixed_loss = mean_metric(fixed_records, "final_validation_loss")
         ratio = fixed_loss / max(oracle_loss, 1e-30)
@@ -335,7 +352,12 @@ def summarize(
         )
 
     gates = {
-        "all_primary_trials_finite": all(not record.diverged for record in primary),
+        "every_shape_has_a_complete_finite_oracle": all(
+            math.isfinite(row["oracle_validation_loss"]) for row in rows
+        ),
+        "reference_pair_complete_and_finite_at_every_shape": all(
+            complete_reference_pair_by_shape
+        ),
         "reference_optimum_interior_in_both_coordinates": (
             reference_pair[0] not in {min(eta_us), max(eta_us)}
             and reference_pair[1] not in {min(eta_vs), max(eta_vs)}
@@ -358,6 +380,9 @@ def summarize(
             correct_largest, "fractional_validation_progress"
         ),
         "negative_controls": control_rows,
+        "exploratory_divergent_trial_count": sum(
+            record.diverged for record in primary
+        ),
         "gates": gates,
         "verdict": "PASS" if all(gates.values()) else "FAIL",
     }
