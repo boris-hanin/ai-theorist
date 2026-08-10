@@ -127,6 +127,20 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
         with urlopen(private_request, timeout=3) as response:
             assert response.headers["Access-Control-Allow-Origin"] == private_origin
 
+        preflight_request = Request(
+            f"{base}/api/health",
+            headers={
+                "Origin": private_origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Private-Network": "true",
+            },
+            method="OPTIONS",
+        )
+        with urlopen(preflight_request, timeout=3) as response:
+            assert response.status == 204
+            assert response.headers["Access-Control-Allow-Origin"] == private_origin
+            assert response.headers["Access-Control-Allow-Private-Network"] == "true"
+
         spec = integration_spec().to_dict()
         compile_request = Request(
             f"{base}/api/compile",
