@@ -39,14 +39,18 @@ def main() -> int:
     compile_parser = subparsers.add_parser("compile")
     compile_parser.add_argument("config", type=Path)
     compile_parser.add_argument(
-        "--phase", choices=("lr", "lr-extension", "batch", "horizon"), default="lr"
+        "--phase",
+        choices=("lr", "lr-extension", "batch", "batch-extension", "horizon"),
+        default="lr",
     )
     compile_parser.add_argument("--analysis", type=Path)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("config", type=Path)
     run_parser.add_argument(
-        "--phase", choices=("lr", "lr-extension", "batch", "horizon"), required=True
+        "--phase",
+        choices=("lr", "lr-extension", "batch", "batch-extension", "horizon"),
+        required=True,
     )
     run_parser.add_argument("--output", type=Path, required=True)
     run_parser.add_argument("--device", default="cuda")

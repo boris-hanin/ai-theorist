@@ -48,6 +48,8 @@ class TrialResult:
     batch_size: int = 0
     microbatch_size: int = 0
     token_horizon: int = 0
+    optimizer_group_contract: Optional[Dict[str, Any]] = None
+    gradient_clipping: str = "global_norm_100"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -63,7 +65,10 @@ def make_optimizer(model: torch.nn.Module, spec: StudySpec, learning_rate: float
         if not isinstance(model, NormalizedTransformer):
             raise TypeError("normalized_transformer optimizer requires its typed model")
         return torch.optim.Adam(
-            model.optimizer_parameter_groups(learning_rate),
+            model.optimizer_parameter_groups(
+                learning_rate,
+                adam_epsilon=config.epsilon,
+            ),
             lr=learning_rate,
             betas=(config.beta1, config.beta2),
             eps=config.epsilon,
@@ -175,6 +180,22 @@ def train_trial(
         str(group.get("name", f"group_{index}")): float(group["lr"])
         for index, group in enumerate(optimizer.param_groups)
     }
+    optimizer_group_contract: Optional[Dict[str, Any]] = None
+    if isinstance(model, NormalizedTransformer) and force_global_learning_rate is None:
+        optimizer_group_contract = model.optimizer_contract_audit(
+            optimizer_learning_rate,
+            adam_epsilon=spec.optimizer.epsilon,
+        )
+        optimizer_group_contract["optimizer_options"] = {
+            "name": "adam",
+            "betas": [spec.optimizer.beta1, spec.optimizer.beta2],
+            "epsilon": spec.optimizer.epsilon,
+            "weight_decay": 0.0,
+            "warmup_steps": 0,
+            "schedule": "cosine_to_10_percent",
+            "gradient_clipping": False,
+            "matrix_constraint": "unit-sphere projection before every optimization step",
+        }
     peak_group_learning_rates = [float(group["lr"]) for group in optimizer.param_groups]
     if prepared_dataset is None:
         if spec.architecture.block_type == "normalized_transformer":
@@ -216,7 +237,9 @@ def train_trial(
             raise RuntimeError(f"Checkpoint metadata mismatch: expected {expected}, got {actual}")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-        batch_generator.set_state(checkpoint["batch_generator_state"])
+        # ``map_location=device`` also moves this CPU-generator state onto CUDA.
+        # Move it back explicitly so interrupted GPU trials remain resumable.
+        batch_generator.set_state(checkpoint["batch_generator_state"].cpu())
         step = int(checkpoint["step"])
         trace = list(checkpoint["trace"])
 
@@ -284,7 +307,8 @@ def train_trial(
         if not finite_step:
             diverged = True
             break
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
+        if not isinstance(model, NormalizedTransformer):
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=100.0)
         optimizer.step()
         if isinstance(model, NormalizedTransformer):
             model.project_normalized_weights()
@@ -406,6 +430,12 @@ def train_trial(
                 if spec.architecture.block_type == "normalized_transformer"
                 else 1
             )
+        ),
+        optimizer_group_contract=optimizer_group_contract,
+        gradient_clipping=(
+            "none_source_faithful"
+            if spec.architecture.block_type == "normalized_transformer"
+            else "global_norm_100"
         ),
     )
 

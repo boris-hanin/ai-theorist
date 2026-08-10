@@ -2,11 +2,44 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Dict, Iterable, List, Literal, Optional, Tuple
+from typing import Dict, Iterable, List, Literal, Mapping, Optional, Tuple
 
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+
+from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_group
+
+
+JIANG_COMPLETEP_ADAM_THEORY = LearningRateTheory(
+    contract_id="jiang-bordelon-pehlevan-hanin-completep-adam-v4",
+    architecture="pre-LN decoder with 1/L MHSA and mean-field FFN residual branches",
+    optimizer="adam",
+    source_title="Hyperparameter Transfer with Mixture-of-Experts Layers",
+    source_url="https://arxiv.org/abs/2601.20205",
+    source_version="arXiv:2601.20205v3, Table 2 (dense CompleteP groups)",
+    base_coordinate="eta and epsilon0 declared at reference (L0, M0, D0)",
+    applicability=(
+        "fixed-token-budget Adam transfer across depth L, residual width D, and "
+        "mean-field FFN width M with QK^T/d_head and 1/L residual branches"
+    ),
+)
+
+
+# Appendix D.1 reports the constant-scale values obtained by the authors' one
+# coordinate-sweep pass.  They are part of the base parameterization, not
+# width/depth exponents and not values to silently reset to one at larger scale.
+JIANG_REPORTED_VALUE_INIT_MULTIPLIER = 1.0 / 16.0
+JIANG_REPORTED_DOWN_INIT_MULTIPLIER = 1.0 / 4.0
+JIANG_DENSE_REPORTED_LR_MULTIPLIERS: Dict[str, float] = {
+    "jiang_embeddings": 1.0,
+    "jiang_norms": 1.0,
+    "jiang_attention_qkv": 1.0 / 16.0,
+    "jiang_attention_output": 1.0,
+    "jiang_ffn_up": 1.0,
+    "jiang_ffn_down": 1.0 / 16.0,
+    "jiang_other_biases": 1.0,
+}
 
 
 @dataclass(frozen=True)
@@ -54,13 +87,25 @@ class JiangChizatReference:
 
 
 class JiangChizatAttention(nn.Module):
-    def __init__(self, shape: JiangChizatShape) -> None:
+    def __init__(
+        self,
+        shape: JiangChizatShape,
+        *,
+        value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
+        bias: bool = True,
+    ) -> None:
         super().__init__()
+        if (
+            not math.isfinite(value_initialization_multiplier)
+            or value_initialization_multiplier <= 0.0
+        ):
+            raise ValueError("value_initialization_multiplier must be finite and positive")
         self.width = shape.residual_width
         self.num_heads = shape.num_heads
         self.head_dimension = shape.head_dimension
-        self.qkv = nn.Linear(self.width, 3 * self.width, bias=False)
-        self.output = nn.Linear(self.width, self.width, bias=False)
+        self.value_initialization_multiplier = value_initialization_multiplier
+        self.qkv = nn.Linear(self.width, 3 * self.width, bias=bias)
+        self.output = nn.Linear(self.width, self.width, bias=bias)
         self.last_attention_logits: Optional[Tensor] = None
         self.last_attention_probabilities: Optional[Tensor] = None
         self.register_buffer("last_logit_rms", torch.tensor(float("nan")), persistent=False)
@@ -69,8 +114,20 @@ class JiangChizatAttention(nn.Module):
 
     def reset_parameters(self) -> None:
         std = 1.0 / math.sqrt(self.width)
-        nn.init.normal_(self.qkv.weight, mean=0.0, std=std)
+        with torch.no_grad():
+            q_weight, k_weight, v_weight = self.qkv.weight.chunk(3, dim=0)
+            nn.init.normal_(q_weight, mean=0.0, std=std)
+            nn.init.normal_(k_weight, mean=0.0, std=std)
+            nn.init.normal_(
+                v_weight,
+                mean=0.0,
+                std=std * self.value_initialization_multiplier,
+            )
         nn.init.normal_(self.output.weight, mean=0.0, std=std)
+        if self.qkv.bias is not None:
+            nn.init.zeros_(self.qkv.bias)
+        if self.output.bias is not None:
+            nn.init.zeros_(self.output.bias)
 
     def forward(self, hidden: Tensor) -> Tensor:
         batch, time, _ = hidden.shape
@@ -110,17 +167,28 @@ class JiangChizatBlock(nn.Module):
         *,
         down_initialization: Literal["mean_field", "fan_in"] = "mean_field",
         disable_attention: bool = False,
+        value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
+        down_initialization_multiplier: float = JIANG_REPORTED_DOWN_INIT_MULTIPLIER,
     ) -> None:
         super().__init__()
         if down_initialization not in {"mean_field", "fan_in"}:
             raise ValueError("down_initialization must be mean_field or fan_in")
+        if (
+            not math.isfinite(down_initialization_multiplier)
+            or down_initialization_multiplier <= 0.0
+        ):
+            raise ValueError("down_initialization_multiplier must be finite and positive")
         self.shape = shape
         self.disable_attention = disable_attention
         self.attention_norm = nn.LayerNorm(shape.residual_width)
-        self.attention = JiangChizatAttention(shape)
+        self.attention = JiangChizatAttention(
+            shape,
+            value_initialization_multiplier=value_initialization_multiplier,
+            bias=True,
+        )
         self.ffn_norm = nn.LayerNorm(shape.residual_width)
-        self.ffn_up = nn.Linear(shape.residual_width, shape.hidden_width, bias=False)
-        self.ffn_down = nn.Linear(shape.hidden_width, shape.residual_width, bias=False)
+        self.ffn_up = nn.Linear(shape.residual_width, shape.hidden_width, bias=True)
+        self.ffn_down = nn.Linear(shape.hidden_width, shape.residual_width, bias=True)
         nn.init.normal_(
             self.ffn_up.weight,
             mean=0.0,
@@ -131,7 +199,13 @@ class JiangChizatBlock(nn.Module):
             if down_initialization == "mean_field"
             else 1.0 / math.sqrt(shape.hidden_width)
         )
-        nn.init.normal_(self.ffn_down.weight, mean=0.0, std=down_std)
+        nn.init.normal_(
+            self.ffn_down.weight,
+            mean=0.0,
+            std=down_std * down_initialization_multiplier,
+        )
+        nn.init.zeros_(self.ffn_up.bias)
+        nn.init.zeros_(self.ffn_down.bias)
 
     def forward(self, hidden: Tensor) -> Tensor:
         residual_scale = 1.0 / self.shape.depth
@@ -156,6 +230,8 @@ class JiangChizatTransformer(nn.Module):
         embedding_initialization_std: float = 0.02,
         down_initialization: Literal["mean_field", "fan_in"] = "mean_field",
         disable_attention: bool = False,
+        value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
+        down_initialization_multiplier: float = JIANG_REPORTED_DOWN_INIT_MULTIPLIER,
     ) -> None:
         super().__init__()
         if vocab_size < 8 or context_length < 2:
@@ -183,6 +259,8 @@ class JiangChizatTransformer(nn.Module):
                 shape,
                 down_initialization=down_initialization,
                 disable_attention=disable_attention,
+                value_initialization_multiplier=value_initialization_multiplier,
+                down_initialization_multiplier=down_initialization_multiplier,
             )
             for _ in range(shape.depth)
         )
@@ -211,6 +289,7 @@ class JiangChizatTransformer(nn.Module):
         epsilon0: float,
         omit_attention_width_factor: bool = False,
         omit_ffn_hidden_width_factor: bool = False,
+        learning_rate_multipliers: Mapping[str, float] | None = None,
     ) -> List[Dict[str, object]]:
         if not math.isfinite(eta) or eta <= 0.0:
             raise ValueError("eta must be finite and positive")
@@ -225,53 +304,163 @@ class JiangChizatTransformer(nn.Module):
         ffn_down_rate = eta * (
             1.0 if omit_ffn_hidden_width_factor else hidden_ratio ** -1.0
         )
-        attention_parameters: List[nn.Parameter] = []
+        attention_qkv_parameters: List[nn.Parameter] = []
+        attention_output_parameters: List[nn.Parameter] = []
         ffn_up_parameters: List[nn.Parameter] = []
         ffn_down_parameters: List[nn.Parameter] = []
+        other_bias_parameters: List[nn.Parameter] = []
         norm_parameters: List[nn.Parameter] = list(self.final_norm.parameters())
         for block in self.blocks:
-            attention_parameters.extend(block.attention.parameters())
-            ffn_up_parameters.extend(block.ffn_up.parameters())
-            ffn_down_parameters.extend(block.ffn_down.parameters())
+            attention_qkv_parameters.append(block.attention.qkv.weight)
+            attention_output_parameters.append(block.attention.output.weight)
+            ffn_up_parameters.append(block.ffn_up.weight)
+            ffn_down_parameters.append(block.ffn_down.weight)
+            other_bias_parameters.extend(
+                parameter
+                for parameter in (
+                    block.attention.qkv.bias,
+                    block.attention.output.bias,
+                    block.ffn_up.bias,
+                    block.ffn_down.bias,
+                )
+                if parameter is not None
+            )
             norm_parameters.extend(block.attention_norm.parameters())
             norm_parameters.extend(block.ffn_norm.parameters())
+        factors = {
+            "depth_ratio": depth_ratio,
+            "ffn_width_ratio": hidden_ratio,
+            "residual_width_ratio": residual_ratio,
+        }
+        group_names = (
+            "jiang_embeddings",
+            "jiang_norms",
+            "jiang_attention_qkv",
+            "jiang_attention_output",
+            "jiang_ffn_up",
+            "jiang_ffn_down",
+            "jiang_other_biases",
+        )
+        multipliers = dict(JIANG_DENSE_REPORTED_LR_MULTIPLIERS)
+        if learning_rate_multipliers is not None:
+            unknown = set(learning_rate_multipliers) - set(group_names)
+            if unknown:
+                raise ValueError(
+                    "unknown Jiang-Chizat LR multiplier groups: "
+                    + ", ".join(sorted(unknown))
+                )
+            for name, value in learning_rate_multipliers.items():
+                multiplier = float(value)
+                if not math.isfinite(multiplier) or multiplier <= 0.0:
+                    raise ValueError(f"LR multiplier for {name} must be finite and positive")
+                multipliers[name] = multiplier
         return [
-            {
-                "name": "jiang_embeddings",
-                "params": [self.token_embedding.weight, self.position_embedding.weight],
-                "lr": eta,
-                "eps": epsilon0 * residual_ratio ** -1.0,
-            },
-            {
-                "name": "jiang_norms",
-                "params": norm_parameters,
-                "lr": eta,
-                "eps": epsilon0,
-            },
-            {
-                "name": "jiang_attention",
-                "params": attention_parameters,
-                "lr": attention_rate,
-                "eps": epsilon0 * residual_ratio ** -1.0 * depth_ratio ** -1.0,
-            },
-            {
-                "name": "jiang_ffn_up",
-                "params": ffn_up_parameters,
-                "lr": eta * residual_ratio ** -1.0,
-                "eps": epsilon0 * hidden_ratio ** -1.0 * depth_ratio ** -1.0,
-            },
-            {
-                "name": "jiang_ffn_down",
-                "params": ffn_down_parameters,
-                "lr": ffn_down_rate,
-                "eps": (
+            theory_group(
+                name="jiang_embeddings",
+                params=[self.token_embedding.weight, self.position_embedding.weight],
+                lr=eta * multipliers["jiang_embeddings"],
+                lr_formula="c_embeddings * eta; c_embeddings tuned at reference",
+                eps=epsilon0 * residual_ratio ** -1.0,
+                eps_formula="epsilon0 * (D/D0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_embeddings"]},
+            ),
+            theory_group(
+                name="jiang_norms",
+                params=norm_parameters,
+                lr=eta * multipliers["jiang_norms"],
+                lr_formula="c_norms * eta; c_norms tuned at reference",
+                eps=epsilon0,
+                eps_formula="epsilon0",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_norms"]},
+            ),
+            theory_group(
+                name="jiang_attention_qkv",
+                params=attention_qkv_parameters,
+                lr=attention_rate * multipliers["jiang_attention_qkv"],
+                lr_formula=(
+                    "c_attention_qkv * eta (negative control: D factor omitted)"
+                    if omit_attention_width_factor
+                    else "c_attention_qkv * eta * (D/D0)^(-1)"
+                ),
+                eps=epsilon0 * residual_ratio ** -1.0 * depth_ratio ** -1.0,
+                eps_formula="epsilon0 * (D/D0)^(-1) * (L/L0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_attention_qkv"]},
+            ),
+            theory_group(
+                name="jiang_attention_output",
+                params=attention_output_parameters,
+                lr=attention_rate * multipliers["jiang_attention_output"],
+                lr_formula=(
+                    "c_attention_output * eta (negative control: D factor omitted)"
+                    if omit_attention_width_factor
+                    else "c_attention_output * eta * (D/D0)^(-1)"
+                ),
+                eps=epsilon0 * residual_ratio ** -1.0 * depth_ratio ** -1.0,
+                eps_formula="epsilon0 * (D/D0)^(-1) * (L/L0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_attention_output"]},
+            ),
+            theory_group(
+                name="jiang_ffn_up",
+                params=ffn_up_parameters,
+                lr=eta * residual_ratio ** -1.0 * multipliers["jiang_ffn_up"],
+                lr_formula="c_ffn_up * eta * (D/D0)^(-1)",
+                eps=epsilon0 * hidden_ratio ** -1.0 * depth_ratio ** -1.0,
+                eps_formula="epsilon0 * (M/M0)^(-1) * (L/L0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_ffn_up"]},
+            ),
+            theory_group(
+                name="jiang_ffn_down",
+                params=ffn_down_parameters,
+                lr=ffn_down_rate * multipliers["jiang_ffn_down"],
+                lr_formula=(
+                    "c_ffn_down * eta (negative control: M factor omitted)"
+                    if omit_ffn_hidden_width_factor
+                    else "c_ffn_down * eta * (M/M0)^(-1)"
+                ),
+                eps=(
                     epsilon0
                     * residual_ratio
                     * hidden_ratio ** -2.0
                     * depth_ratio ** -1.0
                 ),
-            },
+                eps_formula="epsilon0 * (D/D0) * (M/M0)^(-2) * (L/L0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_ffn_down"]},
+            ),
+            theory_group(
+                name="jiang_other_biases",
+                params=other_bias_parameters,
+                lr=eta * multipliers["jiang_other_biases"],
+                lr_formula="c_other_biases * eta",
+                eps=epsilon0 * depth_ratio ** -1.0,
+                eps_formula="epsilon0 * (L/L0)^(-1)",
+                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_other_biases"]},
+            ),
         ]
+
+    def optimizer_contract_audit(
+        self,
+        eta: float,
+        *,
+        epsilon0: float = 1e-12,
+        omit_attention_width_factor: bool = False,
+        omit_ffn_hidden_width_factor: bool = False,
+        learning_rate_multipliers: Mapping[str, float] | None = None,
+    ) -> Dict[str, object]:
+        groups = self.optimizer_parameter_groups(
+            eta,
+            epsilon0=epsilon0,
+            omit_attention_width_factor=omit_attention_width_factor,
+            omit_ffn_hidden_width_factor=omit_ffn_hidden_width_factor,
+            learning_rate_multipliers=learning_rate_multipliers,
+        )
+        return audit_optimizer_groups(self, groups, JIANG_COMPLETEP_ADAM_THEORY)
 
     def make_optimizer(
         self,
@@ -280,11 +469,17 @@ class JiangChizatTransformer(nn.Module):
         epsilon0: float = 1e-12,
         beta1: float = 0.9,
         beta2: float = 0.95,
-        **group_options: bool,
+        omit_attention_width_factor: bool = False,
+        omit_ffn_hidden_width_factor: bool = False,
+        learning_rate_multipliers: Mapping[str, float] | None = None,
     ) -> torch.optim.Adam:
         return torch.optim.Adam(
             self.optimizer_parameter_groups(
-                eta, epsilon0=epsilon0, **group_options
+                eta,
+                epsilon0=epsilon0,
+                omit_attention_width_factor=omit_attention_width_factor,
+                omit_ffn_hidden_width_factor=omit_ffn_hidden_width_factor,
+                learning_rate_multipliers=learning_rate_multipliers,
             ),
             lr=eta,
             betas=(beta1, beta2),

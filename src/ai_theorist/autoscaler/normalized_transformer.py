@@ -7,7 +7,24 @@ import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
 
+from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_group
 from .schema import ArchitectureTemplate, DatasetSpec, ScaleLevel
+
+
+NUGPT_ADAM_THEORY = LearningRateTheory(
+    contract_id="shigida-hanin-gromov-nugpt-adam-v2",
+    architecture="normalized transformer (nuGPT)",
+    optimizer="adam",
+    source_title="Learning Rate Transfer in Normalized Transformers",
+    source_url="https://arxiv.org/abs/2604.27077",
+    source_version="arXiv:2604.27077v2, Table 1",
+    base_coordinate="eta_global * (iteration_count/base_iteration_count)^(-1/3)",
+    applicability=(
+        "nuGPT width/depth/token-horizon transfer with unit-sphere projection, "
+        "fixed head dimension, Adam betas (0.9, 0.95), zero weight decay, and "
+        "depth correction in residual-rescaler initialization"
+    ),
+)
 
 
 def unit_norm(x: Tensor, dim: int = -1, epsilon: float = 1e-12) -> Tensor:
@@ -217,11 +234,33 @@ class NormalizedTransformer(nn.Module):
         for _, weight, dimension in self._normalized_weight_axes():
             weight.copy_(unit_norm(weight, dim=dimension))
 
-    def optimizer_parameter_groups(self, base_learning_rate: float) -> List[Dict[str, object]]:
-        """Table-1 nuGPT rates under the mid-alignment recommendation."""
+    def optimizer_parameter_groups(
+        self,
+        global_learning_rate: float,
+        *,
+        data_multiplier: float = 1.0,
+        output_learning_rate_multiplier: float = 0.5,
+        adam_epsilon: float = 1e-16,
+    ) -> List[Dict[str, object]]:
+        """Table-1 nuGPT rates under the mid-alignment recommendation.
+
+        The output multiplier is a scale-independent base-model hyperparameter;
+        the paper predicts the same width exponent as hidden matrices.  Keeping
+        it explicit prevents a tuned constant from being mistaken for a scaling
+        exponent.
+        """
+        for value, name in (
+            (global_learning_rate, "global_learning_rate"),
+            (data_multiplier, "data_multiplier"),
+            (output_learning_rate_multiplier, "output_learning_rate_multiplier"),
+            (adam_epsilon, "adam_epsilon"),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        base_learning_rate = global_learning_rate * data_multiplier ** (-1.0 / 3.0)
         input_rate = base_learning_rate * self.width_multiplier ** -0.5
         hidden_rate = base_learning_rate * self.width_multiplier ** -0.75
-        output_rate = 0.5 * hidden_rate
+        output_rate = output_learning_rate_multiplier * hidden_rate
         hidden_weights: List[Tensor] = []
         rescalers: List[Tensor] = [self.logit_scale]
         for block in self.blocks:
@@ -243,16 +282,70 @@ class NormalizedTransformer(nn.Module):
                     block.mlp_scale,
                 ]
             )
+        factors = {
+            "width_ratio": self.width_multiplier,
+            "depth_ratio": self.depth_multiplier,
+            "iteration_ratio": data_multiplier,
+            "output_lr_multiplier": output_learning_rate_multiplier,
+        }
         return [
-            {"name": "nugpt_input", "params": [self.token_embedding.weight], "lr": input_rate},
-            {"name": "nugpt_hidden", "params": hidden_weights, "lr": hidden_rate},
-            {
-                "name": "nugpt_output",
-                "params": [self.language_model_head.weight],
-                "lr": output_rate,
-            },
-            {"name": "nugpt_rescalers", "params": rescalers, "lr": base_learning_rate},
+            theory_group(
+                name="nugpt_input",
+                params=[self.token_embedding.weight],
+                lr=input_rate,
+                lr_formula="eta_global * m_data^(-1/3) * m_width^(-1/2)",
+                theory=NUGPT_ADAM_THEORY,
+                scale_factors=factors,
+                eps=adam_epsilon,
+                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+            ),
+            theory_group(
+                name="nugpt_hidden",
+                params=hidden_weights,
+                lr=hidden_rate,
+                lr_formula="eta_global * m_data^(-1/3) * m_width^(-3/4); no depth LR factor",
+                theory=NUGPT_ADAM_THEORY,
+                scale_factors=factors,
+                eps=adam_epsilon,
+                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+            ),
+            theory_group(
+                name="nugpt_output",
+                params=[self.language_model_head.weight],
+                lr=output_rate,
+                lr_formula="c_output * eta_global * m_data^(-1/3) * m_width^(-3/4)",
+                theory=NUGPT_ADAM_THEORY,
+                scale_factors=factors,
+                eps=adam_epsilon,
+                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+            ),
+            theory_group(
+                name="nugpt_rescalers",
+                params=rescalers,
+                lr=base_learning_rate,
+                lr_formula="eta_global * m_data^(-1/3) on raw rescaler coordinates",
+                theory=NUGPT_ADAM_THEORY,
+                scale_factors=factors,
+                eps=adam_epsilon,
+                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+            ),
         ]
+
+    def optimizer_contract_audit(
+        self,
+        global_learning_rate: float,
+        *,
+        data_multiplier: float = 1.0,
+        output_learning_rate_multiplier: float = 0.5,
+        adam_epsilon: float = 1e-16,
+    ) -> Dict[str, object]:
+        groups = self.optimizer_parameter_groups(
+            global_learning_rate,
+            data_multiplier=data_multiplier,
+            output_learning_rate_multiplier=output_learning_rate_multiplier,
+            adam_epsilon=adam_epsilon,
+        )
+        return audit_optimizer_groups(self, groups, NUGPT_ADAM_THEORY)
 
     @torch.no_grad()
     def sphere_diagnostics(self) -> Dict[str, float]:

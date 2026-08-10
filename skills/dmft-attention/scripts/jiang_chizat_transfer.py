@@ -29,6 +29,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from ai_theorist.autoscaler.jiang_chizat import (  # noqa: E402
+    JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
+    JIANG_COMPLETEP_ADAM_THEORY,
     JiangChizatReference,
     JiangChizatShape,
     JiangChizatTransformer,
@@ -41,6 +43,15 @@ RULES = (
     "omit_attention_width",
     "omit_ffn_hidden_width",
     "disable_attention",
+)
+JIANG_CHIZAT_LR_GROUPS = (
+    "jiang_embeddings",
+    "jiang_norms",
+    "jiang_attention_qkv",
+    "jiang_attention_output",
+    "jiang_ffn_up",
+    "jiang_ffn_down",
+    "jiang_other_biases",
 )
 
 
@@ -101,6 +112,8 @@ class Trial:
     rho: float
     seed: int
     normalized_eta: float
+    learning_rate_multipliers: Dict[str, float]
+    warmup_steps: int
     rule: str
     raw_learning_rates: Dict[str, float]
     adam_epsilons: Dict[str, float]
@@ -109,6 +122,7 @@ class Trial:
     attention_movement: Dict[str, float]
     final_validation_loss: float
     diverged: bool
+    optimizer_group_contract: Dict[str, object]
 
 
 def parse_shape(text: str) -> Shape:
@@ -263,6 +277,8 @@ def run_trial(
     seed: int,
     rule: str,
     device: torch.device,
+    learning_rate_multipliers: Mapping[str, float] | None = None,
+    warmup_steps: int = 0,
 ) -> Trial:
     if rule not in RULES:
         raise ValueError(f"unknown rule: {rule}")
@@ -281,7 +297,25 @@ def run_trial(
         "omit_attention_width_factor": rule == "omit_attention_width",
         "omit_ffn_hidden_width_factor": rule == "omit_ffn_hidden_width",
     }
-    groups = model.optimizer_parameter_groups(eta, epsilon0=epsilon0, **group_options)
+    multipliers = dict(JIANG_DENSE_REPORTED_LR_MULTIPLIERS)
+    multipliers.update(
+        {
+            name: float(value)
+            for name, value in (learning_rate_multipliers or {}).items()
+        }
+    )
+    groups = model.optimizer_parameter_groups(
+        eta,
+        epsilon0=epsilon0,
+        learning_rate_multipliers=multipliers,
+        **group_options,
+    )
+    optimizer_contract = model.optimizer_contract_audit(
+        eta,
+        epsilon0=epsilon0,
+        learning_rate_multipliers=multipliers,
+        **group_options,
+    )
     optimizer = torch.optim.Adam(
         groups, lr=eta, betas=(0.9, 0.95), weight_decay=0.0
     )
@@ -303,8 +337,14 @@ def run_trial(
     checkpoint_steps.update(max(1, round(steps * fraction / 8)) for fraction in range(1, 9))
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     diverged = False
+    if warmup_steps < 0 or warmup_steps > steps:
+        raise ValueError("warmup_steps must lie between zero and steps")
+    peak_rates = [float(group["lr"]) for group in optimizer.param_groups]
     model.train()
     for step in range(1, steps + 1):
+        schedule_multiplier = min(1.0, (step + 1) / warmup_steps) if warmup_steps else 1.0
+        for group, peak_rate in zip(optimizer.param_groups, peak_rates):
+            group["lr"] = peak_rate * schedule_multiplier
         indices = torch.randint(0, n_train, (batch_size,), generator=generator).to(device)
         optimizer.zero_grad(set_to_none=True)
         logits = model(x_train[indices])
@@ -315,7 +355,6 @@ def run_trial(
             diverged = True
             break
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 100.0)
         optimizer.step()
         if step in checkpoint_steps:
             value = validation_loss(
@@ -338,6 +377,8 @@ def run_trial(
         shape.rho,
         seed,
         eta,
+        multipliers,
+        warmup_steps,
         rule,
         raw_rates,
         epsilons,
@@ -346,6 +387,7 @@ def run_trial(
         attention_movement(initial_attention, final_attention),
         final_loss,
         diverged,
+        optimizer_contract,
     )
 
 
@@ -364,6 +406,7 @@ def group_feature_velocity_audit(
     batch_size: int,
     seed: int,
     device: torch.device,
+    learning_rate_multipliers: Mapping[str, float] | None = None,
 ) -> Dict[str, object]:
     x_train, y_train, x_validation, _ = synthetic_markov_data(
         vocab_size=vocab_size,
@@ -381,9 +424,11 @@ def group_feature_velocity_audit(
     for group_name in (
         "jiang_embeddings",
         "jiang_norms",
-        "jiang_attention",
+        "jiang_attention_qkv",
+        "jiang_attention_output",
         "jiang_ffn_up",
         "jiang_ffn_down",
+        "jiang_other_biases",
     ):
         torch.manual_seed(seed)
         if device.type == "cuda":
@@ -394,7 +439,11 @@ def group_feature_velocity_audit(
             context_length=context_length,
             reference=reference,
         ).to(device)
-        groups = model.optimizer_parameter_groups(eta, epsilon0=epsilon0)
+        groups = model.optimizer_parameter_groups(
+            eta,
+            epsilon0=epsilon0,
+            learning_rate_multipliers=learning_rate_multipliers,
+        )
         group = next(item for item in groups if item["name"] == group_name)
         optimizer = torch.optim.Adam(
             [group], lr=float(group["lr"]), betas=(0.9, 0.95), weight_decay=0.0
@@ -434,9 +483,11 @@ def summarize_feature_velocity_audits(
     groups = (
         "jiang_embeddings",
         "jiang_norms",
-        "jiang_attention",
+        "jiang_attention_qkv",
+        "jiang_attention_output",
         "jiang_ffn_up",
         "jiang_ffn_down",
+        "jiang_other_biases",
     )
     rows = []
     for group in groups:
@@ -650,6 +701,24 @@ def main() -> None:
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
+    print(
+        json.dumps(
+            {
+                "phase": "theory-recall-before-trials",
+                "theory": JIANG_COMPLETEP_ADAM_THEORY.to_dict(),
+                "scope": "derived dense interleaving; not the sparse-MoE architecture",
+                "optimizer": {
+                    "betas": [0.9, 0.95],
+                    "epsilon0": args.epsilon0,
+                    "weight_decay": 0.0,
+                    "gradient_clipping": "none",
+                    "schedule": "linear warmup for first half then constant peak",
+                },
+            },
+            sort_keys=True,
+        ),
+        flush=True,
+    )
     trials = []
     raw_audits = []
     for shape in shapes:
@@ -741,6 +810,7 @@ def main() -> None:
                         seed=seed,
                         rule=rule,
                         device=device,
+                        warmup_steps=args.steps // 2,
                     )
                 )
     report = build_report(

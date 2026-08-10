@@ -110,6 +110,17 @@
     "lr_multipliers": [0.5, 1.0, 2.0],
     "seeds": [11, 29, 47, 71, 97, 131]
   },
+  "batch_extension_phase": {
+    "scales": ["S3", "S4", "S5", "S6"],
+    "token_budget": 153600,
+    "lr_multipliers_by_batch": {
+      "64": [0.125, 0.25],
+      "128": [0.25],
+      "512": [4.0],
+      "1024": [4.0, 8.0]
+    },
+    "seeds": [11, 29, 47, 71, 97, 131]
+  },
   "horizon_phase": {
     "scales": ["S3", "S4", "S5", "S6"],
     "batch_size": 256,

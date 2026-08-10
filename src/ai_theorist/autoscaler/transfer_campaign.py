@@ -117,6 +117,36 @@ def validate_campaign(config: Mapping[str, Any]) -> StudySpec:
         _positive_floats(payload.get("lr_multipliers"), f"{phase}.lr_multipliers")
     _positive_floats(config["batch_phase"].get("batch_sizes"), "batch_phase.batch_sizes")
     _positive_int(config["batch_phase"].get("token_budget"), "batch_phase.token_budget")
+    batch_extension = config.get("batch_extension_phase")
+    if batch_extension is not None:
+        if not isinstance(batch_extension, Mapping):
+            raise ValueError("campaign.batch_extension_phase must be an object")
+        if tuple(batch_extension.get("scales", [])) != tuple(config["batch_phase"]["scales"]):
+            raise ValueError("batch extension must use the same ordered scales")
+        if tuple(batch_extension.get("seeds", [])) != tuple(config["batch_phase"]["seeds"]):
+            raise ValueError("batch extension must use the same ordered paired seeds")
+        if batch_extension.get("token_budget") != config["batch_phase"]["token_budget"]:
+            raise ValueError("batch extension must use the same token budget")
+        multiplier_map = batch_extension.get("lr_multipliers_by_batch")
+        if not isinstance(multiplier_map, Mapping) or not multiplier_map:
+            raise ValueError("batch extension requires lr_multipliers_by_batch")
+        base_batches = {int(value) for value in config["batch_phase"]["batch_sizes"]}
+        base_multipliers = {
+            float(value) for value in config["batch_phase"]["lr_multipliers"]
+        }
+        for batch_size_text, multipliers in multiplier_map.items():
+            try:
+                batch_size = int(batch_size_text)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("batch extension keys must be integer batch sizes") from exc
+            if batch_size not in base_batches:
+                raise ValueError(f"unknown batch extension size: {batch_size}")
+            extension_multipliers = _positive_floats(
+                multipliers,
+                f"batch_extension_phase.lr_multipliers_by_batch.{batch_size}",
+            )
+            if set(extension_multipliers) & base_multipliers:
+                raise ValueError("batch extension multipliers must not duplicate the base grid")
     _positive_floats(
         config["horizon_phase"].get("token_budgets"),
         "horizon_phase.token_budgets",
@@ -132,6 +162,7 @@ def campaign_fingerprint(config: Mapping[str, Any]) -> str:
     # when the edge check activates the extension.
     fingerprint_payload = dict(config)
     fingerprint_payload.pop("lr_extension_phase", None)
+    fingerprint_payload.pop("batch_extension_phase", None)
     return _canonical_fingerprint(fingerprint_payload)
 
 
@@ -205,16 +236,32 @@ def compile_tasks(
                             int(seed),
                         )
                     )
-    elif phase == "batch":
-        payload = config["batch_phase"]
+    elif phase in {"batch", "batch-extension"}:
+        payload = (
+            config["batch_phase"]
+            if phase == "batch"
+            else config.get("batch_extension_phase")
+        )
+        if not isinstance(payload, Mapping):
+            raise ValueError("campaign has no batch_extension_phase")
         rates = _resolved_rates(analysis, payload["scales"])
         token_budget = int(payload["token_budget"])
         for scale_name in payload["scales"]:
             for seed in payload["seeds"]:
-                for batch_size_value in payload["batch_sizes"]:
+                batch_sizes = (
+                    payload["batch_sizes"]
+                    if phase == "batch"
+                    else payload["lr_multipliers_by_batch"].keys()
+                )
+                for batch_size_value in batch_sizes:
                     batch_size = int(batch_size_value)
                     steps = max(1, math.ceil(token_budget / batch_size))
-                    for multiplier in payload["lr_multipliers"]:
+                    multipliers = (
+                        payload["lr_multipliers"]
+                        if phase == "batch"
+                        else payload["lr_multipliers_by_batch"][str(batch_size)]
+                    )
+                    for multiplier in multipliers:
                         tasks.append(
                             CampaignTask(
                                 phase,
@@ -247,7 +294,9 @@ def compile_tasks(
                             )
                         )
     else:
-        raise ValueError("phase must be lr, lr-extension, batch, or horizon")
+        raise ValueError(
+            "phase must be lr, lr-extension, batch, batch-extension, or horizon"
+        )
     return tasks
 
 
@@ -747,11 +796,39 @@ def analyze_followup_trials(
     if phase not in {"batch", "horizon"}:
         raise ValueError("follow-up phase must be batch or horizon")
     fingerprint = campaign_fingerprint(config)
-    phase_rows = [row for row in rows if row["task"]["phase"] == phase]
+    accepted_phases = {phase}
+    if phase == "batch" and isinstance(config.get("batch_extension_phase"), Mapping):
+        accepted_phases.add("batch-extension")
+    phase_rows = [row for row in rows if row["task"]["phase"] in accepted_phases]
     if not phase_rows:
         raise ValueError(f"no {phase} trials found")
+    phase_config = config[f"{phase}_phase"]
+    primary_values = (
+        phase_config["batch_sizes"]
+        if phase == "batch"
+        else phase_config["token_budgets"]
+    )
+    expected = (
+        len(phase_config["scales"])
+        * len(phase_config["seeds"])
+        * len(primary_values)
+        * len(phase_config["lr_multipliers"])
+    )
+    if phase == "batch" and "batch-extension" in accepted_phases:
+        extension = config["batch_extension_phase"]
+        expected += (
+            len(extension["scales"])
+            * len(extension["seeds"])
+            * sum(len(values) for values in extension["lr_multipliers_by_batch"].values())
+        )
+    if len(phase_rows) != expected:
+        raise ValueError(
+            f"incomplete {phase} factorial: expected {expected} trials, "
+            f"found {len(phase_rows)}"
+        )
     grouped: Dict[Tuple[str, int, int, float], List[float]] = {}
     train_grouped: Dict[Tuple[str, int, int, float], List[float]] = {}
+    paired: Dict[Tuple[str, int, int, float], Dict[int, float]] = {}
     for row in phase_rows:
         task = row["task"]
         result = row["result"]
@@ -761,7 +838,9 @@ def analyze_followup_trials(
             int(task["steps"]),
             float(task["normalized_learning_rate"]),
         )
-        grouped.setdefault(key, []).append(float(result["final_validation_loss"]))
+        validation_loss = float(result["final_validation_loss"])
+        grouped.setdefault(key, []).append(validation_loss)
+        paired.setdefault(key, {})[int(task["seed"])] = validation_loss
         trace = result.get("train_loss_trace") or []
         if trace:
             train_grouped.setdefault(key, []).append(float(trace[-1]["training_loss"]))
@@ -784,9 +863,57 @@ def analyze_followup_trials(
         )
     primary = "batch_size" if phase == "batch" else "token_horizon"
     selected = []
+    profiles_by_scale: Dict[str, List[Dict[str, Any]]] = {}
+    minimum_fraction = 0.005
     for scale_name in sorted({row["scale"] for row in summaries}):
         candidates = [row for row in summaries if row["scale"] == scale_name]
-        best = min(candidates, key=lambda row: row["mean_validation_loss"])
+        local_profiles = []
+        for value in sorted({row[primary] for row in candidates}):
+            value_candidates = [row for row in candidates if row[primary] == value]
+            local_best = min(value_candidates, key=lambda row: row["mean_validation_loss"])
+            local_profiles.append(
+                dict(local_best)
+                | {
+                    "selected_normalized_learning_rate": local_best[
+                        "normalized_learning_rate"
+                    ],
+                    "_key": (
+                        local_best["scale"],
+                        local_best["batch_size"],
+                        local_best["steps"],
+                        local_best["normalized_learning_rate"],
+                    ),
+                }
+            )
+        best = min(local_profiles, key=lambda row: row["mean_validation_loss"])
+        best_losses = paired[best["_key"]]
+        reported_profiles = []
+        for profile in local_profiles:
+            penalty, penalty_sem = _paired_difference(paired[profile["_key"]], best_losses)
+            tolerance = max(
+                2.0 * penalty_sem,
+                minimum_fraction * best["mean_validation_loss"],
+            )
+            reported_profiles.append(
+                {key: value for key, value in profile.items() if key != "_key"}
+                | {
+                    "paired_penalty_vs_best": penalty,
+                    "paired_penalty_sem": penalty_sem,
+                    "noninferiority_tolerance": tolerance,
+                    "noninferior_to_best": penalty <= tolerance,
+                }
+            )
+        noninferior_values = [
+            row[primary] for row in reported_profiles if row["noninferior_to_best"]
+        ]
+        largest_noninferior = max(noninferior_values)
+        smallest_profile = min(local_profiles, key=lambda row: row[primary])
+        largest_profile = max(local_profiles, key=lambda row: row[primary])
+        largest_improvement, largest_improvement_sem = _paired_difference(
+            paired[smallest_profile["_key"]],
+            paired[largest_profile["_key"]],
+        )
+        profiles_by_scale[scale_name] = reported_profiles
         selected.append(
             {
                 "scale": scale_name,
@@ -794,6 +921,9 @@ def analyze_followup_trials(
                 "selected_normalized_learning_rate": best["normalized_learning_rate"],
                 "mean_validation_loss": best["mean_validation_loss"],
                 "sem_validation_loss": best["sem_validation_loss"],
+                "largest_noninferior_value": largest_noninferior,
+                "smallest_to_largest_paired_improvement": largest_improvement,
+                "smallest_to_largest_paired_improvement_sem": largest_improvement_sem,
             }
         )
     return {
@@ -804,6 +934,9 @@ def analyze_followup_trials(
         "controlled_variable": (
             "token_horizon" if phase == "batch" else "batch_size"
         ),
+        "paired_seed_count": len(phase_config["seeds"]),
+        "lr_retuned_per_value": True,
         "summaries": summaries,
+        "profiles_by_scale": profiles_by_scale,
         "selected_by_scale": selected,
     }

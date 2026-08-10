@@ -5,6 +5,7 @@ import torch
 from torch.nn import functional as F
 
 from ai_theorist.autoscaler.jiang_chizat import (
+    JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
     JiangChizatReference,
     JiangChizatShape,
     JiangChizatTransformer,
@@ -56,8 +57,8 @@ def test_mean_field_down_projection_and_fan_in_control_are_distinct():
     )
     mean_field = make_model(shape, down_initialization="mean_field")
     fan_in = make_model(shape, down_initialization="fan_in")
-    expected_mean_field = math.sqrt(shape.residual_width) / shape.hidden_width
-    expected_fan_in = 1.0 / math.sqrt(shape.hidden_width)
+    expected_mean_field = math.sqrt(shape.residual_width) / shape.hidden_width / 4.0
+    expected_fan_in = 1.0 / math.sqrt(shape.hidden_width) / 4.0
     observed_mean_field = float(mean_field.blocks[0].ffn_down.weight.detach().std())
     observed_fan_in = float(fan_in.blocks[0].ffn_down.weight.detach().std())
     assert observed_mean_field == pytest.approx(expected_mean_field, rel=0.02)
@@ -74,18 +75,49 @@ def test_table2_adam_group_rates_and_epsilons():
     }
     assert groups["jiang_embeddings"]["lr"] == pytest.approx(0.01)
     assert groups["jiang_norms"]["lr"] == pytest.approx(0.01)
-    assert groups["jiang_attention"]["lr"] == pytest.approx(0.005)
+    assert groups["jiang_attention_qkv"]["lr"] == pytest.approx(0.005 / 16.0)
+    assert groups["jiang_attention_output"]["lr"] == pytest.approx(0.005)
     assert groups["jiang_ffn_up"]["lr"] == pytest.approx(0.005)
-    assert groups["jiang_ffn_down"]["lr"] == pytest.approx(0.01 / 3.0)
+    assert groups["jiang_ffn_down"]["lr"] == pytest.approx(0.01 / 3.0 / 16.0)
+    assert groups["jiang_other_biases"]["lr"] == pytest.approx(0.01)
     assert groups["jiang_embeddings"]["eps"] == pytest.approx(0.5e-12)
     assert groups["jiang_norms"]["eps"] == pytest.approx(1e-12)
-    assert groups["jiang_attention"]["eps"] == pytest.approx(0.25e-12)
+    assert groups["jiang_attention_qkv"]["eps"] == pytest.approx(0.25e-12)
+    assert groups["jiang_attention_output"]["eps"] == pytest.approx(0.25e-12)
     assert groups["jiang_ffn_up"]["eps"] == pytest.approx(1e-12 / 6.0)
     assert groups["jiang_ffn_down"]["eps"] == pytest.approx(1e-12 / 9.0)
+    assert groups["jiang_other_biases"]["eps"] == pytest.approx(0.5e-12)
 
     all_ids = [id(parameter) for group in groups.values() for parameter in group["params"]]
     assert len(all_ids) == len(set(all_ids))
     assert set(all_ids) == {id(parameter) for parameter in model.parameters()}
+
+
+def test_reference_tuned_group_multiplier_changes_only_named_group():
+    model = make_model()
+    baseline = {
+        group["name"]: group["lr"]
+        for group in model.optimizer_parameter_groups(0.01, epsilon0=1e-12)
+    }
+    tuned = {
+        group["name"]: group["lr"]
+        for group in model.optimizer_parameter_groups(
+            0.01,
+            epsilon0=1e-12,
+            learning_rate_multipliers={
+                "jiang_attention_qkv": (
+                    JIANG_DENSE_REPORTED_LR_MULTIPLIERS["jiang_attention_qkv"]
+                    / 2.0
+                )
+            },
+        )
+    }
+    assert tuned["jiang_attention_qkv"] == pytest.approx(
+        0.5 * baseline["jiang_attention_qkv"]
+    )
+    for name, rate in baseline.items():
+        if name != "jiang_attention_qkv":
+            assert tuned[name] == rate
 
 
 def test_omitted_factor_controls_change_only_the_declared_groups():
@@ -104,10 +136,27 @@ def test_omitted_factor_controls_change_only_the_declared_groups():
             omit_ffn_hidden_width_factor=True,
         )
     }
-    assert wrong["jiang_attention"] == pytest.approx(0.01)
-    assert wrong["jiang_ffn_down"] == pytest.approx(0.01)
+    assert wrong["jiang_attention_qkv"] == pytest.approx(0.01 / 16.0)
+    assert wrong["jiang_attention_output"] == pytest.approx(0.01)
+    assert wrong["jiang_ffn_down"] == pytest.approx(0.01 / 16.0)
     assert wrong["jiang_ffn_up"] == correct["jiang_ffn_up"]
     assert wrong["jiang_embeddings"] == correct["jiang_embeddings"]
+
+
+def test_reported_value_and_down_initialization_constants_are_applied():
+    shape = JiangChizatShape(
+        depth=1, hidden_width=1024, residual_width=256, head_dimension=64
+    )
+    model = make_model(shape)
+    q_weight, k_weight, v_weight = model.blocks[0].attention.qkv.weight.chunk(3, dim=0)
+    base_std = shape.residual_width ** -0.5
+    assert float(q_weight.detach().std()) == pytest.approx(base_std, rel=0.03)
+    assert float(k_weight.detach().std()) == pytest.approx(base_std, rel=0.03)
+    assert float(v_weight.detach().std()) == pytest.approx(base_std / 16.0, rel=0.03)
+    assert float(model.blocks[0].ffn_down.weight.detach().std()) == pytest.approx(
+        math.sqrt(shape.residual_width) / shape.hidden_width / 4.0,
+        rel=0.03,
+    )
 
 
 def test_one_adam_step_is_finite():

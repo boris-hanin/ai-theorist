@@ -143,6 +143,20 @@ def test_synthetic_language_data_and_training_are_deterministic():
     assert first.normalized_transformer_diagnostics["maximum_matrix_norm_error"] < 1e-6
     assert math.isfinite(first.normalized_transformer_diagnostics["mean_attention_entropy"])
     assert first.learning_rate_schedule == "cosine_to_10_percent_without_warmup"
+    assert first.gradient_clipping == "none_source_faithful"
+    assert first.optimizer_group_contract is not None
+    assert first.optimizer_group_contract["complete"] is True
+    assert first.optimizer_group_contract["disjoint"] is True
+    assert first.optimizer_group_contract["optimizer_options"] == {
+        "name": "adam",
+        "betas": [0.9, 0.95],
+        "epsilon": 1e-16,
+        "weight_decay": 0.0,
+        "warmup_steps": 0,
+        "schedule": "cosine_to_10_percent",
+        "gradient_clipping": False,
+        "matrix_constraint": "unit-sphere projection before every optimization step",
+    }
     assert first.train_loss_trace[0]["peak_learning_rate_multiplier"] == pytest.approx(1.0)
     assert first.train_loss_trace[-1]["peak_learning_rate_multiplier"] == pytest.approx(0.1)
     width_multiplier = spec.scales[0].width / spec.architecture.reference_width

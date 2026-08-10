@@ -87,7 +87,8 @@ def test_tiny_trial_records_attention_movement_and_group_coordinates():
     assert result.diverged is False
     assert math.isfinite(result.final_validation_loss)
     assert result.validation_loss_checkpoints.keys() >= {0, 1, 2}
-    assert result.raw_learning_rates["jiang_attention"] == pytest.approx(1e-3)
+    assert result.raw_learning_rates["jiang_attention_qkv"] == pytest.approx(1e-3 / 16.0)
+    assert result.raw_learning_rates["jiang_attention_output"] == pytest.approx(1e-3)
     assert result.attention_movement["per_entry_attention_logit_delta_rms"] > 0.0
     assert result.attention_movement["head_averaged_attention_delta_rms"] > 0.0
 
@@ -112,9 +113,11 @@ def test_group_only_feature_velocity_audit_routes_every_semantic_group():
     assert set(velocities) == {
         "jiang_embeddings",
         "jiang_norms",
-        "jiang_attention",
+        "jiang_attention_qkv",
+        "jiang_attention_output",
         "jiang_ffn_up",
         "jiang_ffn_down",
+        "jiang_other_biases",
     }
     assert all(math.isfinite(value) and value > 0.0 for value in velocities.values())
 

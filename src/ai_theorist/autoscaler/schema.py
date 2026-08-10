@@ -391,6 +391,15 @@ class StudySpec:
             )
         if obj.architecture.block_type == "normalized_transformer" and obj.optimizer.name != "adam":
             raise SpecError("normalized_transformer currently requires adam")
+        if obj.architecture.block_type == "normalized_transformer" and (
+            not math.isclose(obj.optimizer.beta1, 0.9, rel_tol=0.0, abs_tol=1e-15)
+            or not math.isclose(obj.optimizer.beta2, 0.95, rel_tol=0.0, abs_tol=1e-15)
+            or not math.isclose(obj.optimizer.epsilon, 1e-16, rel_tol=0.0, abs_tol=1e-30)
+        ):
+            raise SpecError(
+                "normalized_transformer faithfully requires Adam beta1=0.9, "
+                "beta2=0.95, epsilon=1e-16"
+            )
         expected_task = (
             "synthetic_markov"
             if obj.architecture.block_type == "normalized_transformer"
@@ -619,6 +628,8 @@ def compile_plan(spec: StudySpec) -> Dict[str, Any]:
                 "learning_rate_schedule": "cosine_to_10_percent_without_warmup",
                 "weight_decay": 0.0,
                 "warmup_steps": 0,
+                "gradient_clipping": "none",
+                "source": "arXiv:2604.27077v2 Table 1 and experimental protocol",
             }
             if spec.architecture.block_type == "normalized_transformer"
             else {
