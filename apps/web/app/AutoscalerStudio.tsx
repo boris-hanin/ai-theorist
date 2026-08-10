@@ -13,6 +13,7 @@ type DataScalingMode = "fixed" | "geometric";
 type HorizonPolicy = "fixed_updates" | "constant_epochs";
 type BatchCampaign = "standard_pretraining_census" | "transformer_census" | "constant_tpp" | "horizon_transfer" | "joint_horizon_batch";
 type HorizonSchedule = "cosine_to_10_percent" | "linear_warmup_decay_to_zero" | "wsd";
+type HorizonParameterization = "jiang_chizat" | "nugpt";
 type Precision = "fp32" | "bf16";
 type AttentionBackend = "auto" | "math" | "flash";
 type DistributedMode = "none" | "fsdp";
@@ -683,6 +684,7 @@ export function AutoscalerStudio() {
     "linear_warmup_decay_to_zero",
     "wsd",
   ]);
+  const [horizonParameterization, setHorizonParameterization] = useState<HorizonParameterization>("jiang_chizat");
   const [jointFitHorizons, setJointFitHorizons] = useState("384, 768, 1536");
   const [jointHeldoutHorizon, setJointHeldoutHorizon] = useState(3072);
   const [jointFitBatches, setJointFitBatches] = useState("2, 4, 8");
@@ -1171,6 +1173,7 @@ export function AutoscalerStudio() {
     setPrecision("fp32");
     if (campaign === "standard_pretraining_census") setPretrainingOptimizer("adamw");
     if (campaign === "horizon_transfer") {
+      setHorizonParameterization("jiang_chizat");
       setHorizonValues("256, 512, 1024, 2048");
       setHorizonRateGrid("0.0003, 0.001, 0.003, 0.01, 0.03, 0.1");
       setHorizonBatchExamples(2);
@@ -1336,8 +1339,31 @@ export function AutoscalerStudio() {
     };
     if (batchCampaign === "horizon_transfer") {
       const onA100 = targetDevice === "cuda";
+      const useJiangChizat = horizonParameterization === "jiang_chizat";
       return {
-        architecture: onA100 ? { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768, context_length: 64, head_dimension: 64, mlp_multiplier: 4, reference_width: 128, reference_depth: 4 } : { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768 },
+        architecture: useJiangChizat ? (onA100 ? {
+          block_type: "jiang_chizat_transformer",
+          vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+          context_length: 64,
+          head_dimension: 64,
+          reference_depth: 2,
+          reference_hidden_width: 128,
+          reference_residual_width: 64,
+          depth: 2,
+          hidden_width: 256,
+          residual_width: 128,
+        } : {
+          block_type: "jiang_chizat_transformer",
+          vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+          context_length: 8,
+          head_dimension: 4,
+          reference_depth: 1,
+          reference_hidden_width: 16,
+          reference_residual_width: 16,
+          depth: 1,
+          hidden_width: 16,
+          residual_width: 16,
+        }) : (onA100 ? { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768, context_length: 64, head_dimension: 64, mlp_multiplier: 4, reference_width: 128, reference_depth: 4 } : { ...syntheticArchitecture, vocab_size: tokenizer === "byte_v1" ? 260 : 32768 }),
         dataset: {
           task_type: "tokenized_text",
           train_path: trainingPath.trim(),
@@ -1348,18 +1374,27 @@ export function AutoscalerStudio() {
           seed: 1729,
           maximum_bytes: onA100 ? 68_719_476_736 : 536_870_912,
         },
-        scale: onA100 ? { name: "fixed-anchor", width: 128, repeats: 4 } : { name: "fixed-anchor", width: 16, repeats: 2 },
+        ...(!useJiangChizat ? { scale: onA100 ? { name: "fixed-anchor", width: 128, repeats: 4 } : { name: "fixed-anchor", width: 16, repeats: 2 } } : {}),
         optimizer: {
           name: "adam",
           beta1: 0.9,
           beta2: 0.95,
-          epsilon: 1e-16,
+          epsilon: useJiangChizat ? 1e-12 : 1e-16,
           weight_decay: 0,
           learning_rates: parsedHorizonRates,
+          ...(useJiangChizat ? { learning_rate_multipliers: {
+            jiang_embeddings: 1,
+            jiang_norms: 1,
+            jiang_attention_qkv: 0.0625,
+            jiang_attention_output: 0.5,
+            jiang_ffn_up: 1,
+            jiang_ffn_down: 0.0625,
+            jiang_other_biases: 1,
+          } } : {}),
         },
         presented_tokens: parsedHorizonValues,
         batch_examples: horizonBatchExamples,
-        schedules: horizonSchedules,
+        schedules: useJiangChizat ? ["jiang_half_warmup_constant"] : horizonSchedules,
         horizon_rules: ["none", "nugpt_one_third", "bjorck_032", "fitted_power"],
         validation_interval: targetDevice === "cuda" ? 2048 : 128,
         seeds: targetDevice === "cuda" ? [11, 29, 47] : [11, 29],
@@ -1593,7 +1628,7 @@ export function AutoscalerStudio() {
           <button onClick={() => applyWorkflow("nugpt-depth")}><span>Normalized</span><strong>νGPT · depth</strong><small>Depth-only transfer</small></button>
           <button onClick={() => applyWorkflow("nugpt-joint")}><span>Normalized</span><strong>νGPT · joint</strong><small>Width + depth transfer</small></button>
           <button onClick={() => applyBatchWorkflow("standard_pretraining_census")}><span>Real text</span><strong>GPT batch census</strong><small>Tokenized corpus · critical batch</small></button>
-          <button onClick={() => applyBatchWorkflow("horizon_transfer")}><span>Real text</span><strong>νGPT horizon transfer</strong><small>Schedule + peak LR · frozen holdout</small></button>
+          <button onClick={() => applyBatchWorkflow("horizon_transfer")}><span>Real text</span><strong>Horizon transfer</strong><small>Jiang+Chizat or νGPT · frozen holdout</small></button>
           <button onClick={() => applyBatchWorkflow("transformer_census")}><span>Synthetic</span><strong>νGPT batch census</strong><small>Three-estimator qualification</small></button>
           <button onClick={() => applyBatchWorkflow("constant_tpp")}><span>Tokens / parameter</span><strong>Constant T/P</strong><small>Held-out schedule transfer</small></button>
         </div>
@@ -1731,7 +1766,7 @@ export function AutoscalerStudio() {
           <div className="campaign-body">
             <div className="campaign-controls">
               <label><span>Campaign</span><select disabled={batchJobLocked} value={batchCampaign} onChange={(event) => { setBatchCampaign(event.target.value as BatchCampaign); setBatchJob(null); setBatchJobError(null); }}><option value="standard_pretraining_census">Real-text Transformer census</option><option value="transformer_census">νGPT synthetic census</option><option value="horizon_transfer">LR schedule + horizon transfer</option><option value="joint_horizon_batch">Joint horizon × batch holdout</option><option value="constant_tpp">Constant T/P holdout</option></select></label>
-              <label><span>Compute</span><select disabled={batchJobLocked} value={targetDevice} onChange={(event) => { const next = event.target.value as "cpu" | "cuda"; setTargetDevice(next); setPretrainingTargetLoss(tokenizer === "byte_v1" ? (next === "cuda" ? 3 : 5.4) : 9.4); setPretrainingValidationInterval(next === "cuda" ? 16 : 8); if (corpusChoice !== "local") { setCorpusTrainMiB(next === "cuda" ? 64 : 2); setCorpusValidationMiB(next === "cuda" ? 8 : 0.5); setCorpusJob(null); } if (batchCampaign === "horizon_transfer") { setHorizonValues(next === "cuda" ? "65536, 131072, 262144, 524288, 1048576" : "256, 512, 1024, 2048"); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); setHorizonBatchExamples(next === "cuda" ? 8 : 2); } if (batchCampaign === "joint_horizon_batch") { setJointFitHorizons(next === "cuda" ? "65536, 131072, 262144, 524288" : "384, 768, 1536"); setJointHeldoutHorizon(next === "cuda" ? 1048576 : 3072); setJointFitBatches("2, 4, 8"); setJointHeldoutBatch(16); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); } if (next === "cpu") { setDistributedMode("none"); if (attentionBackend === "flash") setAttentionBackend("math"); } markBatchCampaignEdited(); }}><option value="cpu">Local CPU smoke</option><option value="cuda">A100 / CUDA</option></select></label>
+              <label><span>Compute</span><select disabled={batchJobLocked} value={targetDevice} onChange={(event) => { const next = event.target.value as "cpu" | "cuda"; setTargetDevice(next); setPretrainingTargetLoss(tokenizer === "byte_v1" ? (next === "cuda" ? 3 : 5.4) : 9.4); setPretrainingValidationInterval(next === "cuda" ? 16 : 8); if (corpusChoice !== "local") { setCorpusTrainMiB(next === "cuda" ? 64 : 2); setCorpusValidationMiB(next === "cuda" ? 8 : 0.5); setCorpusJob(null); } if (batchCampaign === "horizon_transfer") { setHorizonValues(next === "cuda" ? "65536, 131072, 262144, 524288, 1048576" : "256, 512, 1024, 2048"); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); setHorizonBatchExamples(next === "cuda" ? (horizonParameterization === "jiang_chizat" ? 16 : 8) : 2); } if (batchCampaign === "joint_horizon_batch") { setJointFitHorizons(next === "cuda" ? "65536, 131072, 262144, 524288" : "384, 768, 1536"); setJointHeldoutHorizon(next === "cuda" ? 1048576 : 3072); setJointFitBatches("2, 4, 8"); setJointHeldoutBatch(16); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); } if (next === "cpu") { setDistributedMode("none"); if (attentionBackend === "flash") setAttentionBackend("math"); } markBatchCampaignEdited(); }}><option value="cpu">Local CPU smoke</option><option value="cuda">A100 / CUDA</option></select></label>
               {batchCampaign === "standard_pretraining_census" && <>
                 <label><span>Optimizer</span><select disabled={batchJobLocked} value={pretrainingOptimizer} onChange={(event) => { setPretrainingOptimizer(event.target.value as PretrainingOptimizer); markBatchCampaignEdited(); }}><option value="adamw">AdamW</option><option value="adam">Adam</option><option value="sgd">SGD</option></select></label>
                 <label><span>Precision</span><select disabled={batchJobLocked} value={precision} onChange={(event) => { const next = event.target.value as Precision; setPrecision(next); if (next === "fp32" && attentionBackend === "flash") setAttentionBackend("math"); markBatchCampaignEdited(); }}><option value="fp32">FP32</option><option value="bf16">BF16</option></select></label>
@@ -1764,10 +1799,11 @@ export function AutoscalerStudio() {
             )}
             {batchCampaign === "horizon_transfer" && (
               <div className="dataset-contract horizon-contract">
+                <label><span>Architecture contract</span><select disabled={batchJobLocked} value={horizonParameterization} onChange={(event) => { const next = event.target.value as HorizonParameterization; setHorizonParameterization(next); setHorizonBatchExamples(targetDevice === "cuda" ? (next === "jiang_chizat" ? 16 : 8) : 2); markBatchCampaignEdited(); }}><option value="jiang_chizat">Jiang MHSA + Chizat FFN</option><option value="nugpt">νGPT normalized Transformer</option></select></label>
                 <label><span>Presented-token horizons T</span><input disabled={batchJobLocked} value={horizonValues} onChange={(event) => { setHorizonValues(event.target.value); markBatchCampaignEdited(); }} /></label>
                 <label><span>Peak-LR grid</span><input disabled={batchJobLocked} value={horizonRateGrid} onChange={(event) => { setHorizonRateGrid(event.target.value); markBatchCampaignEdited(); }} /></label>
                 <label><span>Batch examples</span><input disabled={batchJobLocked} type="number" min="1" value={horizonBatchExamples} onChange={(event) => { setHorizonBatchExamples(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
-                <div className="schedule-picker"><span>Schedule families</span>{(["cosine_to_10_percent", "linear_warmup_decay_to_zero", "wsd"] as HorizonSchedule[]).map((schedule) => <label key={schedule}><input disabled={batchJobLocked} type="checkbox" checked={horizonSchedules.includes(schedule)} onChange={(event) => { setHorizonSchedules((current) => event.target.checked ? [...current, schedule] : current.filter((item) => item !== schedule)); markBatchCampaignEdited(); }} /><b>{schedule.replaceAll("_", " ")}</b></label>)}</div>
+                {horizonParameterization === "nugpt" ? <div className="schedule-picker"><span>Schedule families</span>{(["cosine_to_10_percent", "linear_warmup_decay_to_zero", "wsd"] as HorizonSchedule[]).map((schedule) => <label key={schedule}><input disabled={batchJobLocked} type="checkbox" checked={horizonSchedules.includes(schedule)} onChange={(event) => { setHorizonSchedules((current) => event.target.checked ? [...current, schedule] : current.filter((item) => item !== schedule)); markBatchCampaignEdited(); }} /><b>{schedule.replaceAll("_", " ")}</b></label>)}</div> : <div className="fixed-callout"><b>Source-faithful schedule</b><span>50% linear warmup then constant · group multipliers frozen from the completed FineWeb reference calibration</span></div>}
                 <div className="fixed-callout"><b>Frozen real-text holdout</b><span>Corpus and sampled windows fixed · N, U, and B fixed · T varies · largest T stays hidden until every schedule/LR rule is frozen</span></div>
               </div>
             )}
@@ -1783,7 +1819,7 @@ export function AutoscalerStudio() {
               </div>
             )}
             <div className="campaign-summary">
-              <div><small>Model contract</small><strong>{batchCampaign === "standard_pretraining_census" ? "Standard pre-norm GPT" : batchCampaign === "transformer_census" ? "Normalized Transformer" : batchCampaign === "horizon_transfer" ? "Fixed-model νGPT · frozen real text" : batchCampaign === "joint_horizon_batch" ? "νGPT joint T × B transfer" : "νGPT constant T/P"}</strong><span>{batchCampaign === "standard_pretraining_census" ? "Learned token + position embeddings · causal MHSA · GELU MLP · tied unembed" : batchCampaign === "horizon_transfer" ? "Compare schedule shape and peak-LR laws on one fingerprinted corpus sample without model/batch confounding" : batchCampaign === "joint_horizon_batch" ? "Freeze schedule, peak LR, Adam moments, and epsilon before the doubly held-out corner" : "Theory-specific synthetic control"}</span></div>
+              <div><small>Model contract</small><strong>{batchCampaign === "standard_pretraining_census" ? "Standard pre-norm GPT" : batchCampaign === "transformer_census" ? "Normalized Transformer" : batchCampaign === "horizon_transfer" ? horizonParameterization === "jiang_chizat" ? "Jiang MHSA + Chizat FFN · frozen real text" : "Fixed-model νGPT · frozen real text" : batchCampaign === "joint_horizon_batch" ? "νGPT joint T × B transfer" : "νGPT constant T/P"}</strong><span>{batchCampaign === "standard_pretraining_census" ? "Learned token + position embeddings · causal MHSA · GELU MLP · tied unembed" : batchCampaign === "horizon_transfer" ? horizonParameterization === "jiang_chizat" ? "Full CompleteP LR/epsilon groups · 1/L MHSA and mean-field FFN branches · held-out horizon" : "Compare schedule shape and peak-LR laws on one fingerprinted corpus sample without model/batch confounding" : batchCampaign === "joint_horizon_batch" ? "Freeze schedule, peak LR, Adam moments, and epsilon before the doubly held-out corner" : "Theory-specific synthetic control"}</span></div>
               <div><small>Execution</small><strong>{batchCampaign === "standard_pretraining_census" ? `${pretrainingOptimizer.toUpperCase()} · ${precision.toUpperCase()} · ${attentionBackend === "flash" ? "FlashAttention" : "PyTorch SDPA"}` : "FP32 reference"}</strong><span>{distributedMode === "fsdp" && batchCampaign === "standard_pretraining_census" ? `${gpuCount} GPUs · torchrun FSDP` : targetDevice === "cuda" ? "Single CUDA process" : "Local smoke profile"}</span></div>
               <button className="run-button campaign-run" disabled={batchJobLocked || !standardRuntimeValid} onClick={startBatchCampaign}>{batchJobLocked ? "Campaign running" : batchJob?.status === "completed" ? "Run or resume" : "Launch campaign"}<span>→</span></button>
             </div>

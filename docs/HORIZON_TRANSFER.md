@@ -2,10 +2,11 @@
 
 ## Scope
 
-The first horizon-transfer campaign answers one question at a time: at fixed
-normalized-Transformer architecture, unique training stream, and batch size,
-does a peak-learning-rate rule and normalized schedule shape transfer to a
-strictly held-out longer token horizon?
+The horizon-transfer campaign answers one question at a time: at fixed
+architecture, frozen training sample, and batch size, does a peak-learning-rate
+rule and normalized schedule shape transfer to a strictly held-out longer token
+horizon? Two architecture contracts are implemented: νGPT's normalized
+Transformer and the interleaved Jiang-MHSA + Chizat-FFN decoder.
 
 The campaign does **not** yet claim that the same rule transfers when model
 size or batch size also changes. Those are later composition tests.
@@ -40,9 +41,9 @@ therefore cannot satisfy the run.
 
 The web builder exposes the same FineWeb-Edu, OpenWebText, and local-file
 snapshot controls as the real-text batch census. A non-local campaign cannot
-start until snapshot preparation completes. The reference runner remains FP32
-so that schedule/horizon results use the same normalized-Transformer
-parameter-group implementation as the model-scale transfer checks.
+start until snapshot preparation completes. The reference runners remain FP32
+so that schedule/horizon results use the same architecture-specific
+parameter-group implementations as the model-scale transfer checks.
 
 ## Schedules
 
@@ -55,7 +56,9 @@ Implemented schedule families are:
 - constant;
 - cosine decay to a declared terminal fraction (the νGPT preset ends at 10%);
 - linear warmup followed by linear decay;
-- warmup-stable-decay with a cosine tail.
+- warmup-stable-decay with a cosine tail;
+- linear warmup followed by a constant peak (the source-faithful Jiang preset
+  uses a 50% warmup).
 
 The artifact records the first, peak, final, mean, and integrated schedule
 multiplier, plus the multiplier at every validation checkpoint.
@@ -72,6 +75,14 @@ The preregistered candidates are:
 - `nugpt_one_third`: `beta = 1/3`;
 - `bjorck_032`: `beta = 0.32`;
 - `fitted_power`: fit both coefficient and exponent on fit horizons only.
+
+For Jiang+Chizat, the CompleteP DMFT contract supplies the distinct model-scale
+LR and epsilon formulas for embeddings, norms, attention QKV, attention output,
+FFN up, FFN down, and other biases. At fixed `(L,M,D)` the horizon candidate
+multiplies every already-parameterized group by the same `eta(T)` ratio. The
+`1/3` and `0.32` duration exponents are cross-theory candidates, not claims
+derived by the Jiang CompleteP paper; the fitted rule and no-transfer control
+make that uncertainty explicit.
 
 For every schedule family, at least three fit horizons are tuned independently.
 The largest horizon is hidden while rules are fitted and frozen. Frozen rules
@@ -114,6 +125,15 @@ then resumes the preregistered trial cache:
 ```bash
 scripts/run_fineweb_horizon_transfer_a100.sh \
   runs/autoscaler/fineweb-horizon-a100
+```
+
+The Jiang-MHSA + Chizat-FFN campaign reuses that verified corpus snapshot and
+the group constants selected by the completed FineWeb reference calibration:
+
+```bash
+scripts/run_fineweb_jiang_chizat_horizon_a100.sh \
+  runs/autoscaler/fineweb-jiang-chizat-horizon-a100 \
+  runs/autoscaler/fineweb-horizon-a100/corpus
 ```
 
 ## Joint composition

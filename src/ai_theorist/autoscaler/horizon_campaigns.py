@@ -1,18 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from hashlib import sha256
+import json
 import math
 from pathlib import Path
+import time
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+from torch.nn import functional as F
 
 from .batch_campaigns import run_transformer_batch_trial
 from .batch_scaling import BatchRunRecord, OptimizerHyperparameters
 from .lr_schedules import LearningRateSchedule
+from .jiang_chizat import (
+    JIANG_COMPLETEP_ADAM_THEORY,
+    JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
+    JiangChizatReference,
+    JiangChizatShape,
+    JiangChizatTransformer,
+)
 from .normalized_transformer import NormalizedTransformer
 from .schema import ArchitectureTemplate, DatasetSpec, ScaleLevel
+from .study import atomic_write_json
 from .transfer_data import FrozenLanguageModelData, load_frozen_text_windows
 
 
@@ -57,10 +69,273 @@ class HorizonDataset:
     result: Optional[Dict[str, Any]]
 
 
+@dataclass(frozen=True)
+class JiangHorizonArchitecture:
+    vocab_size: int
+    context_length: int
+    head_dimension: int
+    reference_depth: int
+    reference_hidden_width: int
+    reference_residual_width: int
+    depth: int
+    hidden_width: int
+    residual_width: int
+
+    @property
+    def shape(self) -> JiangChizatShape:
+        return JiangChizatShape(
+            self.depth,
+            self.hidden_width,
+            self.residual_width,
+            self.head_dimension,
+        )
+
+    @property
+    def reference(self) -> JiangChizatReference:
+        return JiangChizatReference(
+            self.reference_depth,
+            self.reference_hidden_width,
+            self.reference_residual_width,
+        )
+
+
+def _jiang_architecture(payload: Mapping[str, Any]) -> JiangHorizonArchitecture:
+    allowed = {
+        "block_type",
+        "vocab_size",
+        "context_length",
+        "head_dimension",
+        "reference_depth",
+        "reference_hidden_width",
+        "reference_residual_width",
+        "depth",
+        "hidden_width",
+        "residual_width",
+    }
+    extras = sorted(set(payload) - allowed)
+    if extras:
+        raise ValueError(f"unknown Jiang+Chizat architecture field(s): {', '.join(extras)}")
+    if payload.get("block_type") != "jiang_chizat_transformer":
+        raise ValueError("Jiang horizon architecture requires block_type jiang_chizat_transformer")
+    values = {
+        name: _positive_int(payload.get(name), f"architecture.{name}")
+        for name in allowed - {"block_type"}
+    }
+    result = JiangHorizonArchitecture(**values)
+    result.shape
+    result.reference
+    return result
+
+
+@torch.no_grad()
+def _jiang_validation_loss(
+    model: JiangChizatTransformer,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    *,
+    batch_examples: int,
+) -> float:
+    model.eval()
+    total = 0.0
+    count = 0
+    for start in range(0, len(inputs), batch_examples):
+        batch_inputs = inputs[start : start + batch_examples]
+        batch_targets = targets[start : start + batch_examples]
+        logits = model(batch_inputs)
+        total += float(
+            F.cross_entropy(
+                logits.reshape(-1, model.vocab_size),
+                batch_targets.reshape(-1),
+                reduction="sum",
+            ).cpu()
+        )
+        count += batch_targets.numel()
+    model.train()
+    return total / count
+
+
+def _run_jiang_horizon_trial(
+    *,
+    architecture: JiangHorizonArchitecture,
+    data: FrozenLanguageModelData,
+    dataset_identity: Mapping[str, Any],
+    optimizer: OptimizerHyperparameters,
+    learning_rate_multipliers: Mapping[str, float],
+    total_tokens: int,
+    batch_examples: int,
+    seed: int,
+    validation_interval: int,
+    schedule: LearningRateSchedule,
+    device: str,
+    cache_directory: Optional[Path],
+    cache_key_suffix: str,
+) -> BatchRunRecord:
+    identity = {
+        "architecture": asdict(architecture),
+        "dataset": dict(dataset_identity),
+        "optimizer": optimizer.to_dict(),
+        "learning_rate_multipliers": dict(learning_rate_multipliers),
+        "total_tokens": total_tokens,
+        "batch_examples": batch_examples,
+        "seed": seed,
+        "validation_interval": validation_interval,
+        "schedule": asdict(schedule),
+        "cache_key_suffix": cache_key_suffix,
+    }
+    digest = sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:10]
+    batch_tokens = batch_examples * architecture.context_length
+    run_id = (
+        f"jiang-chizat-horizon-b{batch_tokens}-t{total_tokens}"
+        f"-eta{optimizer.learning_rate:g}-s{seed}-{digest}{cache_key_suffix}"
+    )
+    record_path = cache_directory / f"{run_id}.json" if cache_directory else None
+    if record_path is not None and record_path.is_file():
+        with record_path.open("r", encoding="utf-8") as handle:
+            return BatchRunRecord.from_dict(json.load(handle))
+
+    torch.manual_seed(seed)
+    requested_device = torch.device(device)
+    if requested_device.type == "cuda":
+        torch.cuda.manual_seed_all(seed)
+    model = JiangChizatTransformer(
+        architecture.shape,
+        vocab_size=architecture.vocab_size,
+        context_length=architecture.context_length,
+        reference=architecture.reference,
+    ).to(requested_device)
+    groups = model.optimizer_parameter_groups(
+        optimizer.learning_rate,
+        epsilon0=optimizer.epsilon,
+        learning_rate_multipliers=learning_rate_multipliers,
+    )
+    group_contract = [
+        {
+            "name": str(group["name"]),
+            "peak_learning_rate": float(group["lr"]),
+            "epsilon": float(group["eps"]),
+            "learning_rate_formula": str(group["lr_formula"]),
+            "epsilon_formula": str(group["eps_formula"]),
+            "theory_contract_id": str(group["theory_contract_id"]),
+            "scale_factors": dict(group["scale_factors"]),
+        }
+        for group in groups
+    ]
+    torch_optimizer = torch.optim.Adam(
+        groups,
+        lr=optimizer.learning_rate,
+        betas=(optimizer.beta1, optimizer.beta2),
+        eps=optimizer.epsilon,
+        weight_decay=0.0,
+    )
+    peak_rates = [float(group["lr"]) for group in torch_optimizer.param_groups]
+    x_train, y_train, x_validation, y_validation = data.tensors
+    steps = total_tokens // batch_tokens
+    generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
+    checkpoints = []
+    schedule_trace = []
+    initial_loss = _jiang_validation_loss(
+        model,
+        x_validation,
+        y_validation,
+        batch_examples=batch_examples,
+    )
+    checkpoints.append({"step": 0.0, "tokens": 0.0, "validation_loss": initial_loss})
+    started = time.monotonic()
+    for step in range(1, steps + 1):
+        multiplier = schedule.multiplier(step, steps)
+        for group, peak_rate in zip(torch_optimizer.param_groups, peak_rates):
+            group["lr"] = peak_rate * multiplier
+        indices = torch.randint(
+            0, x_train.shape[0], (batch_examples,), generator=generator
+        ).to(requested_device)
+        torch_optimizer.zero_grad(set_to_none=True)
+        logits = model(x_train[indices])
+        loss = F.cross_entropy(
+            logits.reshape(-1, architecture.vocab_size),
+            y_train[indices].reshape(-1),
+        )
+        if not torch.isfinite(loss):
+            raise RuntimeError("Jiang+Chizat horizon trial diverged")
+        loss.backward()
+        torch_optimizer.step()
+        if step % validation_interval == 0 or step == steps:
+            validation_loss = _jiang_validation_loss(
+                model,
+                x_validation,
+                y_validation,
+                batch_examples=batch_examples,
+            )
+            if not math.isfinite(validation_loss):
+                raise RuntimeError("Jiang+Chizat horizon validation diverged")
+            checkpoints.append(
+                {
+                    "step": float(step),
+                    "tokens": float(step * batch_tokens),
+                    "validation_loss": validation_loss,
+                }
+            )
+            schedule_trace.append(
+                {
+                    "step": float(step),
+                    "tokens": float(step * batch_tokens),
+                    "multiplier": multiplier,
+                }
+            )
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    record = BatchRunRecord(
+        run_id=run_id,
+        model_family="jiang_attention_chizat_ffn_horizon",
+        optimizer=optimizer,
+        seed=seed,
+        parameter_count=parameter_count,
+        width=architecture.residual_width,
+        depth=architecture.depth,
+        total_tokens=total_tokens,
+        batch_tokens=batch_tokens,
+        microbatch_tokens=batch_tokens,
+        accumulation_steps=1,
+        data_parallel_replicas=1,
+        optimizer_steps=steps,
+        nonpadding_tokens_seen=total_tokens,
+        learning_rate_schedule=schedule.name,
+        final_validation_loss=float(checkpoints[-1]["validation_loss"]),
+        estimated_flops=float(6 * parameter_count * total_tokens),
+        wall_time_seconds=time.monotonic() - started,
+        validation_checkpoints=tuple(checkpoints),
+        metadata={
+            "batch_examples": batch_examples,
+            "device": device,
+            "unique_training_tokens": len(x_train) * architecture.context_length,
+            "presented_to_unique_token_ratio": (
+                total_tokens / (len(x_train) * architecture.context_length)
+            ),
+            "dataset": dict(data.metadata),
+            "schedule": schedule.audit(steps),
+            "schedule_trace": schedule_trace,
+            "peak_parameter_group_learning_rates": peak_rates,
+            "peak_parameter_group_contract": group_contract,
+            "gradient_clipping": "none",
+            "architecture_contract": {
+                "block": "pre-LN causal MHSA then Chizat mean-field GELU FFN",
+                "residual_branches": "1/L",
+                "attention_logits": "QK^T/d_head",
+                "optimizer": "Adam with CompleteP per-group LR and epsilon",
+            },
+        },
+    )
+    if record_path is not None:
+        cache_directory.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(record_path, record.to_dict())
+    return record
+
+
 def _horizon_dataset(
     payload: Mapping[str, Any],
     *,
-    architecture: ArchitectureTemplate,
+    vocab_size: int,
+    context_length: int,
     device: str,
 ) -> HorizonDataset:
     if payload.get("task_type") != "tokenized_text":
@@ -83,7 +358,7 @@ def _horizon_dataset(
     tokenizer = str(payload.get("tokenizer", "byte_v1"))
     if tokenizer not in {"byte_v1", "uint16_bin_v1"}:
         raise ValueError("dataset.tokenizer must be byte_v1 or uint16_bin_v1")
-    if tokenizer == "byte_v1" and architecture.vocab_size != 260:
+    if tokenizer == "byte_v1" and vocab_size != 260:
         raise ValueError("byte_v1 real-text horizon campaigns require vocab_size 260")
     train_path = Path(str(payload.get("train_path", "")))
     validation_path = Path(str(payload.get("validation_path", "")))
@@ -103,8 +378,8 @@ def _horizon_dataset(
         train_path=train_path,
         validation_path=validation_path,
         tokenizer=tokenizer,
-        vocab_size=architecture.vocab_size,
-        context_length=architecture.context_length,
+        vocab_size=vocab_size,
+        context_length=context_length,
         n_train=n_train,
         n_validation=n_validation,
         seed=seed,
@@ -130,7 +405,7 @@ def _horizon_dataset(
         "corpus_validation_tokens": metadata["corpus_validation_tokens"],
         "sampled_training_windows": n_train,
         "sampled_validation_windows": n_validation,
-        "context_length": architecture.context_length,
+        "context_length": context_length,
         "sampling_seed": seed,
     }
     result = {
@@ -141,8 +416,8 @@ def _horizon_dataset(
         "validation_tokens": metadata["corpus_validation_tokens"],
         "sampled_training_windows": n_train,
         "sampled_validation_windows": n_validation,
-        "sampled_unique_training_tokens": n_train * architecture.context_length,
-        "context_length": architecture.context_length,
+        "sampled_unique_training_tokens": n_train * context_length,
+        "context_length": context_length,
         "sampling_seed": seed,
         "sampling_policy": metadata["sampling_policy"],
         "train_path": metadata["train_path"],
@@ -360,6 +635,8 @@ def compile_horizon_transfer_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     ]
     if real_text:
         execution_order.insert(0, "freeze_real_text_corpus_and_sampled_windows")
+    if config.get("architecture", {}).get("block_type") == "jiang_chizat_transformer":
+        execution_order.insert(0, "recall_jiang_completep_group_rules")
     return {
         "schema_version": 1,
         "campaign": "horizon_transfer",
@@ -387,9 +664,34 @@ def run_horizon_transfer_campaign(
 ) -> Dict[str, Any]:
     """Calibrate schedule/horizon laws at fixed model and batch, then test once."""
     plan = compile_horizon_transfer_plan(config)
-    architecture = ArchitectureTemplate.from_dict(dict(config["architecture"]))
-    if architecture.block_type != "normalized_transformer":
-        raise ValueError("the first horizon-transfer slice requires normalized_transformer")
+    architecture_payload = dict(config["architecture"])
+    block_type = architecture_payload.get("block_type")
+    normalized_architecture: Optional[ArchitectureTemplate] = None
+    normalized_scale: Optional[ScaleLevel] = None
+    jiang_architecture: Optional[JiangHorizonArchitecture] = None
+    if block_type == "normalized_transformer":
+        normalized_architecture = ArchitectureTemplate.from_dict(architecture_payload)
+        normalized_scale = ScaleLevel.from_dict(dict(config["scale"]), 0)
+        vocab_size = normalized_architecture.vocab_size
+        context_length = normalized_architecture.context_length
+        parameterization = "nugpt_normalized_transformer"
+    elif block_type == "jiang_chizat_transformer":
+        jiang_architecture = _jiang_architecture(architecture_payload)
+        vocab_size = jiang_architecture.vocab_size
+        context_length = jiang_architecture.context_length
+        parameterization = "jiang_attention_chizat_ffn"
+        _progress(
+            progress,
+            "theory-recall-before-trials",
+            0,
+            int(plan["planned_grid_trials"]),
+            "Freezing all seven Jiang CompleteP LR/epsilon group rules before training",
+        )
+    else:
+        raise ValueError(
+            "horizon transfer requires normalized_transformer or "
+            "jiang_chizat_transformer"
+        )
     if config["dataset"].get("task_type") == "tokenized_text":
         _progress(
             progress,
@@ -399,23 +701,46 @@ def run_horizon_transfer_campaign(
             "Loading and freezing one fingerprinted real-text window sample",
         )
     horizon_data = _horizon_dataset(
-        dict(config["dataset"]), architecture=architecture, device=device
+        dict(config["dataset"]),
+        vocab_size=vocab_size,
+        context_length=context_length,
+        device=device,
     )
     dataset = horizon_data.trial_spec
-    scale = ScaleLevel.from_dict(dict(config["scale"]), 0)
     optimizer_payload = dict(config["optimizer"])
     if optimizer_payload.get("name") != "adam":
         raise ValueError(
-            "the first normalized-Transformer horizon campaign requires Adam; "
+            "this horizon parameterization requires Adam; "
             "AdamW and SGD use separate optimizer contracts"
         )
+    if jiang_architecture is not None and horizon_data.frozen is None:
+        raise ValueError("Jiang+Chizat horizon transfer currently requires frozen real text")
+    learning_rate_multipliers = dict(
+        optimizer_payload.get(
+            "learning_rate_multipliers", JIANG_DENSE_REPORTED_LR_MULTIPLIERS
+        )
+    )
+    if jiang_architecture is not None:
+        if set(learning_rate_multipliers) != set(JIANG_DENSE_REPORTED_LR_MULTIPLIERS):
+            raise ValueError(
+                "Jiang+Chizat horizon transfer requires all seven CompleteP LR groups"
+            )
+        if (
+            not math.isclose(float(optimizer_payload.get("beta1", 0.9)), 0.9)
+            or not math.isclose(float(optimizer_payload.get("beta2", 0.95)), 0.95)
+            or not math.isclose(float(optimizer_payload.get("weight_decay", 0.0)), 0.0)
+        ):
+            raise ValueError(
+                "Jiang+Chizat horizon transfer requires Adam beta=(0.9,0.95) "
+                "and zero weight decay"
+            )
     learning_rates = tuple(float(value) for value in optimizer_payload["learning_rates"])
     horizons = tuple(int(value) for value in config["presented_tokens"])
     schedules = tuple(LearningRateSchedule.from_payload(value) for value in config["schedules"])
     seeds = tuple(int(value) for value in config.get("seeds", [11, 29, 47]))
     rules = tuple(str(value) for value in config.get("horizon_rules", HORIZON_RULES))
     batch_examples = _positive_int(config["batch_examples"], "batch_examples")
-    batch_tokens = batch_examples * architecture.context_length
+    batch_tokens = batch_examples * context_length
     if any(horizon % batch_tokens for horizon in horizons):
         raise ValueError("every presented-token horizon must be divisible by batch tokens")
     validation_interval = _positive_int(config.get("validation_interval", 8), "validation_interval")
@@ -443,10 +768,25 @@ def run_horizon_transfer_campaign(
         "flat_control_relative_tolerance",
     )
 
-    probe = NormalizedTransformer(architecture, scale)
+    if normalized_architecture is not None and normalized_scale is not None:
+        probe = NormalizedTransformer(normalized_architecture, normalized_scale)
+        fixed_model = {"scale": asdict(normalized_scale)}
+    else:
+        assert jiang_architecture is not None
+        probe = JiangChizatTransformer(
+            jiang_architecture.shape,
+            vocab_size=jiang_architecture.vocab_size,
+            context_length=jiang_architecture.context_length,
+            reference=jiang_architecture.reference,
+        )
+        fixed_model = {
+            "shape": asdict(jiang_architecture.shape),
+            "reference": asdict(jiang_architecture.reference),
+            "learning_rate_multipliers": learning_rate_multipliers,
+        }
     parameter_count = sum(parameter.numel() for parameter in probe.parameters())
     del probe
-    unique_tokens = dataset.n_train * architecture.context_length
+    unique_tokens = dataset.n_train * context_length
     geometry = [
         BudgetGeometry(
             parameters=parameter_count,
@@ -471,26 +811,47 @@ def run_horizon_transfer_campaign(
         role: str,
     ) -> BatchRunRecord:
         nonlocal completed
-        record, _ = run_transformer_batch_trial(
-            architecture=architecture,
-            dataset=dataset,
-            scale=scale,
-            optimizer=_optimizer(optimizer_payload, learning_rate),
-            total_tokens=horizon,
-            batch_examples=batch_examples,
-            seed=seed,
-            validation_interval=validation_interval,
-            learning_rate_schedule=asdict(schedule),
-            gradient_clip_norm=None,
-            device=device,
-            prepared_dataset=(horizon_data.frozen.tensors if horizon_data.frozen else None),
-            prepared_dataset_metadata=(
-                horizon_data.frozen.metadata if horizon_data.frozen else None
-            ),
-            dataset_identity=horizon_data.identity,
-            cache_directory=cache_directory,
-            cache_key_suffix=f"-{role}",
-        )
+        optimizer = _optimizer(optimizer_payload, learning_rate)
+        if normalized_architecture is not None and normalized_scale is not None:
+            record, _ = run_transformer_batch_trial(
+                architecture=normalized_architecture,
+                dataset=dataset,
+                scale=normalized_scale,
+                optimizer=optimizer,
+                total_tokens=horizon,
+                batch_examples=batch_examples,
+                seed=seed,
+                validation_interval=validation_interval,
+                learning_rate_schedule=asdict(schedule),
+                gradient_clip_norm=None,
+                device=device,
+                prepared_dataset=(
+                    horizon_data.frozen.tensors if horizon_data.frozen else None
+                ),
+                prepared_dataset_metadata=(
+                    horizon_data.frozen.metadata if horizon_data.frozen else None
+                ),
+                dataset_identity=horizon_data.identity,
+                cache_directory=cache_directory,
+                cache_key_suffix=f"-{role}",
+            )
+        else:
+            assert jiang_architecture is not None and horizon_data.frozen is not None
+            record = _run_jiang_horizon_trial(
+                architecture=jiang_architecture,
+                data=horizon_data.frozen,
+                dataset_identity=horizon_data.identity,
+                optimizer=optimizer,
+                learning_rate_multipliers=learning_rate_multipliers,
+                total_tokens=horizon,
+                batch_examples=batch_examples,
+                seed=seed,
+                validation_interval=validation_interval,
+                schedule=schedule,
+                device=device,
+                cache_directory=cache_directory,
+                cache_key_suffix=f"-{role}",
+            )
         records.append(record)
         completed += 1
         return record
@@ -690,6 +1051,12 @@ def run_horizon_transfer_campaign(
         "status": "completed",
         "campaign": "horizon_transfer",
         "device": device,
+        "parameterization": parameterization,
+        "theory_recalled_before_trials": (
+            JIANG_COMPLETEP_ADAM_THEORY.to_dict()
+            if jiang_architecture is not None
+            else None
+        ),
         "config": dict(config),
         "dataset": horizon_data.result,
         "plan": plan,
@@ -705,7 +1072,7 @@ def run_horizon_transfer_campaign(
             "parameters": parameter_count,
             "unique_tokens": unique_tokens,
             "batch_tokens": batch_tokens,
-            "scale": asdict(scale),
+            **fixed_model,
         },
         "geometry": [row.to_dict() for row in geometry],
         "fit_horizon_span_ratio": fit_span,

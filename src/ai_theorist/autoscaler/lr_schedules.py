@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping, Tuple
 SCHEDULE_FAMILIES: Tuple[str, ...] = (
     "constant",
     "cosine_to_fraction",
+    "linear_warmup_constant",
     "linear_warmup_decay",
     "warmup_stable_decay",
 )
@@ -51,6 +52,12 @@ class LearningRateSchedule:
             raise ValueError("cosine_to_fraction does not accept warmup/stable fractions")
         if self.family == "linear_warmup_decay" and self.stable_fraction:
             raise ValueError("linear_warmup_decay does not accept stable_fraction")
+        if self.family == "linear_warmup_constant" and (
+            self.stable_fraction or self.terminal_fraction
+        ):
+            raise ValueError(
+                "linear_warmup_constant does not accept stable/terminal fractions"
+            )
 
     @classmethod
     def from_payload(cls, payload: Any) -> "LearningRateSchedule":
@@ -59,6 +66,8 @@ class LearningRateSchedule:
                 return cls("cosine_to_fraction", terminal_fraction=0.1)
             if payload == "linear_warmup_decay_to_zero":
                 return cls("linear_warmup_decay", warmup_fraction=0.1)
+            if payload == "jiang_half_warmup_constant":
+                return cls("linear_warmup_constant", warmup_fraction=0.5)
             if payload == "wsd":
                 return cls(
                     "warmup_stable_decay",
@@ -81,6 +90,8 @@ class LearningRateSchedule:
             return f"cosine_to_{self.terminal_fraction:g}"
         if self.family == "linear_warmup_decay":
             return f"linear_warmup_{self.warmup_fraction:g}_decay_to_{self.terminal_fraction:g}"
+        if self.family == "linear_warmup_constant":
+            return f"linear_warmup_{self.warmup_fraction:g}_constant"
         if self.family == "warmup_stable_decay":
             return (
                 f"wsd_warmup_{self.warmup_fraction:g}_stable_{self.stable_fraction:g}"
@@ -107,6 +118,9 @@ class LearningRateSchedule:
             # The first update is deliberately nonzero even for very short runs.
             warmup_steps = max(1, int(math.ceil(self.warmup_fraction * total_steps)))
             return min(1.0, step / warmup_steps)
+
+        if self.family == "linear_warmup_constant":
+            return 1.0
 
         decay_start = (
             self.warmup_fraction + self.stable_fraction

@@ -63,6 +63,11 @@ def test_normalized_schedule_shapes_have_exact_endpoints() -> None:
     assert wsd.multiplier(10, 100) == pytest.approx(1.0)
     assert wsd.multiplier(100, 100) == pytest.approx(0.0)
 
+    jiang = LearningRateSchedule.from_payload("jiang_half_warmup_constant")
+    assert jiang.multiplier(1, 20) == pytest.approx(0.1)
+    assert jiang.multiplier(10, 20) == pytest.approx(1.0)
+    assert jiang.multiplier(20, 20) == pytest.approx(1.0)
+
 
 def test_unindexed_cuda_request_accepts_the_default_indexed_device() -> None:
     assert _device_satisfies_request(torch.device("cuda:0"), torch.device("cuda"))
@@ -178,3 +183,75 @@ def test_real_text_horizon_requires_byte_tokenizer_vocabulary(tmp_path) -> None:
     }
     with pytest.raises(ValueError, match="vocab_size 260"):
         run_horizon_transfer_campaign(config)
+
+
+def test_jiang_chizat_real_text_horizon_uses_all_completep_groups(tmp_path) -> None:
+    train_path = tmp_path / "train.txt"
+    validation_path = tmp_path / "validation.txt"
+    train_path.write_text("attention and mean field features\n" * 16, encoding="utf-8")
+    validation_path.write_text("held out causal tokens\n" * 8, encoding="utf-8")
+    config = _config()
+    config["architecture"] = {
+        "block_type": "jiang_chizat_transformer",
+        "vocab_size": 260,
+        "context_length": 4,
+        "head_dimension": 2,
+        "reference_depth": 1,
+        "reference_hidden_width": 4,
+        "reference_residual_width": 4,
+        "depth": 1,
+        "hidden_width": 4,
+        "residual_width": 4,
+    }
+    config.pop("scale")
+    config["dataset"] = {
+        "task_type": "tokenized_text",
+        "train_path": str(train_path),
+        "validation_path": str(validation_path),
+        "tokenizer": "byte_v1",
+        "n_train": 8,
+        "n_validation": 8,
+        "seed": 7,
+        "maximum_bytes": 1_000_000,
+    }
+    config["optimizer"] = {
+        **config["optimizer"],
+        "learning_rate_multipliers": {
+            "jiang_embeddings": 1.0,
+            "jiang_norms": 1.0,
+            "jiang_attention_qkv": 0.0625,
+            "jiang_attention_output": 0.5,
+            "jiang_ffn_up": 1.0,
+            "jiang_ffn_down": 0.0625,
+            "jiang_other_biases": 1.0,
+        },
+    }
+    config["presented_tokens"] = [16, 32, 64, 128]
+    config["schedules"] = ["jiang_half_warmup_constant"]
+    config["validation_interval"] = 32
+    config["cache_directory"] = str(tmp_path / "trials")
+
+    result = run_horizon_transfer_campaign(config)
+    assert result["parameterization"] == "jiang_attention_chizat_ffn"
+    assert result["theory_recalled_before_trials"]["contract_id"].startswith(
+        "jiang-bordelon-pehlevan-hanin"
+    )
+    group_names = {
+        group["name"]
+        for group in result["records"][0]["metadata"][
+            "peak_parameter_group_contract"
+        ]
+    }
+    assert group_names == {
+        "jiang_embeddings",
+        "jiang_norms",
+        "jiang_attention_qkv",
+        "jiang_attention_output",
+        "jiang_ffn_up",
+        "jiang_ffn_down",
+        "jiang_other_biases",
+    }
+    assert all(
+        record["model_family"] == "jiang_attention_chizat_ffn_horizon"
+        for record in result["records"]
+    )
