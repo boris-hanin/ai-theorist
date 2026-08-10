@@ -3,6 +3,7 @@ import torch
 from types import SimpleNamespace
 
 from ai_theorist.autoscaler.jiang_moe import JiangMoEReference
+from ai_theorist.autoscaler.transfer_data import load_frozen_text_windows
 from jiang_moe_transfer import (
     best_group_multiplier,
     fixed_eta_analysis,
@@ -67,6 +68,45 @@ def test_tiny_full_moe_trial_records_table2_groups_and_manual_bias():
     }
     assert audit["optimizer"]["complete"] is True
     assert audit["manual_expert_bias"]["learning_rate"] == pytest.approx(0.01)
+
+
+def test_moe_transfer_trial_consumes_frozen_real_text(tmp_path):
+    train = tmp_path / "train.txt"
+    validation = tmp_path / "validation.txt"
+    train.write_text("Educational web text for sparse experts. " * 30, encoding="utf-8")
+    validation.write_text("Disjoint validation documents for MoE. " * 20, encoding="utf-8")
+    data = load_frozen_text_windows(
+        train_path=train,
+        validation_path=validation,
+        tokenizer="byte_v1",
+        vocab_size=260,
+        context_length=4,
+        n_train=8,
+        n_validation=8,
+        seed=1729,
+        device=torch.device("cpu"),
+    )
+    trial, _ = run_trial(
+        tiny_shapes()[0],
+        reference=JiangMoEReference(1, 8, 8, 2, 1),
+        head_dimension=4,
+        vocab_size=260,
+        context_length=4,
+        n_train=8,
+        n_validation=8,
+        dataset_seed=1729,
+        eta=1e-3,
+        epsilon0=1e-12,
+        expert_bias_learning_rate=0.01,
+        steps=1,
+        batch_size=4,
+        seed=11,
+        rule="table2",
+        device=torch.device("cpu"),
+        data=data,
+    )
+    assert trial.diverged is False
+    assert data.metadata["kind"] == "frozen_real_text_windows"
 
 
 def test_fixed_eta_gate_rejects_negligible_progress():

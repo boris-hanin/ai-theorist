@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from ai_theorist.autoscaler.jiang_chizat import JiangChizatReference
+from ai_theorist.autoscaler.transfer_data import load_frozen_text_windows
 from jiang_chizat_transfer import (
     Shape,
     group_feature_velocity_audit,
@@ -91,6 +92,45 @@ def test_tiny_trial_records_attention_movement_and_group_coordinates():
     assert result.raw_learning_rates["jiang_attention_output"] == pytest.approx(1e-3)
     assert result.attention_movement["per_entry_attention_logit_delta_rms"] > 0.0
     assert result.attention_movement["head_averaged_attention_delta_rms"] > 0.0
+
+
+def test_dense_transfer_trial_consumes_one_frozen_real_text_window_set(tmp_path):
+    train = tmp_path / "train.txt"
+    validation = tmp_path / "validation.txt"
+    train.write_text("FineWeb style training text with many tokens. " * 30, encoding="utf-8")
+    validation.write_text("Separate held out language modeling text. " * 20, encoding="utf-8")
+    data = load_frozen_text_windows(
+        train_path=train,
+        validation_path=validation,
+        tokenizer="byte_v1",
+        vocab_size=260,
+        context_length=4,
+        n_train=8,
+        n_validation=8,
+        seed=17,
+        device=torch.device("cpu"),
+    )
+    result = run_trial(
+        tiny_shapes()[0],
+        reference=JiangChizatReference(1, 8, 8),
+        head_dimension=4,
+        vocab_size=260,
+        context_length=4,
+        n_train=8,
+        n_validation=8,
+        dataset_seed=17,
+        eta=1e-3,
+        epsilon0=1e-12,
+        steps=1,
+        batch_size=4,
+        seed=11,
+        rule="primary",
+        device=torch.device("cpu"),
+        data=data,
+    )
+    assert result.diverged is False
+    assert data.metadata["kind"] == "frozen_real_text_windows"
+    assert len(str(data.metadata["corpus_fingerprint"])) == 64
 
 
 def test_group_only_feature_velocity_audit_routes_every_semantic_group():

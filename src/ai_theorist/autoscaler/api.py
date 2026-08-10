@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,11 @@ from .batch_scaling import (
     transfer_rule_registry,
 )
 from .campaign_jobs import compile_campaign_plan, run_campaign_job
+from .public_corpora import (
+    PublicCorpusSpec,
+    materialize_public_corpus,
+    public_corpus_catalog,
+)
 from .schema import SpecError, StudySpec, compile_plan, default_study_spec
 from .study import atomic_write_json, run_study
 
@@ -214,6 +220,8 @@ class CampaignStore:
         result = job.get("result") if isinstance(job.get("result"), dict) else {}
         analyses = result.get("scale_optimizer_analyses")
         transfers = result.get("transfer_results")
+        certified_horizon_rules = result.get("certified_schedule_rules")
+        certified_joint_rules = result.get("certified_joint_rules")
         dataset = result.get("dataset") if isinstance(result.get("dataset"), dict) else {}
         return {
             "id": job.get("id"),
@@ -237,6 +245,10 @@ class CampaignStore:
                 "analysis_count": len(analyses) if isinstance(analyses, list) else 0,
                 "recommendable_rules": sum(bool(item.get("recommendable")) for item in transfers)
                 if isinstance(transfers, list)
+                else len(certified_horizon_rules)
+                if isinstance(certified_horizon_rules, list)
+                else len(certified_joint_rules)
+                if isinstance(certified_joint_rules, list)
                 else 0,
                 "corpus_fingerprint": dataset.get("fingerprint"),
             }
@@ -350,9 +362,116 @@ class CampaignStore:
             return [self._summary(job) for job in jobs]
 
 
+class CorpusStore:
+    """Persistent public-corpus materialization jobs with content verification."""
+
+    def __init__(self, run_root: Path) -> None:
+        self.run_root = run_root / "public-corpora"
+        self.jobs: Dict[str, Dict[str, Any]] = {}
+        self.lock = threading.Lock()
+        if self.run_root.is_dir():
+            for job_path in self.run_root.glob("*/job.json"):
+                try:
+                    with job_path.open("r", encoding="utf-8") as handle:
+                        job = json.load(handle)
+                    if job.get("status") in {"queued", "running"}:
+                        job["status"] = "interrupted"
+                        job["error"] = "The service stopped; prepare the corpus again to resume."
+                        job["updated_at"] = StudyStore._now()
+                        atomic_write_json(job_path, job)
+                    self.jobs[str(job["id"])] = job
+                except (OSError, ValueError, json.JSONDecodeError, KeyError):
+                    continue
+
+    def _persist_locked(self, corpus_id: str) -> None:
+        atomic_write_json(self.run_root / corpus_id / "job.json", self.jobs[corpus_id])
+
+    def create(self, spec: PublicCorpusSpec) -> Dict[str, Any]:
+        corpus_id = spec.fingerprint
+        with self.lock:
+            existing = self.jobs.get(corpus_id)
+            if existing is not None and existing["status"] in {
+                "queued",
+                "running",
+                "completed",
+            }:
+                return json.loads(json.dumps(existing))
+            now = StudyStore._now()
+            job = {
+                "id": corpus_id,
+                "kind": "public_corpus",
+                "status": "queued",
+                "created_at": now,
+                "updated_at": now,
+                "spec": asdict(spec),
+                "progress": {
+                    "phase": "queued",
+                    "completed": 0,
+                    "total": spec.train_bytes + spec.validation_bytes,
+                    "message": "Waiting",
+                },
+                "result": None,
+                "error": None,
+            }
+            self.jobs[corpus_id] = job
+            self._persist_locked(corpus_id)
+        thread = threading.Thread(
+            target=self._run,
+            args=(corpus_id, spec),
+            daemon=True,
+        )
+        thread.start()
+        return self.get(corpus_id)  # type: ignore[return-value]
+
+    def _run(self, corpus_id: str, spec: PublicCorpusSpec) -> None:
+        with self.lock:
+            self.jobs[corpus_id]["status"] = "running"
+            self.jobs[corpus_id]["error"] = None
+            self.jobs[corpus_id]["updated_at"] = StudyStore._now()
+            self._persist_locked(corpus_id)
+
+        def update(event: Dict[str, Any]) -> None:
+            with self.lock:
+                self.jobs[corpus_id]["progress"] = event
+                self.jobs[corpus_id]["updated_at"] = StudyStore._now()
+                self._persist_locked(corpus_id)
+
+        try:
+            result = materialize_public_corpus(spec, self.run_root, update)
+        except Exception as exc:
+            with self.lock:
+                self.jobs[corpus_id]["status"] = "failed"
+                self.jobs[corpus_id]["error"] = f"{type(exc).__name__}: {exc}"
+                self.jobs[corpus_id]["updated_at"] = StudyStore._now()
+                self._persist_locked(corpus_id)
+            return
+        with self.lock:
+            self.jobs[corpus_id]["status"] = "completed"
+            self.jobs[corpus_id]["result"] = result
+            self.jobs[corpus_id]["updated_at"] = StudyStore._now()
+            self._persist_locked(corpus_id)
+
+    def get(self, corpus_id: str) -> Optional[Dict[str, Any]]:
+        with self.lock:
+            job = self.jobs.get(corpus_id)
+            return json.loads(json.dumps(job)) if job is not None else None
+
+    def list(self) -> list:
+        with self.lock:
+            return [
+                json.loads(json.dumps(job))
+                for job in sorted(
+                    self.jobs.values(),
+                    key=lambda item: str(item.get("created_at", "")),
+                    reverse=True,
+                )
+            ]
+
+
 class AutoscalerServer(ThreadingHTTPServer):
     store: StudyStore
     campaign_store: CampaignStore
+    corpus_store: CorpusStore
     allowed_origins: set
 
 
@@ -422,6 +541,17 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/batch/rules":
             self._send(200, {"rules": transfer_rule_registry()})
             return
+        if path == "/api/corpora/catalog":
+            self._send(200, {"sources": public_corpus_catalog()})
+            return
+        if path == "/api/corpora":
+            self._send(200, {"corpora": self.server.corpus_store.list()})
+            return
+        if path.startswith("/api/corpora/"):
+            corpus_id = path.rsplit("/", 1)[-1]
+            job = self.server.corpus_store.get(corpus_id)
+            self._send(200 if job else 404, job or {"error": "Corpus not found"})
+            return
         if path == "/api/batch/jobs":
             self._send(200, {"jobs": self.server.campaign_store.list()})
             return
@@ -462,6 +592,17 @@ class RequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send(200, result.to_dict())
                 return
+            if path == "/api/corpora":
+                spec_payload = payload.get("spec", payload)
+                if not isinstance(spec_payload, dict):
+                    raise ValueError("spec must be an object")
+                self._send(
+                    202,
+                    self.server.corpus_store.create(
+                        PublicCorpusSpec.from_dict(spec_payload)
+                    ),
+                )
+                return
             if path == "/api/batch/jobs":
                 campaign = payload.get("campaign")
                 config = payload.get("config")
@@ -499,6 +640,7 @@ def serve(host: str = "127.0.0.1", port: int = 8787, run_root: Path = Path("runs
     server = AutoscalerServer((host, port), RequestHandler)
     server.store = StudyStore(run_root)
     server.campaign_store = CampaignStore(run_root)
+    server.corpus_store = CorpusStore(run_root)
     configured = os.environ.get("AUTOSCALER_ALLOWED_ORIGINS", "")
     server.allowed_origins = {item.strip() for item in configured.split(",") if item.strip()}
     print(f"AI Theorist Autoscaler API listening on http://{host}:{port}")

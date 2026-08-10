@@ -35,6 +35,10 @@ from ai_theorist.autoscaler.jiang_moe import (  # noqa: E402
     JiangMoETransformer,
 )
 from ai_theorist.autoscaler.lr_contract import raw_group_epsilons, raw_group_rates  # noqa: E402
+from ai_theorist.autoscaler.transfer_data import (  # noqa: E402
+    FrozenLanguageModelData,
+    load_frozen_text_windows,
+)
 
 
 PRIMARY_RULE = "table2"
@@ -217,6 +221,7 @@ def run_trial(
     device: torch.device,
     learning_rate_multipliers: Mapping[str, float] | None = None,
     warmup_steps: int = 0,
+    data: FrozenLanguageModelData | None = None,
 ) -> Tuple[Trial, Dict[str, object]]:
     torch.manual_seed(seed)
     if device.type == "cuda":
@@ -252,14 +257,19 @@ def run_trial(
         betas=(0.9, 0.95),
         weight_decay=0.0,
     )
-    x_train, y_train, x_validation, y_validation = synthetic_markov_data(
-        vocab_size=vocab_size,
-        context_length=context_length,
-        n_train=n_train,
-        n_validation=n_validation,
-        seed=dataset_seed,
-        device=device,
-    )
+    if data is None:
+        x_train, y_train, x_validation, y_validation = synthetic_markov_data(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            n_train=n_train,
+            n_validation=n_validation,
+            seed=dataset_seed,
+            device=device,
+        )
+    else:
+        x_train, y_train, x_validation, y_validation = data.tensors
+        if len(x_train) != n_train or len(x_validation) != n_validation:
+            raise ValueError("frozen data window counts do not match n_train/n_validation")
     initial = validation_loss(model, x_validation, y_validation, batch_size)
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     diverged = False
@@ -608,6 +618,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-train", type=int, default=2048)
     parser.add_argument("--n-validation", type=int, default=512)
     parser.add_argument("--dataset-seed", type=int, default=1729)
+    parser.add_argument("--train-path", type=Path)
+    parser.add_argument("--validation-path", type=Path)
+    parser.add_argument(
+        "--tokenizer", choices=("byte_v1", "uint16_bin_v1"), default="byte_v1"
+    )
+    parser.add_argument("--maximum-dataset-bytes", type=int, default=536_870_912)
     parser.add_argument("--etas", type=float, nargs="+", required=True)
     parser.add_argument("--epsilon0", type=float, default=1e-12)
     parser.add_argument("--expert-bias-learning-rate", type=float, default=0.01)
@@ -653,9 +669,25 @@ def main() -> None:
         raise ValueError("at least five positive eta probes are required")
     if len(seeds) < 3 or len(set(seeds)) != len(seeds):
         raise ValueError("at least three unique paired seeds are required")
+    if (args.train_path is None) != (args.validation_path is None):
+        raise ValueError("--train-path and --validation-path must be supplied together")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
+    frozen_data = None
+    if args.train_path is not None and args.validation_path is not None:
+        frozen_data = load_frozen_text_windows(
+            train_path=args.train_path,
+            validation_path=args.validation_path,
+            tokenizer=args.tokenizer,
+            vocab_size=args.vocab_size,
+            context_length=args.context_length,
+            n_train=args.n_train,
+            n_validation=args.n_validation,
+            seed=args.dataset_seed,
+            device=device,
+            maximum_bytes=args.maximum_dataset_bytes,
+        )
     print(
         json.dumps(
             {
@@ -673,6 +705,11 @@ def main() -> None:
                     "adam_betas": [0.9, 0.95],
                     "base_epsilon": args.epsilon0,
                 },
+                "dataset": (
+                    frozen_data.metadata
+                    if frozen_data is not None
+                    else {"kind": "synthetic_markov", "seed": args.dataset_seed}
+                ),
             },
             sort_keys=True,
         ),
@@ -716,6 +753,7 @@ def main() -> None:
                 device=device,
                 learning_rate_multipliers=source_multipliers,
                 warmup_steps=warmup_steps,
+                data=frozen_data,
             )
             global_screen.append(trial)
             calibration_trials.append(trial)
@@ -756,6 +794,7 @@ def main() -> None:
                     device=device,
                     learning_rate_multipliers=candidate_multipliers,
                     warmup_steps=warmup_steps,
+                    data=frozen_data,
                 )
                 rows.append(trial)
                 calibration_trials.append(trial)
@@ -800,6 +839,7 @@ def main() -> None:
                     device=device,
                     learning_rate_multipliers=tuned_multipliers,
                     warmup_steps=warmup_steps,
+                    data=frozen_data,
                 )
                 trials.append(trial)
                 audits.setdefault(f"{PRIMARY_RULE}:{shape.label}:eta={eta}", audit)
@@ -836,6 +876,7 @@ def main() -> None:
                     device=device,
                     learning_rate_multipliers=tuned_multipliers,
                     warmup_steps=warmup_steps,
+                    data=frozen_data,
                 )
                 trials.append(trial)
                 audits.setdefault(f"{rule}:{shape.label}:eta={selected_eta}", audit)
@@ -895,6 +936,17 @@ def main() -> None:
             "adam_betas": [0.9, 0.95],
             "weight_decay": 0.0,
         },
+        "dataset": (
+            frozen_data.metadata
+            if frozen_data is not None
+            else {
+                "kind": "synthetic_markov",
+                "sampling_seed": args.dataset_seed,
+                "n_train": args.n_train,
+                "n_validation": args.n_validation,
+                "context_length": args.context_length,
+            }
+        ),
         "reference": asdict(reference),
         "shapes": [{**asdict(shape), "kappa": shape.kappa, "rho": shape.rho} for shape in shapes],
         "etas": list(etas),

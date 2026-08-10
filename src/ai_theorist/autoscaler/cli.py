@@ -20,7 +20,10 @@ from .batch_scaling import (
 )
 from .critical_batch import CriticalBatchEstimate
 from .campaign_jobs import run_campaign_job
+from .horizon_campaigns import run_horizon_transfer_campaign
+from .joint_transfer_campaigns import run_joint_transfer_campaign
 from .pretraining import compile_standard_pretraining_plan
+from .public_corpora import PublicCorpusSpec, materialize_public_corpus
 from .schema import StudySpec, compile_plan, default_study_spec
 from .seesaw import SchedulePoint, compile_seesaw_schedule
 from .study import atomic_write_json, run_study
@@ -122,6 +125,22 @@ def main() -> None:
     tpp.add_argument("--device", default="cpu")
     tpp.add_argument("--output", type=Path)
 
+    horizon = subparsers.add_parser(
+        "horizon-transfer",
+        help="calibrate LR schedules across token horizons with a frozen holdout",
+    )
+    horizon.add_argument("config", type=Path)
+    horizon.add_argument("--device", default="cpu")
+    horizon.add_argument("--output", type=Path)
+
+    joint = subparsers.add_parser(
+        "joint-transfer",
+        help="test frozen token-horizon and batch rules at a doubly held-out corner",
+    )
+    joint.add_argument("config", type=Path)
+    joint.add_argument("--device", default="cpu")
+    joint.add_argument("--output", type=Path)
+
     seesaw = subparsers.add_parser(
         "batch-seesaw", help="compile a Seesaw schedule after qualification"
     )
@@ -143,6 +162,16 @@ def main() -> None:
         "--output", type=Path, default=Path("runs/autoscaler/pretraining-census")
     )
     pretrain.add_argument("--progress-jsonl", action="store_true")
+
+    corpus = subparsers.add_parser(
+        "corpus-materialize",
+        help="freeze an allow-listed public text corpus for reproducible experiments",
+    )
+    corpus.add_argument("config", type=Path)
+    corpus.add_argument(
+        "--output-root", type=Path, default=Path("runs/autoscaler/public-corpora")
+    )
+    corpus.add_argument("--progress-jsonl", action="store_true")
 
     args = parser.parse_args()
     if args.command == "sample-spec":
@@ -308,6 +337,20 @@ def main() -> None:
         if not isinstance(payload, dict):
             raise ValueError("batch-tpp config must be an object")
         _write_and_print(run_constant_tpp_campaign(payload, device=args.device), args.output)
+    elif args.command == "horizon-transfer":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("horizon-transfer config must be an object")
+        _write_and_print(
+            run_horizon_transfer_campaign(payload, device=args.device), args.output
+        )
+    elif args.command == "joint-transfer":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("joint-transfer config must be an object")
+        _write_and_print(
+            run_joint_transfer_campaign(payload, device=args.device), args.output
+        )
     elif args.command == "batch-seesaw":
         payload = _read_json(args.config)
         if not isinstance(payload, dict):
@@ -348,6 +391,21 @@ def main() -> None:
             progress=progress,
         )
         _print(result)
+    elif args.command == "corpus-materialize":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("corpus-materialize config must be an object")
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        _print(
+            materialize_public_corpus(
+                PublicCorpusSpec.from_dict(payload),
+                args.output_root,
+                progress,
+            )
+        )
 
 
 if __name__ == "__main__":

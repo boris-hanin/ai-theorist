@@ -125,3 +125,7 @@ The normalized synthetic campaigns intentionally run SGD and Adam. The
 separate real-text GPT baseline uses AdamW by default and can also run Adam or
 SGD. See `PRETRAINING_RUNTIME.md` for its tokenizer, bf16, FlashAttention,
 single-node FSDP, and operational-boundary contract.
+
+For the fixed-model composition of empirically calibrated horizon effects with
+full Adam batch transforms, including a separate composition cross-check and a
+doubly held-out corner, see `JOINT_HORIZON_BATCH_TRANSFER.md`.

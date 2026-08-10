@@ -31,6 +31,7 @@ from .critical_batch import (
     estimate_loss_optimal_batch,
     estimate_steps_to_target_critical_batch,
 )
+from .lr_schedules import LearningRateSchedule
 from .normalized_transformer import NormalizedTransformer, make_synthetic_markov_dataset
 from .schema import ArchitectureTemplate, DatasetSpec, ScaleLevel
 from .study import atomic_write_json
@@ -488,7 +489,10 @@ def _make_torch_optimizer(
             momentum=hyperparameters.momentum,
             weight_decay=hyperparameters.weight_decay,
         )
-    groups = model.optimizer_parameter_groups(hyperparameters.learning_rate)
+    groups = model.optimizer_parameter_groups(
+        hyperparameters.learning_rate,
+        adam_epsilon=hyperparameters.epsilon,
+    )
     optimizer_class = torch.optim.AdamW if hyperparameters.name == "adamw" else torch.optim.Adam
     return optimizer_class(
         groups,
@@ -510,6 +514,8 @@ def run_transformer_batch_trial(
     seed: int,
     target_validation_loss: Optional[float] = None,
     validation_interval: int = 1,
+    learning_rate_schedule: Any = "constant",
+    gradient_clip_norm: Optional[float] = 100.0,
     device: str = "cpu",
     initial_state: Optional[Mapping[str, torch.Tensor]] = None,
     cache_directory: Optional[Path] = None,
@@ -522,6 +528,11 @@ def run_transformer_batch_trial(
     batch_examples = _positive_int(batch_examples, "batch_examples")
     total_tokens = _positive_int(total_tokens, "total_tokens")
     batch_tokens = batch_examples * architecture.context_length
+    schedule = LearningRateSchedule.from_payload(learning_rate_schedule)
+    if gradient_clip_norm is not None and (
+        not math.isfinite(gradient_clip_norm) or gradient_clip_norm <= 0.0
+    ):
+        raise ValueError("gradient_clip_norm must be positive and finite or null")
     if total_tokens % batch_tokens:
         raise ValueError("total_tokens must be divisible by batch_examples * context_length")
     if device.startswith("cuda") and not torch.cuda.is_available():
@@ -536,6 +547,8 @@ def run_transformer_batch_trial(
         "seed": seed,
         "target_validation_loss": target_validation_loss,
         "validation_interval": validation_interval,
+        "learning_rate_schedule": asdict(schedule),
+        "gradient_clip_norm": gradient_clip_norm,
         "cache_key_suffix": cache_key_suffix,
     }
     digest = sha256(
@@ -573,17 +586,33 @@ def run_transformer_batch_trial(
         model.load_state_dict(initial_state)
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     torch_optimizer = _make_torch_optimizer(model, optimizer)
+    peak_group_rates = [float(group["lr"]) for group in torch_optimizer.param_groups]
+    peak_group_contract = [
+        {
+            "name": str(group.get("name", f"group_{index}")),
+            "peak_learning_rate": float(group["lr"]),
+            "epsilon": float(group.get("eps", optimizer.epsilon)),
+            "learning_rate_formula": str(group.get("lr_formula", "unspecified")),
+            "epsilon_formula": str(group.get("eps_formula", "unspecified")),
+            "theory_contract_id": str(group.get("theory_contract_id", "unspecified")),
+        }
+        for index, group in enumerate(torch_optimizer.param_groups)
+    ]
     x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
         architecture, dataset, device=device
     )
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     steps = total_tokens // batch_tokens
     checkpoints = []
+    schedule_trace = []
     crossing_step = None
     started = time.monotonic()
     initial_loss = _validation_loss(model, x_validation, y_validation, architecture.vocab_size)
     checkpoints.append({"step": 0.0, "tokens": 0.0, "validation_loss": initial_loss})
     for step in range(1, steps + 1):
+        schedule_multiplier = schedule.multiplier(step, steps)
+        for group, peak_rate in zip(torch_optimizer.param_groups, peak_group_rates):
+            group["lr"] = peak_rate * schedule_multiplier
         indices_cpu = torch.randint(0, dataset.n_train, (batch_examples,), generator=generator)
         indices = indices_cpu.to(device) if device != "cpu" else indices_cpu
         torch_optimizer.zero_grad(set_to_none=True)
@@ -594,7 +623,8 @@ def run_transformer_batch_trial(
         if not torch.isfinite(loss):
             raise RuntimeError("Transformer batch trial diverged")
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 100.0)
+        if gradient_clip_norm is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_norm)
         torch_optimizer.step()
         model.project_normalized_weights()
         if step % validation_interval == 0 or step == steps:
@@ -606,6 +636,13 @@ def run_transformer_batch_trial(
                     "step": float(step),
                     "tokens": float(step * batch_tokens),
                     "validation_loss": validation_loss,
+                }
+            )
+            schedule_trace.append(
+                {
+                    "step": float(step),
+                    "tokens": float(step * batch_tokens),
+                    "multiplier": schedule_multiplier,
                 }
             )
             if (
@@ -631,7 +668,7 @@ def run_transformer_batch_trial(
         data_parallel_replicas=1,
         optimizer_steps=steps,
         nonpadding_tokens_seen=total_tokens,
-        learning_rate_schedule="constant",
+        learning_rate_schedule=schedule.name,
         final_validation_loss=final_loss,
         estimated_flops=float(6 * parameter_count * total_tokens),
         wall_time_seconds=duration,
@@ -641,7 +678,21 @@ def run_transformer_batch_trial(
             else {}
         ),
         validation_checkpoints=tuple(checkpoints),
-        metadata={"batch_examples": batch_examples, "device": device},
+        metadata={
+            "batch_examples": batch_examples,
+            "device": device,
+            "unique_training_tokens": dataset.n_train * architecture.context_length,
+            "presented_to_unique_token_ratio": (
+                total_tokens / (dataset.n_train * architecture.context_length)
+            ),
+            "schedule": schedule.audit(steps),
+            "schedule_trace": schedule_trace,
+            "peak_parameter_group_learning_rates": peak_group_rates,
+            "peak_parameter_group_contract": peak_group_contract,
+            "gradient_clipping": (
+                "none" if gradient_clip_norm is None else gradient_clip_norm
+            ),
+        },
     )
     state = {name: tensor.detach().cpu().clone() for name, tensor in model.state_dict().items()}
     if record_path is not None:

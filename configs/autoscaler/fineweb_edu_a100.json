@@ -1,0 +1,6 @@
+{
+  "source": "fineweb_edu",
+  "train_bytes": 67108864,
+  "validation_bytes": 8388608,
+  "maximum_documents_per_split": 50000
+}

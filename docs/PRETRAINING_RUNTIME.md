@@ -35,6 +35,13 @@ and the hash is part of every cache key. The bundled files under
 a research corpus. A serious run should point to a versioned pretokenized
 corpus and retain its tokenizer vocabulary/configuration beside the run.
 
+The web campaign workspace can now prepare a frozen FineWeb-Edu sample-10BT or
+OpenWebText snapshot without manually entering server paths.  The materializer
+uses allow-listed dataset identities, disjoint source-row ranges, a recorded
+Hub revision, per-file SHA-256 checks, and a final token-stream fingerprint.
+See `docs/REAL_TEXT_TRANSFER.md` for the acquisition and Jiang-transfer
+contract.
+
 ## Runtime modes
 
 The precision contract is `fp32` or `bf16`. CUDA bf16 is rejected below compute

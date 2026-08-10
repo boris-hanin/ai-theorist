@@ -32,6 +32,7 @@ from ai_theorist.autoscaler.jiang_chizat import (  # noqa: E402
     JIANG_COMPLETEP_ADAM_THEORY,
     JiangChizatReference,
 )
+from ai_theorist.autoscaler.transfer_data import load_frozen_text_windows  # noqa: E402
 from jiang_chizat_transfer import (  # noqa: E402
     JIANG_CHIZAT_LR_GROUPS,
     RULES,
@@ -319,6 +320,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-train", type=int, default=2048)
     parser.add_argument("--n-validation", type=int, default=512)
     parser.add_argument("--dataset-seed", type=int, default=1729)
+    parser.add_argument("--train-path", type=Path)
+    parser.add_argument("--validation-path", type=Path)
+    parser.add_argument(
+        "--tokenizer", choices=("byte_v1", "uint16_bin_v1"), default="byte_v1"
+    )
+    parser.add_argument("--maximum-dataset-bytes", type=int, default=536_870_912)
     parser.add_argument("--epsilon0", type=float, default=1e-12)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -355,6 +362,8 @@ def main() -> None:
         raise ValueError("oracle tolerance must be finite and at least one")
     if min(args.steps, args.batch_size, args.n_train, args.n_validation) <= 0:
         raise ValueError("steps, batch size, and dataset sizes must be positive")
+    if (args.train_path is None) != (args.validation_path is None):
+        raise ValueError("--train-path and --validation-path must be supplied together")
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but unavailable")
@@ -364,6 +373,20 @@ def main() -> None:
         reference_shape.M,
         reference_shape.D,
     )
+    frozen_data = None
+    if args.train_path is not None and args.validation_path is not None:
+        frozen_data = load_frozen_text_windows(
+            train_path=args.train_path,
+            validation_path=args.validation_path,
+            tokenizer=args.tokenizer,
+            vocab_size=args.vocab_size,
+            context_length=args.context_length,
+            n_train=args.n_train,
+            n_validation=args.n_validation,
+            seed=args.dataset_seed,
+            device=device,
+            maximum_bytes=args.maximum_dataset_bytes,
+        )
     warmup_steps = args.steps // 2
     print(
         json.dumps(
@@ -385,6 +408,11 @@ def main() -> None:
                     "ffn_down": "1/4",
                 },
                 "protocol": "source constants, locally verified by relative coordinate probes; 50% linear warmup then constant; no clipping",
+                "dataset": (
+                    frozen_data.metadata
+                    if frozen_data is not None
+                    else {"kind": "synthetic_markov", "seed": args.dataset_seed}
+                ),
             },
             sort_keys=True,
         ),
@@ -417,6 +445,7 @@ def main() -> None:
             device=device,
             learning_rate_multipliers=multipliers,
             warmup_steps=warmup_steps,
+            data=frozen_data,
         )
 
     source_multipliers = dict(JIANG_DENSE_REPORTED_LR_MULTIPLIERS)
@@ -501,6 +530,7 @@ def main() -> None:
             seed=seed,
             device=device,
             learning_rate_multipliers=tuned_multipliers,
+            data=frozen_data,
         )
         for shape in shapes
         for seed in seeds
@@ -549,6 +579,17 @@ def main() -> None:
             "epsilon0": args.epsilon0,
             "dataset_seed": args.dataset_seed,
         },
+        "dataset": (
+            frozen_data.metadata
+            if frozen_data is not None
+            else {
+                "kind": "synthetic_markov",
+                "sampling_seed": args.dataset_seed,
+                "n_train": args.n_train,
+                "n_validation": args.n_validation,
+                "context_length": args.context_length,
+            }
+        ),
         "shapes": [{**asdict(shape), "rho_LM_over_D": shape.rho} for shape in shapes],
         "etas": list(etas),
         "seeds": list(seeds),

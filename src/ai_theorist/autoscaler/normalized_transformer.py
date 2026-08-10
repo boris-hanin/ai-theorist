@@ -297,7 +297,7 @@ class NormalizedTransformer(nn.Module):
                 theory=NUGPT_ADAM_THEORY,
                 scale_factors=factors,
                 eps=adam_epsilon,
-                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+                eps_formula="epsilon_optimizer; model-scale invariant before declared batch/duration transforms",
             ),
             theory_group(
                 name="nugpt_hidden",
@@ -307,7 +307,7 @@ class NormalizedTransformer(nn.Module):
                 theory=NUGPT_ADAM_THEORY,
                 scale_factors=factors,
                 eps=adam_epsilon,
-                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+                eps_formula="epsilon_optimizer; model-scale invariant before declared batch/duration transforms",
             ),
             theory_group(
                 name="nugpt_output",
@@ -317,7 +317,7 @@ class NormalizedTransformer(nn.Module):
                 theory=NUGPT_ADAM_THEORY,
                 scale_factors=factors,
                 eps=adam_epsilon,
-                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+                eps_formula="epsilon_optimizer; model-scale invariant before declared batch/duration transforms",
             ),
             theory_group(
                 name="nugpt_rescalers",
@@ -327,7 +327,7 @@ class NormalizedTransformer(nn.Module):
                 theory=NUGPT_ADAM_THEORY,
                 scale_factors=factors,
                 eps=adam_epsilon,
-                eps_formula="1e-16 (scale-independent Adam epsilon in the cited protocol)",
+                eps_formula="epsilon_optimizer; model-scale invariant before declared batch/duration transforms",
             ),
         ]
 

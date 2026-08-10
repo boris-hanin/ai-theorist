@@ -11,11 +11,13 @@ type DatasetTask = "nonlinear_regression" | "synthetic_markov";
 type ScalePath = "width" | "depth" | "joint" | "moe_lmd";
 type DataScalingMode = "fixed" | "geometric";
 type HorizonPolicy = "fixed_updates" | "constant_epochs";
-type BatchCampaign = "standard_pretraining_census" | "transformer_census" | "constant_tpp";
+type BatchCampaign = "standard_pretraining_census" | "transformer_census" | "constant_tpp" | "horizon_transfer" | "joint_horizon_batch";
+type HorizonSchedule = "cosine_to_10_percent" | "linear_warmup_decay_to_zero" | "wsd";
 type Precision = "fp32" | "bf16";
 type AttentionBackend = "auto" | "math" | "flash";
 type DistributedMode = "none" | "fsdp";
 type PretrainingOptimizer = "sgd" | "adam" | "adamw";
+type CorpusChoice = "fineweb_edu" | "openwebtext" | "local";
 type Scale = { name: string; width: number; repeats: number; expert_width?: number };
 
 type StudySpec = {
@@ -194,11 +196,17 @@ type BatchCampaignResult = {
   scale_optimizer_analyses?: BatchCampaignAnalysis[];
   analyses?: BatchCampaignAnalysis[];
   geometry?: {
-    scale: { name: string; width: number; repeats: number };
+    role?: string;
+    scale?: { name: string; width: number; repeats: number };
     parameters: number;
-    total_tokens: number;
+    total_tokens?: number;
+    unique_tokens?: number;
+    presented_tokens?: number;
+    optimizer_steps?: number;
     batch_tokens: number;
-    realized_tpp: number;
+    realized_tpp?: number;
+    tokens_per_parameter?: number;
+    presented_to_unique_token_ratio?: number;
   }[];
   tpp_spread_ratio?: number;
   fitted_horizon_exponent?: number;
@@ -222,6 +230,76 @@ type BatchCampaignResult = {
     oracle_mean_heldout_loss?: number;
     refusal_reasons: string[];
   }[];
+  heldout_horizon?: number;
+  fit_horizon_span_ratio?: number;
+  schedule_analyses?: {
+    schedule_name: string;
+    fit_qualified: boolean;
+    fit_refusal_reasons: string[];
+    fitted_power_law: { exponent: number; r_squared: number };
+    mechanism_identifiable: boolean;
+    heldout_oracle: { mean_loss: number; learning_rate: number; optimum_is_interior: boolean };
+    frozen_rule_results: {
+      rule: string;
+      exponent: number;
+      predicted_peak_learning_rate: number;
+      mean_heldout_loss: number;
+      relative_oracle_regret: number;
+      transfer_certified: boolean;
+      mechanism_discrimination_certified: boolean;
+    }[];
+  }[];
+  certified_schedule_rules?: unknown[];
+  axis_fit_qualification?: {
+    qualified: boolean;
+    refusal_reasons: string[];
+    horizon_exponent: number;
+    batch_exponent: number;
+    horizon_fit: { r_squared: number };
+    batch_fit: { r_squared: number };
+  };
+  composition_crosscheck?: {
+    presented_tokens: number;
+    batch_examples: number;
+    batch_tokens: number;
+    candidate_results: JointCandidateResult[];
+  };
+  heldout_corner?: {
+    presented_tokens: number;
+    batch_examples: number;
+    batch_tokens: number;
+    composition_identifiable: boolean;
+    candidate_results: JointCandidateResult[];
+  };
+  joint_transfer_settled?: boolean;
+  certified_joint_rules?: JointCandidateResult[];
+  joint_recommendation?: null | JointCandidateResult;
+  recommendation?: null | {
+    schedule: string;
+    rule: string;
+    exponent: number;
+    predicted_peak_learning_rate: number;
+    mean_heldout_loss: number;
+    relative_oracle_regret: number;
+    transfer_certified: boolean;
+  };
+  refusal_reasons?: string[];
+};
+type JointCandidateResult = {
+  rule: string;
+  valid: boolean;
+  evaluated: boolean;
+  joint_rule: boolean;
+  optimizer?: { learning_rate: number; beta1: number; beta2: number; epsilon: number };
+  peak_parameter_group_contract?: { name: string; peak_learning_rate: number; epsilon: number }[];
+  mean_loss?: number;
+  relative_oracle_regret?: number | null;
+  composition_crosscheck_passed?: boolean;
+  transfer_certified?: boolean;
+  mechanism_discrimination_certified?: boolean;
+  theory_assumption_status?: string;
+  theory_transfer_certified?: boolean;
+  refusal_reasons: string[];
 };
 type BatchCampaignJob = {
   id: string;
@@ -237,6 +315,23 @@ type BatchCampaignJob = {
     optimizers?: { name?: PretrainingOptimizer }[];
     target_validation_loss?: number;
     validation_interval?: number;
+  };
+};
+type PublicCorpusJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  progress: Progress;
+  error: string | null;
+  result: null | {
+    source: { dataset: string; config: string; revision: string; license: string; data_card_url: string };
+    tokenizer: "byte_v1";
+    corpus_fingerprint: string;
+    training_tokens: number;
+    validation_tokens: number;
+    splits: {
+      train: { path: string; documents: number; text_bytes: number; first_source_row: number; last_source_row: number };
+      validation: { path: string; documents: number; text_bytes: number; first_source_row: number; last_source_row: number };
+    };
   };
 };
 
@@ -475,6 +570,10 @@ function formatLoss(value: number) {
   return value < 0.01 ? value.toExponential(2) : value.toFixed(4);
 }
 
+function parsePositiveNumberList(value: string) {
+  return value.split(",").map((item) => Number(item.trim())).filter((item) => Number.isFinite(item) && item > 0);
+}
+
 function LossChart({ rows }: { rows: ScaleResult[] }) {
   if (rows.length < 2) return null;
   const width = 720;
@@ -561,6 +660,11 @@ export function AutoscalerStudio() {
   const [batchTransfer, setBatchTransfer] = useState<BatchTransferResult | null>(null);
   const [batchTransferError, setBatchTransferError] = useState<string | null>(null);
   const [batchCampaign, setBatchCampaign] = useState<BatchCampaign>("standard_pretraining_census");
+  const [corpusChoice, setCorpusChoice] = useState<CorpusChoice>("fineweb_edu");
+  const [corpusTrainMiB, setCorpusTrainMiB] = useState(2);
+  const [corpusValidationMiB, setCorpusValidationMiB] = useState(0.5);
+  const [corpusJob, setCorpusJob] = useState<PublicCorpusJob | null>(null);
+  const [corpusError, setCorpusError] = useState<string | null>(null);
   const [trainingPath, setTrainingPath] = useState("data/pretraining/sample_train.txt");
   const [validationPath, setValidationPath] = useState("data/pretraining/sample_validation.txt");
   const [tokenizer, setTokenizer] = useState<"byte_v1" | "uint16_bin_v1">("byte_v1");
@@ -571,6 +675,19 @@ export function AutoscalerStudio() {
   const [pretrainingTargetLoss, setPretrainingTargetLoss] = useState(5.4);
   const [pretrainingValidationInterval, setPretrainingValidationInterval] = useState(8);
   const [gpuCount, setGpuCount] = useState(2);
+  const [horizonValues, setHorizonValues] = useState("256, 512, 1024, 2048");
+  const [horizonRateGrid, setHorizonRateGrid] = useState("0.0003, 0.001, 0.003, 0.01, 0.03, 0.1");
+  const [horizonBatchExamples, setHorizonBatchExamples] = useState(2);
+  const [horizonSchedules, setHorizonSchedules] = useState<HorizonSchedule[]>([
+    "cosine_to_10_percent",
+    "linear_warmup_decay_to_zero",
+    "wsd",
+  ]);
+  const [jointFitHorizons, setJointFitHorizons] = useState("384, 768, 1536");
+  const [jointHeldoutHorizon, setJointHeldoutHorizon] = useState(3072);
+  const [jointFitBatches, setJointFitBatches] = useState("2, 4, 8");
+  const [jointHeldoutBatch, setJointHeldoutBatch] = useState(16);
+  const [jointSchedule, setJointSchedule] = useState<HorizonSchedule>("linear_warmup_decay_to_zero");
   const [batchJob, setBatchJob] = useState<BatchCampaignJob | null>(null);
   const [batchJobError, setBatchJobError] = useState<string | null>(null);
   const [studyHistory, setStudyHistory] = useState<StudyHistoryItem[]>([]);
@@ -696,15 +813,50 @@ export function AutoscalerStudio() {
     && (blockType !== "normalized_transformer" || markovOrder < contextLength);
   const studyLocked = job?.status === "queued" || job?.status === "running";
   const batchJobLocked = batchJob?.status === "queued" || batchJob?.status === "running";
-  const standardRuntimeValid = batchCampaign !== "standard_pretraining_census"
-    || (trainingPath.trim().length > 0
+  const corpusJobLocked = corpusJob?.status === "queued" || corpusJob?.status === "running";
+  const publicCorpusReady = corpusChoice === "local" || corpusJob?.status === "completed";
+  const parsedHorizonValues = parsePositiveNumberList(horizonValues).map((value) => Math.round(value));
+  const parsedHorizonRates = parsePositiveNumberList(horizonRateGrid);
+  const horizonBatchTokens = horizonBatchExamples * (targetDevice === "cuda" ? 128 : 8);
+  const horizonConfigValid = batchCampaign !== "horizon_transfer" || (
+    parsedHorizonValues.length >= 4
+    && parsedHorizonValues.every((value, index) => index === 0 || value > parsedHorizonValues[index - 1])
+    && parsedHorizonValues.every((value) => value % horizonBatchTokens === 0)
+    && parsedHorizonRates.length >= 3
+    && parsedHorizonRates.every((value, index) => index === 0 || value > parsedHorizonRates[index - 1])
+    && horizonSchedules.length > 0
+    && horizonBatchExamples >= 1
+  );
+  const parsedJointFitHorizons = parsePositiveNumberList(jointFitHorizons).map((value) => Math.round(value));
+  const parsedJointFitBatches = parsePositiveNumberList(jointFitBatches).map((value) => Math.round(value));
+  const jointContext = targetDevice === "cuda" ? 128 : 8;
+  const jointCells = [
+    ...parsedJointFitHorizons.map((tokens) => [tokens, parsedJointFitBatches[0]] as const),
+    ...parsedJointFitBatches.slice(1).map((batch) => [parsedJointFitHorizons[0], batch] as const),
+    [parsedJointFitHorizons.at(-1), parsedJointFitBatches.at(-1)] as const,
+    [jointHeldoutHorizon, jointHeldoutBatch] as const,
+  ];
+  const jointConfigValid = batchCampaign !== "joint_horizon_batch" || (
+    parsedJointFitHorizons.length >= 3
+    && parsedJointFitBatches.length >= 3
+    && parsedJointFitHorizons.every((value, index) => index === 0 || value > parsedJointFitHorizons[index - 1])
+    && parsedJointFitBatches.every((value, index) => index === 0 || value > parsedJointFitBatches[index - 1])
+    && jointHeldoutHorizon > (parsedJointFitHorizons.at(-1) ?? Infinity)
+    && jointHeldoutBatch > (parsedJointFitBatches.at(-1) ?? Infinity)
+    && parsedHorizonRates.length >= 3
+    && parsedHorizonRates.every((value, index) => index === 0 || value > parsedHorizonRates[index - 1])
+    && jointCells.every(([tokens, batch]) => tokens !== undefined && batch !== undefined && tokens % (batch * jointContext) === 0)
+  );
+  const standardRuntimeValid = horizonConfigValid && jointConfigValid && (batchCampaign !== "standard_pretraining_census"
+    || (publicCorpusReady
+      && trainingPath.trim().length > 0
       && validationPath.trim().length > 0
       && Number.isFinite(pretrainingTargetLoss)
       && pretrainingTargetLoss > 0
       && Number.isInteger(pretrainingValidationInterval)
       && pretrainingValidationInterval > 0
       && (attentionBackend !== "flash" || (precision === "bf16" && targetDevice === "cuda"))
-      && (distributedMode !== "fsdp" || (targetDevice === "cuda" && gpuCount >= 2)));
+      && (distributedMode !== "fsdp" || (targetDevice === "cuda" && gpuCount >= 2))));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -741,6 +893,26 @@ export function AutoscalerStudio() {
     }, 1200);
     return () => window.clearTimeout(timer);
   }, [batchJob]);
+
+  useEffect(() => {
+    if (!corpusJob || !["queued", "running"].includes(corpusJob.status)) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/corpora/${corpusJob.id}`);
+        const payload = await response.json() as PublicCorpusJob & { error?: string };
+        if (!response.ok) throw new Error(payload.error ?? "The corpus monitor lost contact with compute.");
+        setCorpusJob(payload);
+        if (payload.status === "completed" && payload.result) {
+          setTrainingPath(payload.result.splits.train.path);
+          setValidationPath(payload.result.splits.validation.path);
+          setTokenizer("byte_v1");
+        }
+      } catch (caught) {
+        setCorpusError(caught instanceof Error ? caught.message : "Could not refresh the corpus job.");
+      }
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [corpusJob]);
 
   async function refreshHistory() {
     try {
@@ -830,6 +1002,8 @@ export function AutoscalerStudio() {
       setBatchCampaign(payload.campaign);
       setTargetDevice(payload.device?.startsWith("cuda") ? "cuda" : "cpu");
       if (payload.campaign === "standard_pretraining_census" && payload.config) {
+        setCorpusChoice("local");
+        setCorpusJob(null);
         const savedDataset = payload.config.dataset;
         const savedRuntime = payload.config.runtime;
         if (savedDataset?.train_path) setTrainingPath(savedDataset.train_path);
@@ -995,6 +1169,20 @@ export function AutoscalerStudio() {
     setAttentionBackend("math");
     setPrecision("fp32");
     if (campaign === "standard_pretraining_census") setPretrainingOptimizer("adamw");
+    if (campaign === "horizon_transfer") {
+      setHorizonValues("256, 512, 1024, 2048");
+      setHorizonRateGrid("0.0003, 0.001, 0.003, 0.01, 0.03, 0.1");
+      setHorizonBatchExamples(2);
+      setHorizonSchedules(["cosine_to_10_percent", "linear_warmup_decay_to_zero", "wsd"]);
+    }
+    if (campaign === "joint_horizon_batch") {
+      setJointFitHorizons("384, 768, 1536");
+      setJointHeldoutHorizon(3072);
+      setJointFitBatches("2, 4, 8");
+      setJointHeldoutBatch(16);
+      setJointSchedule("linear_warmup_decay_to_zero");
+      setHorizonRateGrid("0.0003, 0.001, 0.003, 0.01, 0.03, 0.1");
+    }
     setPretrainingTargetLoss(5.4);
     setPretrainingValidationInterval(8);
     setBatchJob(null);
@@ -1091,6 +1279,36 @@ export function AutoscalerStudio() {
     }
   }
 
+  async function preparePublicCorpus() {
+    if (corpusChoice === "local" || corpusJobLocked) return;
+    setCorpusError(null);
+    setBatchJob(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/corpora`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          spec: {
+            source: corpusChoice,
+            train_bytes: Math.max(65_536, Math.round(corpusTrainMiB * 1024 * 1024)),
+            validation_bytes: Math.max(16_384, Math.round(corpusValidationMiB * 1024 * 1024)),
+            maximum_documents_per_split: 50_000,
+          },
+        }),
+      });
+      const payload = await response.json() as PublicCorpusJob & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The public corpus could not be prepared.");
+      setCorpusJob(payload);
+      if (payload.status === "completed" && payload.result) {
+        setTrainingPath(payload.result.splits.train.path);
+        setValidationPath(payload.result.splits.validation.path);
+        setTokenizer("byte_v1");
+      }
+    } catch (caught) {
+      setCorpusError(caught instanceof Error ? caught.message : "The public corpus service is unavailable.");
+    }
+  }
+
   function batchCampaignConfig(): Record<string, unknown> {
     const syntheticArchitecture = {
       block_type: "normalized_transformer",
@@ -1111,6 +1329,65 @@ export function AutoscalerStudio() {
       markov_order: 2,
       markov_states: 4,
     };
+    if (batchCampaign === "horizon_transfer") {
+      const onA100 = targetDevice === "cuda";
+      return {
+        architecture: onA100 ? { ...syntheticArchitecture, vocab_size: 256, context_length: 128, head_dimension: 64, mlp_multiplier: 4, reference_width: 256, reference_depth: 8 } : syntheticArchitecture,
+        dataset: onA100 ? { ...syntheticDataset, n_train: 4096, n_validation: 1024, markov_states: 16 } : syntheticDataset,
+        scale: onA100 ? { name: "fixed-anchor", width: 128, repeats: 8 } : { name: "fixed-anchor", width: 16, repeats: 2 },
+        optimizer: {
+          name: "adam",
+          beta1: 0.9,
+          beta2: 0.95,
+          epsilon: 1e-16,
+          weight_decay: 0,
+          learning_rates: parsedHorizonRates,
+        },
+        presented_tokens: parsedHorizonValues,
+        batch_examples: horizonBatchExamples,
+        schedules: horizonSchedules,
+        horizon_rules: ["none", "nugpt_one_third", "bjorck_032", "fitted_power"],
+        validation_interval: targetDevice === "cuda" ? 8 : 4,
+        seeds: targetDevice === "cuda" ? [11, 29, 47] : [11, 29],
+        minimum_seeds: targetDevice === "cuda" ? 3 : 2,
+        minimum_fit_horizon_span: onA100 ? 8 : 4,
+        bootstrap_samples: targetDevice === "cuda" ? 400 : 100,
+        maximum_relative_oracle_regret: 0.02,
+        minimum_recovered_improvement: 0.9,
+      };
+    }
+    if (batchCampaign === "joint_horizon_batch") {
+      const onA100 = targetDevice === "cuda";
+      return {
+        architecture: onA100 ? { ...syntheticArchitecture, vocab_size: 256, context_length: 128, head_dimension: 64, mlp_multiplier: 4, reference_width: 256, reference_depth: 8 } : syntheticArchitecture,
+        dataset: onA100 ? { ...syntheticDataset, n_train: 4096, n_validation: 1024, markov_states: 16 } : syntheticDataset,
+        scale: onA100 ? { name: "fixed-anchor", width: 128, repeats: 8 } : { name: "fixed-anchor", width: 16, repeats: 2 },
+        optimizer: {
+          name: "adam",
+          beta1: 0.9,
+          beta2: 0.95,
+          epsilon: 1e-16,
+          weight_decay: 0,
+          learning_rates: parsedHorizonRates,
+        },
+        fit_presented_tokens: parsedJointFitHorizons,
+        heldout_presented_tokens: jointHeldoutHorizon,
+        fit_batch_examples: parsedJointFitBatches,
+        heldout_batch_examples: jointHeldoutBatch,
+        schedule: jointSchedule,
+        joint_rules: ["none", "horizon_fitted_only", "batch_fitted_only", "separable_fitted_peak", "horizon_fitted_x_adam_sde_batch", "one_third_x_adam_sde_batch", "complete_dp_joint", "exact_token_half_life_joint"],
+        validation_interval: onA100 ? 32 : 8,
+        seeds: onA100 ? [11, 29, 47] : [11, 29],
+        minimum_seeds: onA100 ? 3 : 2,
+        minimum_fit_horizon_span: onA100 ? 8 : 4,
+        minimum_fit_batch_span: 4,
+        minimum_axis_fit_r_squared: 0.8,
+        bootstrap_samples: onA100 ? 400 : 200,
+        maximum_crosscheck_regret: 0.02,
+        maximum_relative_oracle_regret: 0.02,
+        minimum_recovered_improvement: 0.9,
+      };
+    }
     if (batchCampaign === "transformer_census") {
       return {
         architecture: syntheticArchitecture,
@@ -1432,14 +1709,14 @@ export function AutoscalerStudio() {
       <section className="campaign-section section-shell" id="campaign">
         <div className="section-heading compact-heading">
           <div><p className="eyebrow">Executable batch campaigns</p><h2>Run the census on real or synthetic tokens.</h2></div>
-          <p>Every campaign is persisted, fingerprinted, and resumable. Use the CPU profile to validate the workflow, then switch the same contract to CUDA.</p>
+          <p>Every campaign is persisted, fingerprinted, and resumable. Public corpora are frozen before training. Two-stage holdout designs keep final transfer cells untouched until the rule is fixed.</p>
         </div>
         <div className="panel campaign-panel">
           <div className="panel-title"><span>Runnable campaign</span><small>Persistent · resumable</small></div>
           <div className="campaign-body">
             <div className="campaign-controls">
-              <label><span>Campaign</span><select disabled={batchJobLocked} value={batchCampaign} onChange={(event) => { setBatchCampaign(event.target.value as BatchCampaign); setBatchJob(null); setBatchJobError(null); }}><option value="standard_pretraining_census">Real-text Transformer census</option><option value="transformer_census">νGPT synthetic census</option><option value="constant_tpp">Constant T/P holdout</option></select></label>
-              <label><span>Compute</span><select disabled={batchJobLocked} value={targetDevice} onChange={(event) => { const next = event.target.value as "cpu" | "cuda"; setTargetDevice(next); setPretrainingTargetLoss(tokenizer === "byte_v1" ? (next === "cuda" ? 3 : 5.4) : 9.4); setPretrainingValidationInterval(next === "cuda" ? 16 : 8); if (next === "cpu") { setDistributedMode("none"); if (attentionBackend === "flash") setAttentionBackend("math"); } markBatchCampaignEdited(); }}><option value="cpu">Local CPU smoke</option><option value="cuda">A100 / CUDA</option></select></label>
+              <label><span>Campaign</span><select disabled={batchJobLocked} value={batchCampaign} onChange={(event) => { setBatchCampaign(event.target.value as BatchCampaign); setBatchJob(null); setBatchJobError(null); }}><option value="standard_pretraining_census">Real-text Transformer census</option><option value="transformer_census">νGPT synthetic census</option><option value="horizon_transfer">LR schedule + horizon transfer</option><option value="joint_horizon_batch">Joint horizon × batch holdout</option><option value="constant_tpp">Constant T/P holdout</option></select></label>
+              <label><span>Compute</span><select disabled={batchJobLocked} value={targetDevice} onChange={(event) => { const next = event.target.value as "cpu" | "cuda"; setTargetDevice(next); setPretrainingTargetLoss(tokenizer === "byte_v1" ? (next === "cuda" ? 3 : 5.4) : 9.4); setPretrainingValidationInterval(next === "cuda" ? 16 : 8); if (corpusChoice !== "local") { setCorpusTrainMiB(next === "cuda" ? 64 : 2); setCorpusValidationMiB(next === "cuda" ? 8 : 0.5); setCorpusJob(null); } if (batchCampaign === "horizon_transfer") { setHorizonValues(next === "cuda" ? "65536, 131072, 262144, 524288, 1048576" : "256, 512, 1024, 2048"); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); setHorizonBatchExamples(next === "cuda" ? 8 : 2); } if (batchCampaign === "joint_horizon_batch") { setJointFitHorizons(next === "cuda" ? "65536, 131072, 262144, 524288" : "384, 768, 1536"); setJointHeldoutHorizon(next === "cuda" ? 1048576 : 3072); setJointFitBatches("2, 4, 8"); setJointHeldoutBatch(16); setHorizonRateGrid(next === "cuda" ? "0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1" : "0.0003, 0.001, 0.003, 0.01, 0.03, 0.1"); } if (next === "cpu") { setDistributedMode("none"); if (attentionBackend === "flash") setAttentionBackend("math"); } markBatchCampaignEdited(); }}><option value="cpu">Local CPU smoke</option><option value="cuda">A100 / CUDA</option></select></label>
               {batchCampaign === "standard_pretraining_census" && <>
                 <label><span>Optimizer</span><select disabled={batchJobLocked} value={pretrainingOptimizer} onChange={(event) => { setPretrainingOptimizer(event.target.value as PretrainingOptimizer); markBatchCampaignEdited(); }}><option value="adamw">AdamW</option><option value="adam">Adam</option><option value="sgd">SGD</option></select></label>
                 <label><span>Precision</span><select disabled={batchJobLocked} value={precision} onChange={(event) => { const next = event.target.value as Precision; setPrecision(next); if (next === "fp32" && attentionBackend === "flash") setAttentionBackend("math"); markBatchCampaignEdited(); }}><option value="fp32">FP32</option><option value="bf16">BF16</option></select></label>
@@ -1449,21 +1726,52 @@ export function AutoscalerStudio() {
               </>}
             </div>
             {batchCampaign === "standard_pretraining_census" && (
-              <div className="dataset-contract">
-                <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
-                <label><span>Validation corpus</span><input disabled={batchJobLocked} value={validationPath} onChange={(event) => { setValidationPath(event.target.value); markBatchCampaignEdited(); }} /></label>
-                <label><span>Tokenizer</span><select disabled={batchJobLocked} value={tokenizer} onChange={(event) => { const next = event.target.value as "byte_v1" | "uint16_bin_v1"; setTokenizer(next); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}><option value="byte_v1">UTF-8 byte tokenizer</option><option value="uint16_bin_v1">Pretokenized uint16 stream</option></select></label>
+              <div className="dataset-contract public-corpus-contract">
+                <label><span>Corpus source</span><select disabled={batchJobLocked || corpusJobLocked} value={corpusChoice} onChange={(event) => { const next = event.target.value as CorpusChoice; setCorpusChoice(next); setCorpusJob(null); setCorpusError(null); if (next !== "local") { setTokenizer("byte_v1"); setCorpusTrainMiB(targetDevice === "cuda" ? 64 : 2); setCorpusValidationMiB(targetDevice === "cuda" ? 8 : 0.5); } markBatchCampaignEdited(); }}><option value="fineweb_edu">FineWeb-Edu sample-10BT</option><option value="openwebtext">OpenWebText</option><option value="local">Local files / pretokenized</option></select></label>
+                {corpusChoice === "local" ? <>
+                  <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                  <label><span>Validation corpus</span><input disabled={batchJobLocked} value={validationPath} onChange={(event) => { setValidationPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                </> : <>
+                  <label><span>Training text</span><input disabled={batchJobLocked || corpusJobLocked} type="number" min="0.0625" step="0.5" value={corpusTrainMiB} onChange={(event) => { setCorpusTrainMiB(Math.max(0.0625, Number(event.target.value))); setCorpusJob(null); markBatchCampaignEdited(); }} /><small>MiB</small></label>
+                  <label><span>Held-out text</span><input disabled={batchJobLocked || corpusJobLocked} type="number" min="0.015625" step="0.5" value={corpusValidationMiB} onChange={(event) => { setCorpusValidationMiB(Math.max(0.015625, Number(event.target.value))); setCorpusJob(null); markBatchCampaignEdited(); }} /><small>MiB</small></label>
+                  <button className="corpus-prepare-button" disabled={batchJobLocked || corpusJobLocked} onClick={() => void preparePublicCorpus()}>{corpusJobLocked ? "Preparing frozen snapshot…" : corpusJob?.status === "completed" ? "Snapshot ready" : "Prepare frozen snapshot"}</button>
+                </>}
+                <label><span>Tokenizer</span><select disabled={batchJobLocked || corpusChoice !== "local"} value={tokenizer} onChange={(event) => { const next = event.target.value as "byte_v1" | "uint16_bin_v1"; setTokenizer(next); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}><option value="byte_v1">UTF-8 byte tokenizer</option><option value="uint16_bin_v1">Pretokenized uint16 stream</option></select></label>
                 <label><span>Target validation loss</span><input disabled={batchJobLocked} type="number" min="0.01" step="0.1" value={pretrainingTargetLoss} onChange={(event) => { setPretrainingTargetLoss(Number(event.target.value)); markBatchCampaignEdited(); }} /></label>
                 <label><span>Validation cadence</span><input disabled={batchJobLocked} type="number" min="1" step="1" value={pretrainingValidationInterval} onChange={(event) => { setPretrainingValidationInterval(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+                {corpusJobLocked && <div className="corpus-progress"><div className="progress-track"><span style={{ width: `${Math.min(100, 100 * corpusJob.progress.completed / Math.max(1, corpusJob.progress.total))}%` }} /></div><small>{corpusJob.progress.message}</small></div>}
+                {corpusJob?.status === "completed" && corpusJob.result && <div className="corpus-provenance"><span><b>{formatNumber(corpusJob.result.training_tokens)}</b> training tokens</span><span><b>{formatNumber(corpusJob.result.validation_tokens)}</b> held-out tokens</span><span><b>{corpusJob.result.corpus_fingerprint.slice(0, 12)}</b> content fingerprint</span><span><b>{corpusJob.result.source.revision.slice(0, 12)}</b> source revision</span><small>{corpusJob.result.source.dataset} · {corpusJob.result.source.config} · {corpusJob.result.source.license} · disjoint source rows</small></div>}
+                {corpusJob?.status === "failed" && <p className="validation-error campaign-error">{corpusJob.error}</p>}
+                {corpusError && <p className="validation-error campaign-error">{corpusError}</p>}
+              </div>
+            )}
+            {batchCampaign === "horizon_transfer" && (
+              <div className="dataset-contract horizon-contract">
+                <label><span>Presented-token horizons T</span><input disabled={batchJobLocked} value={horizonValues} onChange={(event) => { setHorizonValues(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Peak-LR grid</span><input disabled={batchJobLocked} value={horizonRateGrid} onChange={(event) => { setHorizonRateGrid(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Batch examples</span><input disabled={batchJobLocked} type="number" min="1" value={horizonBatchExamples} onChange={(event) => { setHorizonBatchExamples(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+                <div className="schedule-picker"><span>Schedule families</span>{(["cosine_to_10_percent", "linear_warmup_decay_to_zero", "wsd"] as HorizonSchedule[]).map((schedule) => <label key={schedule}><input disabled={batchJobLocked} type="checkbox" checked={horizonSchedules.includes(schedule)} onChange={(event) => { setHorizonSchedules((current) => event.target.checked ? [...current, schedule] : current.filter((item) => item !== schedule)); markBatchCampaignEdited(); }} /><b>{schedule.replaceAll("_", " ")}</b></label>)}</div>
+                <div className="fixed-callout"><b>Identifiable geometry</b><span>N and U fixed · T varies · B fixed · S = T/B · largest T held out until every rule is frozen</span></div>
+              </div>
+            )}
+            {batchCampaign === "joint_horizon_batch" && (
+              <div className="dataset-contract horizon-contract joint-contract">
+                <label><span>Fit horizons T</span><input disabled={batchJobLocked} value={jointFitHorizons} onChange={(event) => { setJointFitHorizons(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Held-out horizon T*</span><input disabled={batchJobLocked} type="number" min="1" value={jointHeldoutHorizon} onChange={(event) => { setJointHeldoutHorizon(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+                <label><span>Fit batches (examples)</span><input disabled={batchJobLocked} value={jointFitBatches} onChange={(event) => { setJointFitBatches(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Held-out batch B*</span><input disabled={batchJobLocked} type="number" min="1" value={jointHeldoutBatch} onChange={(event) => { setJointHeldoutBatch(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+                <label><span>Peak-LR grid</span><input disabled={batchJobLocked} value={horizonRateGrid} onChange={(event) => { setHorizonRateGrid(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Frozen schedule</span><select disabled={batchJobLocked} value={jointSchedule} onChange={(event) => { setJointSchedule(event.target.value as HorizonSchedule); markBatchCampaignEdited(); }}><option value="cosine_to_10_percent">Cosine to 10%</option><option value="linear_warmup_decay_to_zero">10% warmup + linear decay</option><option value="wsd">Warmup-stable-decay</option></select></label>
+                <div className="fixed-callout"><b>Two-stage holdout</b><span>Fit only the T and B axes · filter rules on the unseen fit-rectangle corner · test once at larger T* and B*</span></div>
               </div>
             )}
             <div className="campaign-summary">
-              <div><small>Model contract</small><strong>{batchCampaign === "standard_pretraining_census" ? "Standard pre-norm GPT" : batchCampaign === "transformer_census" ? "Normalized Transformer" : "νGPT constant T/P"}</strong><span>{batchCampaign === "standard_pretraining_census" ? "Learned token + position embeddings · causal MHSA · GELU MLP · tied unembed" : "Theory-specific synthetic control"}</span></div>
+              <div><small>Model contract</small><strong>{batchCampaign === "standard_pretraining_census" ? "Standard pre-norm GPT" : batchCampaign === "transformer_census" ? "Normalized Transformer" : batchCampaign === "horizon_transfer" ? "Fixed-model νGPT horizon calibration" : batchCampaign === "joint_horizon_batch" ? "νGPT joint T × B transfer" : "νGPT constant T/P"}</strong><span>{batchCampaign === "standard_pretraining_census" ? "Learned token + position embeddings · causal MHSA · GELU MLP · tied unembed" : batchCampaign === "horizon_transfer" ? "Compare schedule shape and peak-LR laws without model/batch confounding" : batchCampaign === "joint_horizon_batch" ? "Freeze schedule, peak LR, Adam moments, and epsilon before the doubly held-out corner" : "Theory-specific synthetic control"}</span></div>
               <div><small>Execution</small><strong>{batchCampaign === "standard_pretraining_census" ? `${pretrainingOptimizer.toUpperCase()} · ${precision.toUpperCase()} · ${attentionBackend === "flash" ? "FlashAttention" : "PyTorch SDPA"}` : "FP32 reference"}</strong><span>{distributedMode === "fsdp" && batchCampaign === "standard_pretraining_census" ? `${gpuCount} GPUs · torchrun FSDP` : targetDevice === "cuda" ? "Single CUDA process" : "Local smoke profile"}</span></div>
               <button className="run-button campaign-run" disabled={batchJobLocked || !standardRuntimeValid} onClick={startBatchCampaign}>{batchJobLocked ? "Campaign running" : batchJob?.status === "completed" ? "Run or resume" : "Launch campaign"}<span>→</span></button>
             </div>
             <p className="campaign-location-note">CUDA and FSDP execute on the machine hosting the compute service. Remote-cluster dispatch is not implied by this browser control.</p>
-            {!standardRuntimeValid && <p className="validation-error campaign-error">Provide both corpus paths, a positive target and cadence. FlashAttention requires BF16 on CUDA; FSDP requires at least two CUDA processes.</p>}
+            {!standardRuntimeValid && <p className="validation-error campaign-error">{batchCampaign === "horizon_transfer" ? "Provide at least four increasing horizons, three learning rates, one schedule, and a positive batch." : batchCampaign === "joint_horizon_batch" ? "Provide three increasing fit horizons and batches, larger held-out values, three learning rates, and divisible T/B geometry." : corpusChoice !== "local" && corpusJob?.status !== "completed" ? "Prepare the frozen public-corpus snapshot before launching training." : "Provide both corpus paths, a positive target and cadence. FlashAttention requires BF16 on CUDA; FSDP requires at least two CUDA processes."}</p>}
             {batchJobError && <p className="validation-error campaign-error">{batchJobError}</p>}
             {batchJob && (
               <div className={`campaign-status ${batchJob.status}`}>
@@ -1474,7 +1782,7 @@ export function AutoscalerStudio() {
                 {batchJob.status === "interrupted" && <p>{batchJob.error} Launch again to continue from its trial cache.</p>}
                 {batchJob.result?.dataset && <div className="campaign-data-result"><span><b>{formatNumber(batchJob.result.dataset.training_tokens)}</b> training tokens</span><span><b>{formatNumber(batchJob.result.dataset.validation_tokens)}</b> validation tokens</span><span><b>{batchJob.result.dataset.tokenizer.replaceAll("_", " ")}</b> tokenizer</span><span><b>{batchJob.result.dataset.fingerprint.slice(0, 12)}</b> corpus fingerprint</span></div>}
                 {batchAnalyses.length > 0 && <div className="campaign-analysis-list">{batchAnalyses.map((analysis) => <div key={`${analysis.scale.name}-${analysis.optimizer}`}><span><strong>{analysis.scale.name}</strong><small>{analysis.optimizer}</small></span><b className={analysis.consensus.qualified ? "qualified" : "refused"}>{analysis.consensus.qualified && analysis.consensus.critical_batch_tokens ? `${formatNumber(analysis.consensus.critical_batch_tokens)} tokens` : "Withheld"}</b><small>{analysis.consensus.qualified ? "Estimator consensus" : analysis.consensus.refusal_reasons.join(" · ")}</small></div>)}</div>}
-                {batchJob.result?.geometry && (
+                {batchJob.result?.geometry && batchJob.result.campaign === "constant_tokens_per_parameter_heldout_transfer" && (
                   <div className="tpp-result">
                     <div className={`tpp-verdict ${batchJob.result.fit_qualification?.source_optimum_is_interior ? "qualified" : "refused"}`}>
                       <span><small>Constant T/P qualification</small><strong>{batchJob.result.fit_qualification?.source_optimum_is_interior ? "Fit range qualified" : "Recommendation withheld"}</strong></span>
@@ -1483,8 +1791,41 @@ export function AutoscalerStudio() {
                       <span><small>Held-out oracle</small><strong>{batchJob.result.heldout_oracle ? formatLoss(batchJob.result.heldout_oracle.mean_loss) : "—"}</strong></span>
                     </div>
                     {!batchJob.result.fit_qualification?.source_optimum_is_interior && <p>The source optimum lies on the tested learning-rate boundary. Regret is reported for diagnosis, but no transfer rule is recommended.</p>}
-                    <div className="tpp-geometry">{batchJob.result.geometry.map((row) => <span key={row.scale.name}><strong>{row.scale.name}</strong><small>{formatNumber(row.parameters)} parameters · {formatNumber(row.total_tokens)} tokens</small><b>{row.realized_tpp.toFixed(3)} T/P</b></span>)}</div>
+                    <div className="tpp-geometry">{batchJob.result.geometry.map((row) => <span key={row.scale!.name}><strong>{row.scale!.name}</strong><small>{formatNumber(row.parameters)} parameters · {formatNumber(row.total_tokens!)} tokens</small><b>{row.realized_tpp!.toFixed(3)} T/P</b></span>)}</div>
                     <div className="tpp-rule-list">{batchJob.result.transfer_results?.map((row) => <div key={row.rule}><strong>{row.rule.replaceAll("_", " ")}</strong><span>{row.evaluated && row.mean_heldout_loss !== undefined ? formatLoss(row.mean_heldout_loss) : "Not evaluated"}</span><b className={row.recommendable ? "qualified" : "refused"}>{row.relative_regret !== undefined ? `${row.relative_regret >= 0 ? "+" : ""}${(row.relative_regret * 100).toFixed(1)}% regret` : row.refusal_reasons.join(" · ")}</b></div>)}</div>
+                  </div>
+                )}
+                {batchJob.result?.campaign === "horizon_transfer" && batchJob.result.geometry && (
+                  <div className="tpp-result horizon-result">
+                    <div className={`tpp-verdict ${batchJob.result.recommendation ? "qualified" : "refused"}`}>
+                      <span><small>Held-out horizon verdict</small><strong>{batchJob.result.recommendation ? "Transfer rule certified" : "Recommendation withheld"}</strong></span>
+                      <span><small>Held-out T</small><strong>{formatNumber(batchJob.result.heldout_horizon ?? 0)}</strong></span>
+                      <span><small>Fit horizon span</small><strong>{batchJob.result.fit_horizon_span_ratio?.toFixed(1)}×</strong></span>
+                      <span><small>Best frozen rule</small><strong>{batchJob.result.recommendation ? `${batchJob.result.recommendation.rule.replaceAll("_", " ")} · β ${batchJob.result.recommendation.exponent.toFixed(3)}` : "—"}</strong></span>
+                    </div>
+                    {!batchJob.result.recommendation && <p>{batchJob.result.refusal_reasons?.join(" · ")}</p>}
+                    <div className="tpp-geometry">{batchJob.result.geometry.map((row) => <span key={row.presented_tokens}><strong>T {formatNumber(row.presented_tokens ?? 0)}</strong><small>U {formatNumber(row.unique_tokens ?? 0)} · B {formatNumber(row.batch_tokens)} · S {formatNumber(row.optimizer_steps ?? 0)}</small><b>{(row.tokens_per_parameter ?? 0).toFixed(3)} T/P · {(row.presented_to_unique_token_ratio ?? 0).toFixed(2)}× repeat</b></span>)}</div>
+                    {batchJob.result.schedule_analyses?.map((analysis) => <div className="horizon-schedule-card" key={analysis.schedule_name}>
+                      <div><strong>{analysis.schedule_name.replaceAll("_", " ")}</strong><span className={analysis.fit_qualified ? "qualified" : "refused"}>{analysis.fit_qualified ? `β ${analysis.fitted_power_law.exponent.toFixed(3)} · R² ${analysis.fitted_power_law.r_squared.toFixed(3)}` : "Fit refused"}</span></div>
+                      {!analysis.fit_qualified && <small>{analysis.fit_refusal_reasons.join(" · ")}</small>}
+                      <div className="tpp-rule-list">{analysis.frozen_rule_results.map((row) => <div key={row.rule}><strong>{row.rule.replaceAll("_", " ")}</strong><span>η {row.predicted_peak_learning_rate.toExponential(2)} · loss {formatLoss(row.mean_heldout_loss)} · {row.mechanism_discrimination_certified ? "mechanism pass" : row.transfer_certified ? "non-inferior" : "refused"}</span><b className={row.transfer_certified ? "qualified" : "refused"}>{`${row.relative_oracle_regret >= 0 ? "+" : ""}${(row.relative_oracle_regret * 100).toFixed(2)}% oracle regret`}</b></div>)}</div>
+                    </div>)}
+                  </div>
+                )}
+                {batchJob.result?.campaign === "joint_horizon_batch_transfer" && batchJob.result.geometry && (
+                  <div className="tpp-result horizon-result joint-result">
+                    <div className={`tpp-verdict ${batchJob.result.joint_transfer_settled ? "qualified" : "refused"}`}>
+                      <span><small>Joint-transfer verdict</small><strong>{batchJob.result.joint_transfer_settled ? "Empirical transfer + mechanism settled" : batchJob.result.joint_recommendation ? "Non-inferior; mechanism unresolved" : "Recommendation withheld"}</strong></span>
+                      <span><small>Fitted horizon β</small><strong>{batchJob.result.axis_fit_qualification?.horizon_exponent.toFixed(3) ?? "—"}</strong></span>
+                      <span><small>Fitted batch γ</small><strong>{batchJob.result.axis_fit_qualification?.batch_exponent.toFixed(3) ?? "—"}</strong></span>
+                      <span><small>Best frozen rule</small><strong>{batchJob.result.joint_recommendation?.rule.replaceAll("_", " ") ?? "—"}</strong></span>
+                    </div>
+                    {!batchJob.result.axis_fit_qualification?.qualified && <p>{batchJob.result.axis_fit_qualification?.refusal_reasons.join(" · ")}</p>}
+                    <div className="tpp-geometry">{batchJob.result.geometry.map((row) => <span key={`${row.role}-${row.presented_tokens}-${row.batch_tokens}`}><strong>{row.role?.replaceAll("_", " ")}</strong><small>T {formatNumber(row.presented_tokens ?? 0)} · B {formatNumber(row.batch_tokens)} · S {formatNumber(row.optimizer_steps ?? 0)}</small><b>{(row.tokens_per_parameter ?? 0).toFixed(3)} T/P</b></span>)}</div>
+                    <div className="joint-stage-label"><strong>Composition cross-check</strong><span>T {formatNumber(batchJob.result.composition_crosscheck?.presented_tokens ?? 0)} · B {formatNumber(batchJob.result.composition_crosscheck?.batch_tokens ?? 0)}</span></div>
+                    <div className="tpp-rule-list">{batchJob.result.composition_crosscheck?.candidate_results.filter((row) => row.joint_rule).map((row) => <div key={row.rule}><strong>{row.rule.replaceAll("_", " ")}</strong><span>{row.evaluated && row.mean_loss !== undefined ? `loss ${formatLoss(row.mean_loss)}` : row.refusal_reasons.join(" · ")}</span><b className={row.composition_crosscheck_passed ? "qualified" : "refused"}>{row.relative_oracle_regret !== null && row.relative_oracle_regret !== undefined ? `${(row.relative_oracle_regret * 100).toFixed(2)}% regret` : "not evaluated"}</b></div>)}</div>
+                    <div className="joint-stage-label"><strong>Doubly held-out corner</strong><span>T {formatNumber(batchJob.result.heldout_corner?.presented_tokens ?? 0)} · B {formatNumber(batchJob.result.heldout_corner?.batch_tokens ?? 0)} · {batchJob.result.heldout_corner?.composition_identifiable ? "joint effect identifiable" : "flat versus partial controls"}</span></div>
+                    <div className="tpp-rule-list">{batchJob.result.heldout_corner?.candidate_results.map((row) => <div key={row.rule}><strong>{row.rule.replaceAll("_", " ")}</strong><span>{row.evaluated && row.mean_loss !== undefined ? `η ${row.optimizer?.learning_rate.toExponential(2)} · β (${row.optimizer?.beta1.toFixed(3)}, ${row.optimizer?.beta2.toFixed(3)}) · ε ${row.optimizer?.epsilon.toExponential(1)} · groups ${row.peak_parameter_group_contract?.map((group) => `${group.name}:${group.peak_learning_rate.toExponential(1)}`).join(", ")} · loss ${formatLoss(row.mean_loss)} · ${row.mechanism_discrimination_certified ? `mechanism pass · ${row.theory_transfer_certified ? "theory regime qualified" : "empirical only"}` : row.transfer_certified ? "non-inferior" : "refused"}` : row.refusal_reasons.join(" · ")}</span><b className={row.transfer_certified ? "qualified" : "refused"}>{row.relative_oracle_regret !== null && row.relative_oracle_regret !== undefined ? `${(row.relative_oracle_regret * 100).toFixed(2)}% oracle regret` : "not evaluated"}</b></div>)}</div>
                   </div>
                 )}
               </div>
@@ -1823,7 +2164,7 @@ export function AutoscalerStudio() {
                 <button className="ledger-row" key={item.id} onClick={() => void loadBatchCampaign(item.id)}>
                   <span className={`status-dot ${item.status}`} />
                   <span><strong>{item.campaign.replaceAll("_", " ")}</strong><small>{item.progress.completed} / {item.progress.total || "?"} trials</small></span>
-                  <span>{item.result_summary ? item.campaign === "constant_tpp" ? `${item.result_summary.recommendable_rules} rules qualified` : `${item.result_summary.qualified_analyses}/${item.result_summary.analysis_count} assays qualified` : item.status}</span>
+                  <span>{item.result_summary ? item.campaign === "constant_tpp" || item.campaign === "horizon_transfer" || item.campaign === "joint_horizon_batch" ? `${item.result_summary.recommendable_rules} rules qualified` : `${item.result_summary.qualified_analyses}/${item.result_summary.analysis_count} assays qualified` : item.status}</span>
                   <code>{item.id}</code>
                 </button>
               ))}

@@ -8,7 +8,13 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from ai_theorist.autoscaler.api import AutoscalerServer, CampaignStore, RequestHandler, StudyStore
+from ai_theorist.autoscaler.api import (
+    AutoscalerServer,
+    CampaignStore,
+    CorpusStore,
+    RequestHandler,
+    StudyStore,
+)
 from ai_theorist.autoscaler.schema import StudySpec, compile_plan, default_study_spec
 from ai_theorist.autoscaler.study import run_study
 
@@ -107,6 +113,7 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
         pytest.skip("local socket binding is disabled in this sandbox")
     server.store = StudyStore(tmp_path)
     server.campaign_store = CampaignStore(tmp_path)
+    server.corpus_store = CorpusStore(tmp_path)
     server.allowed_origins = set()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -118,6 +125,10 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
             assert health["status"] == "ok"
             assert health["schema_version"] == 2
             assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
+        with urlopen(f"{base}/api/corpora/catalog", timeout=3) as response:
+            sources = json.load(response)["sources"]
+        assert {row["id"] for row in sources} == {"fineweb_edu", "openwebtext"}
 
         private_origin = "https://autoscaler.example"
         server.allowed_origins.add(private_origin)

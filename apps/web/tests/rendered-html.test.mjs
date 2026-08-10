@@ -77,6 +77,12 @@ test("exposes qualified batch transfer and keeps Seesaw gated", async () => {
   assert.match(html, /Dynamic Seesaw schedule/);
   assert.match(html, /Set constant T\/P/);
   assert.match(html, /Real-text Transformer census/);
+  assert.match(html, /FineWeb-Edu sample-10BT/);
+  assert.match(html, /Prepare frozen snapshot/);
+  assert.match(html, /LR schedule \+ horizon transfer/);
+  assert.match(html, /Joint horizon × batch holdout/);
+  assert.match(html, /Two-stage holdout/);
+  assert.match(html, /Constant T\/P holdout/);
   assert.match(html, /Standard pre-norm GPT/);
   assert.match(html, /Target validation loss/);
   assert.match(html, /AdamW/);

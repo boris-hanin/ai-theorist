@@ -12,6 +12,14 @@ from .batch_campaigns import (
     run_constant_tpp_campaign,
     run_transformer_batch_census,
 )
+from .horizon_campaigns import (
+    compile_horizon_transfer_plan,
+    run_horizon_transfer_campaign,
+)
+from .joint_transfer_campaigns import (
+    compile_joint_transfer_plan,
+    run_joint_transfer_campaign,
+)
 from .pretraining import (
     PretrainingRuntimeSpec,
     compile_standard_pretraining_plan,
@@ -25,6 +33,8 @@ ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 CAMPAIGNS = {
     "transformer_census",
     "constant_tpp",
+    "horizon_transfer",
+    "joint_horizon_batch",
     "standard_pretraining_census",
 }
 
@@ -34,6 +44,36 @@ def compile_campaign_plan(campaign: str, config: Mapping[str, Any]) -> Dict[str,
         raise ValueError(f"unknown campaign: {campaign}")
     if campaign == "standard_pretraining_census":
         return compile_standard_pretraining_plan(config)
+    if campaign == "horizon_transfer":
+        required = (
+            "architecture",
+            "dataset",
+            "scale",
+            "optimizer",
+            "presented_tokens",
+            "batch_examples",
+            "schedules",
+        )
+        missing = [name for name in required if name not in config]
+        if missing:
+            raise ValueError(f"missing campaign field(s): {', '.join(missing)}")
+        return compile_horizon_transfer_plan(config)
+    if campaign == "joint_horizon_batch":
+        required = (
+            "architecture",
+            "dataset",
+            "scale",
+            "optimizer",
+            "fit_presented_tokens",
+            "heldout_presented_tokens",
+            "fit_batch_examples",
+            "heldout_batch_examples",
+            "schedule",
+        )
+        missing = [name for name in required if name not in config]
+        if missing:
+            raise ValueError(f"missing campaign field(s): {', '.join(missing)}")
+        return compile_joint_transfer_plan(config)
     required = (
         ("architecture", "dataset", "scales", "batch_examples", "total_tokens", "optimizers")
         if campaign == "transformer_census"
@@ -152,6 +192,14 @@ def run_campaign_job(
         )
     elif campaign == "constant_tpp":
         result = run_constant_tpp_campaign(
+            configured, device=device, progress=progress
+        )
+    elif campaign == "horizon_transfer":
+        result = run_horizon_transfer_campaign(
+            configured, device=device, progress=progress
+        )
+    elif campaign == "joint_horizon_batch":
+        result = run_joint_transfer_campaign(
             configured, device=device, progress=progress
         )
     else:

@@ -35,6 +35,7 @@ from ai_theorist.autoscaler.jiang_chizat import (  # noqa: E402
     JiangChizatShape,
     JiangChizatTransformer,
 )
+from ai_theorist.autoscaler.transfer_data import FrozenLanguageModelData  # noqa: E402
 
 
 RULES = (
@@ -279,6 +280,7 @@ def run_trial(
     device: torch.device,
     learning_rate_multipliers: Mapping[str, float] | None = None,
     warmup_steps: int = 0,
+    data: FrozenLanguageModelData | None = None,
 ) -> Trial:
     if rule not in RULES:
         raise ValueError(f"unknown rule: {rule}")
@@ -321,15 +323,20 @@ def run_trial(
     )
     raw_rates = {str(group["name"]): float(group["lr"]) for group in groups}
     epsilons = {str(group["name"]): float(group["eps"]) for group in groups}
-    x_train, y_train, x_validation, y_validation = synthetic_markov_data(
-        vocab_size=vocab_size,
-        context_length=context_length,
-        n_train=n_train,
-        n_validation=n_validation,
-        seed=dataset_seed,
-        noise_probability=0.03,
-        device=device,
-    )
+    if data is None:
+        x_train, y_train, x_validation, y_validation = synthetic_markov_data(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            n_train=n_train,
+            n_validation=n_validation,
+            seed=dataset_seed,
+            noise_probability=0.03,
+            device=device,
+        )
+    else:
+        x_train, y_train, x_validation, y_validation = data.tensors
+        if len(x_train) != n_train or len(x_validation) != n_validation:
+            raise ValueError("frozen data window counts do not match n_train/n_validation")
     probe_tokens = x_validation[: min(4, n_validation)]
     initial_attention = attention_snapshot(model, probe_tokens)
     checkpoints = {0: validation_loss(model, x_validation, y_validation, batch_size=batch_size)}
@@ -407,16 +414,20 @@ def group_feature_velocity_audit(
     seed: int,
     device: torch.device,
     learning_rate_multipliers: Mapping[str, float] | None = None,
+    data: FrozenLanguageModelData | None = None,
 ) -> Dict[str, object]:
-    x_train, y_train, x_validation, _ = synthetic_markov_data(
-        vocab_size=vocab_size,
-        context_length=context_length,
-        n_train=n_train,
-        n_validation=n_validation,
-        seed=dataset_seed,
-        noise_probability=0.03,
-        device=device,
-    )
+    if data is None:
+        x_train, y_train, x_validation, _ = synthetic_markov_data(
+            vocab_size=vocab_size,
+            context_length=context_length,
+            n_train=n_train,
+            n_validation=n_validation,
+            seed=dataset_seed,
+            noise_probability=0.03,
+            device=device,
+        )
+    else:
+        x_train, y_train, x_validation, _ = data.tensors
     batch_inputs = x_train[:batch_size]
     batch_targets = y_train[:batch_size]
     probe = x_validation[: min(batch_size, n_validation)]
