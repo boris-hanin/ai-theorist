@@ -33,6 +33,10 @@ def main() -> None:
     config["seeds"] = [args.seed]
     config["bootstrap_samples"] = 0
     config["run_negative_control"] = False
+    # Runtime canaries deliberately exercise a large model against a tiny
+    # pinned stream. They are never scaling-law evidence, so repetition is
+    # allowed and recorded rather than pretending this is a forecast run.
+    config["ladder"]["maximum_repetition_ratio"] = 1_000_000.0
     config["runtime"].update(
         {
             "precision": "bf16",
@@ -51,7 +55,7 @@ def main() -> None:
     }:
         raise ValueError("learning rate must be in the template grid")
 
-    config["ladder"]["tokens_per_parameter"] = 1.0
+    config["ladder"]["tokens_per_parameter"] = 0.0001
     provisional = compile_real_text_scaling_plan(config)
     largest = provisional["scales"][-1]
     batch_tokens = int(config["batch_examples"]) * int(
