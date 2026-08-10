@@ -40,6 +40,12 @@ from .study import atomic_write_json
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 
 
+def _device_satisfies_request(actual: torch.device, requested: torch.device) -> bool:
+    return actual.type == requested.type and (
+        requested.index is None or actual.index == requested.index
+    )
+
+
 def _campaign_progress(
     callback: ProgressCallback,
     phase: str,
@@ -623,7 +629,11 @@ def run_transformer_batch_trial(
                 "prepared_dataset shapes must match dataset counts and architecture context; "
                 f"expected {expected_shapes}, got {actual_shapes}"
             )
-        if any(str(tensor.device) != str(torch.device(device)) for tensor in prepared_dataset):
+        requested_device = torch.device(device)
+        if any(
+            not _device_satisfies_request(tensor.device, requested_device)
+            for tensor in prepared_dataset
+        ):
             raise ValueError("prepared_dataset tensors must already be on the requested device")
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     steps = total_tokens // batch_tokens

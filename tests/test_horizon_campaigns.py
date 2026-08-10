@@ -1,5 +1,7 @@
 import pytest
+import torch
 
+from ai_theorist.autoscaler.batch_campaigns import _device_satisfies_request
 from ai_theorist.autoscaler.campaign_jobs import compile_campaign_plan, run_campaign_job
 from ai_theorist.autoscaler.horizon_campaigns import run_horizon_transfer_campaign
 from ai_theorist.autoscaler.lr_schedules import LearningRateSchedule
@@ -60,6 +62,11 @@ def test_normalized_schedule_shapes_have_exact_endpoints() -> None:
     wsd = LearningRateSchedule.from_payload("wsd")
     assert wsd.multiplier(10, 100) == pytest.approx(1.0)
     assert wsd.multiplier(100, 100) == pytest.approx(0.0)
+
+
+def test_unindexed_cuda_request_accepts_the_default_indexed_device() -> None:
+    assert _device_satisfies_request(torch.device("cuda:0"), torch.device("cuda"))
+    assert not _device_satisfies_request(torch.device("cuda:1"), torch.device("cuda:0"))
 
 
 def test_horizon_plan_counts_fit_transfer_and_oracle_trials() -> None:
