@@ -12,13 +12,13 @@ from .forecast_campaigns import (
     _mean_sem,
     _run_trial,
     compile_real_text_scaling_plan,
+    forecast_tokenized_text_spec,
     forecast_trial_cache_identity,
     run_real_text_scaling_campaign,
 )
 from .pretraining import (
     PretrainingRuntimeSpec,
     TokenizedTextCorpus,
-    TokenizedTextSpec,
     close_distributed,
     prepare_distributed,
 )
@@ -138,7 +138,7 @@ def _load_corpus(
     config: Mapping[str, Any], plan: Mapping[str, Any]
 ) -> TokenizedTextCorpus:
     corpus = TokenizedTextCorpus(
-        TokenizedTextSpec.from_dict(dict(config["dataset"])),
+        forecast_tokenized_text_spec(config),
         context_length=int(config["architecture"]["context_length"]),
         vocab_size=int(config["architecture"]["vocab_size"]),
     )

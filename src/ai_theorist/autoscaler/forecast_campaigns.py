@@ -53,6 +53,16 @@ ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 CAMPAIGN_SCHEMA_VERSION = 1
 
 
+def forecast_tokenized_text_spec(config: Mapping[str, Any]) -> TokenizedTextSpec:
+    """Translate the campaign dataset envelope to the strict loader schema."""
+
+    payload = dict(config["dataset"])
+    task_type = payload.pop("task_type", "tokenized_text")
+    if task_type != "tokenized_text":
+        raise ValueError("forecast dataset.task_type must be tokenized_text")
+    return TokenizedTextSpec.from_dict(payload)
+
+
 @dataclass(frozen=True)
 class TheoryScale:
     name: str
@@ -973,9 +983,8 @@ def run_real_text_scaling_campaign(
     completed = 0
     total = int(plan["planned_grid_trials"])
     try:
-        dataset_payload = dict(config["dataset"])
         corpus = TokenizedTextCorpus(
-            TokenizedTextSpec.from_dict(dataset_payload),
+            forecast_tokenized_text_spec(config),
             context_length=int(config["architecture"]["context_length"]),
             vocab_size=int(config["architecture"]["vocab_size"]),
         )

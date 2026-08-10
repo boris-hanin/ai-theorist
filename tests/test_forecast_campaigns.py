@@ -144,6 +144,7 @@ def _jiang_config(tmp_path: Path, manifest_path: Path):
             "reference_residual_width": 4,
         },
         "dataset": {
+            "task_type": "tokenized_text",
             "tokenizer": "forecast_test",
             "token_stream_manifest_path": str(manifest_path),
             "maximum_bytes": 1_000_000,
