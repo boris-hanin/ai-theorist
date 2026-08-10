@@ -19,9 +19,35 @@ from ai_theorist.autoscaler.pretraining import (
     TokenizedTextSpec,
     compile_standard_pretraining_plan,
     preflight_runtime,
+    runtime_checkpoint_due,
     run_standard_pretraining_batch_census,
     run_standard_pretraining_trial,
 )
+
+
+def test_runtime_checkpoint_supports_wall_clock_or_step_cadence() -> None:
+    runtime = PretrainingRuntimeSpec.from_dict(
+        {"checkpoint_interval_steps": 10, "checkpoint_interval_seconds": 60}
+    )
+    assert not runtime_checkpoint_due(
+        runtime, step=3, total_steps=100, last_checkpoint_at=100, now=159
+    )
+    assert runtime_checkpoint_due(
+        runtime, step=3, total_steps=100, last_checkpoint_at=100, now=160
+    )
+    assert runtime_checkpoint_due(
+        runtime, step=10, total_steps=100, last_checkpoint_at=100, now=101
+    )
+    assert runtime_checkpoint_due(
+        runtime, step=100, total_steps=100, last_checkpoint_at=100, now=101
+    )
+    assert not runtime_checkpoint_due(
+        PretrainingRuntimeSpec(),
+        step=100,
+        total_steps=100,
+        last_checkpoint_at=100,
+        now=1000,
+    )
 
 
 def _corpus_spec(tmp_path):

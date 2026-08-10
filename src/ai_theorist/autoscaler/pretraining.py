@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from bisect import bisect_right
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
@@ -165,6 +164,7 @@ class PretrainingRuntimeSpec:
     gradient_accumulation_steps: int = 1
     activation_checkpointing: bool = False
     checkpoint_interval_steps: int = 0
+    checkpoint_interval_seconds: float = 0.0
     resume: bool = True
 
     @classmethod
@@ -179,6 +179,7 @@ class PretrainingRuntimeSpec:
                 "gradient_accumulation_steps",
                 "activation_checkpointing",
                 "checkpoint_interval_steps",
+                "checkpoint_interval_seconds",
                 "resume",
             ),
             "pretraining runtime",
@@ -207,11 +208,51 @@ class PretrainingRuntimeSpec:
             or result.checkpoint_interval_steps < 0
         ):
             raise ValueError("checkpoint_interval_steps must be a non-negative integer")
+        if (
+            isinstance(result.checkpoint_interval_seconds, bool)
+            or not isinstance(result.checkpoint_interval_seconds, (int, float))
+            or not math.isfinite(float(result.checkpoint_interval_seconds))
+            or result.checkpoint_interval_seconds < 0
+        ):
+            raise ValueError(
+                "checkpoint_interval_seconds must be finite and non-negative"
+            )
         if not isinstance(result.activation_checkpointing, bool):
             raise ValueError("activation_checkpointing must be boolean")
         if not isinstance(result.resume, bool):
             raise ValueError("resume must be boolean")
         return result
+
+
+def runtime_checkpoint_due(
+    runtime: PretrainingRuntimeSpec,
+    *,
+    step: int,
+    total_steps: int,
+    last_checkpoint_at: float,
+    now: Optional[float] = None,
+) -> bool:
+    """Return whether an enabled step- or wall-clock checkpoint is due."""
+
+    enabled = bool(
+        runtime.checkpoint_interval_steps
+        or runtime.checkpoint_interval_seconds
+    )
+    if not enabled:
+        return False
+    if step == total_steps:
+        return True
+    if (
+        runtime.checkpoint_interval_steps
+        and step % runtime.checkpoint_interval_steps == 0
+    ):
+        return True
+    observed_at = time.monotonic() if now is None else now
+    return bool(
+        runtime.checkpoint_interval_seconds
+        and observed_at - last_checkpoint_at
+        >= float(runtime.checkpoint_interval_seconds)
+    )
 
 
 class ByteTokenizer:
@@ -283,20 +324,24 @@ class _ShardedTokenStream:
             (batch_size,),
             generator=generator,
         ).numpy()
+        shard_indices = np.searchsorted(
+            self.cumulative_valid_starts, global_starts, side="right"
+        )
+        preceding = np.where(
+            shard_indices > 0,
+            self.cumulative_valid_starts[np.maximum(shard_indices - 1, 0)],
+            0,
+        )
+        local_starts = global_starts - preceding
+        offsets = np.arange(context_length + 1, dtype=np.int64)
         windows = np.empty((batch_size, context_length + 1), dtype=np.int64)
-        for row_index, global_start in enumerate(global_starts):
-            shard_index = bisect_right(
-                self.cumulative_valid_starts, int(global_start)
-            )
-            preceding = (
-                int(self.cumulative_valid_starts[shard_index - 1])
-                if shard_index
-                else 0
-            )
-            local_start = int(global_start) - preceding
-            windows[row_index] = self.shards[shard_index][
-                local_start : local_start + context_length + 1
-            ]
+        # Grouping by shard turns one Python/memmap slice per example into one
+        # vectorized read per represented shard while preserving the sampled
+        # row order and exact RNG contract.
+        for shard_index in np.unique(shard_indices):
+            rows = np.flatnonzero(shard_indices == shard_index)
+            indices = local_starts[rows, None] + offsets[None, :]
+            windows[rows] = self.shards[int(shard_index)][indices]
         return torch.from_numpy(windows)
 
 
@@ -690,7 +735,12 @@ def preflight_runtime(
         "gradient_accumulation_steps": runtime.gradient_accumulation_steps,
         "activation_checkpointing": runtime.activation_checkpointing,
         "checkpoint_interval_steps": runtime.checkpoint_interval_steps,
-        "mid_trial_resume": runtime.resume and runtime.checkpoint_interval_steps > 0,
+        "checkpoint_interval_seconds": runtime.checkpoint_interval_seconds,
+        "mid_trial_resume": runtime.resume
+        and bool(
+            runtime.checkpoint_interval_steps
+            or runtime.checkpoint_interval_seconds
+        ),
     }
 
 
@@ -1123,6 +1173,7 @@ def run_standard_pretraining_trial(
             {"step": 0.0, "tokens": 0.0, "validation_loss": initial_loss}
         )
     started = time.monotonic()
+    last_checkpoint_at = started
     peak_learning_rate = optimizer_spec.learning_rate
     for step in range(start_step + 1, steps + 1):
         if step <= warmup_steps and warmup_steps:
@@ -1182,13 +1233,13 @@ def run_standard_pretraining_trial(
                 and validation_loss <= target_validation_loss
             ):
                 crossing_step = step
-        if (
-            resume_path is not None
-            and runtime.checkpoint_interval_steps
-            and (
-                step % runtime.checkpoint_interval_steps == 0
-                or step == steps
-            )
+        checkpoint_now = time.monotonic()
+        if resume_path is not None and runtime_checkpoint_due(
+            runtime,
+            step=step,
+            total_steps=steps,
+            last_checkpoint_at=last_checkpoint_at,
+            now=checkpoint_now,
         ):
             save_runtime_checkpoint(
                 base_path=resume_path,
@@ -1208,6 +1259,7 @@ def run_standard_pretraining_trial(
                     - started,
                 },
             )
+            last_checkpoint_at = checkpoint_now
     duration = elapsed_before_resume + time.monotonic() - started
     final_loss = checkpoints[-1]["validation_loss"]
     peak_memory = (

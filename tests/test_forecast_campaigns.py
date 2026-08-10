@@ -1,6 +1,7 @@
 from hashlib import sha256
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 from tokenizers import Tokenizer
@@ -13,6 +14,13 @@ from ai_theorist.autoscaler.forecast_campaigns import (
     jiang_parameter_count,
     nugpt_parameter_count,
     run_real_text_scaling_campaign,
+)
+from ai_theorist.autoscaler.forecast_fleet import (
+    aggregate_forecast_fleet_cache,
+    assign_forecast_fleet_tasks,
+    build_forecast_fleet_tasks,
+    run_forecast_fleet_shard,
+    select_forecast_fleet_learning_rate,
 )
 from ai_theorist.autoscaler.jiang_chizat import (
     JiangChizatReference,
@@ -288,3 +296,89 @@ def test_nugpt_refuses_definition_breaking_fsdp(tmp_path: Path, monkeypatch) -> 
     config["validation_examples"] = 4
     with pytest.raises(ValueError, match="refuses FSDP"):
         compile_real_text_scaling_plan(config)
+
+
+def test_fleet_tasks_remove_duplicate_reference_runs_and_balance_flops(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    plan = compile_real_text_scaling_plan(config)
+    tuning = build_forecast_fleet_tasks(plan, phase="tune")
+    ladder = build_forecast_fleet_tasks(
+        plan,
+        phase="ladder",
+        selected_learning_rate=0.001,
+        run_negative_control=False,
+    )
+    assert len(tuning) == 3
+    assert len(ladder) == 5
+    assert all(task.scale_name != "S1" for task in ladder)
+    assignments = assign_forecast_fleet_tasks(ladder, 2)
+    assert {task.task_id for rows in assignments for task in rows} == {
+        task.task_id for task in ladder
+    }
+    loads = [sum(task.estimated_flops for task in rows) for rows in assignments]
+    assert max(loads) / min(loads) < 1.5
+
+
+def test_two_shard_fleet_reuses_exact_caches_for_canonical_analysis(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    tune_roots = [tmp_path / "tune-0", tmp_path / "tune-1"]
+    for shard_index, output in enumerate(tune_roots):
+        run_forecast_fleet_shard(
+            config,
+            phase="tune",
+            shard_index=shard_index,
+            shard_count=2,
+            output_directory=output,
+            device="cpu",
+        )
+    tune_caches = [path / "trials" for path in tune_roots]
+    selection = select_forecast_fleet_learning_rate(config, tune_caches)
+    assert selection["selected_learning_rate"] in config["optimizer"][
+        "learning_rates"
+    ]
+
+    ladder_roots = [tmp_path / "ladder-0", tmp_path / "ladder-1"]
+    for shard_index, output in enumerate(ladder_roots):
+        run_forecast_fleet_shard(
+            config,
+            phase="ladder",
+            shard_index=shard_index,
+            shard_count=2,
+            selected_learning_rate=selection["selected_learning_rate"],
+            output_directory=output,
+            device="cpu",
+        )
+    result = aggregate_forecast_fleet_cache(
+        config,
+        cache_directories=[
+            *tune_caches,
+            *(path / "trials" for path in ladder_roots),
+        ],
+        output_directory=tmp_path / "aggregate",
+    )
+    assert result["status"] == "completed"
+    assert len(result["records"]) == 9
+    aggregate = json.loads(
+        (tmp_path / "aggregate" / "fleet-aggregate.json").read_text()
+    )
+    assert aggregate["physical_trial_count"] == 8
+    assert aggregate["logical_trial_count"] == 9
+
+    conflict = tmp_path / "conflicting-cache"
+    conflict.mkdir()
+    original = next(tune_caches[0].glob("*.json"))
+    duplicate = conflict / original.name
+    shutil.copy2(original, duplicate)
+    payload = json.loads(duplicate.read_text())
+    payload["final_validation_loss"] += 1
+    duplicate.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="conflicting duplicate"):
+        select_forecast_fleet_learning_rate(
+            config, [*tune_caches, conflict]
+        )

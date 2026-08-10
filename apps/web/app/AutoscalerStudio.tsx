@@ -356,7 +356,7 @@ type BatchCampaignJob = {
   error: string | null;
   config?: {
     dataset?: { train_path?: string; validation_path?: string; tokenizer?: TokenizerId; token_stream_manifest_path?: string };
-    runtime?: { precision?: Precision; attention_backend?: AttentionBackend; distributed?: DistributedMode; num_processes?: number; gradient_accumulation_steps?: number; checkpoint_interval_steps?: number };
+    runtime?: { precision?: Precision; attention_backend?: AttentionBackend; distributed?: DistributedMode; num_processes?: number; gradient_accumulation_steps?: number; checkpoint_interval_steps?: number; checkpoint_interval_seconds?: number };
     architecture?: { block_type?: string; context_length?: number };
     ladder?: { target_parameters?: number[]; depths?: number[]; tokens_per_parameter?: number; target_forecasts?: number[] };
     batch_examples?: number;
@@ -758,7 +758,8 @@ export function AutoscalerStudio() {
   const [forecastContextLength, setForecastContextLength] = useState(512);
   const [forecastBatchExamples, setForecastBatchExamples] = useState(16);
   const [gradientAccumulationSteps, setGradientAccumulationSteps] = useState(1);
-  const [checkpointIntervalSteps, setCheckpointIntervalSteps] = useState(100);
+  const [checkpointIntervalSteps, setCheckpointIntervalSteps] = useState(0);
+  const [checkpointIntervalSeconds, setCheckpointIntervalSeconds] = useState(900);
   const [batchJob, setBatchJob] = useState<BatchCampaignJob | null>(null);
   const [batchJobError, setBatchJobError] = useState<string | null>(null);
   const [studyHistory, setStudyHistory] = useState<StudyHistoryItem[]>([]);
@@ -945,6 +946,7 @@ export function AutoscalerStudio() {
     && Number.isInteger(gradientAccumulationSteps) && gradientAccumulationSteps >= 1
     && forecastBatchExamples % (forecastProcessCount * gradientAccumulationSteps) === 0
     && Number.isInteger(checkpointIntervalSteps) && checkpointIntervalSteps >= 0
+    && Number.isFinite(checkpointIntervalSeconds) && checkpointIntervalSeconds >= 0
     && parsedHorizonRates.length >= 3
     && parsedHorizonRates.every((value, index) => index === 0 || value > parsedHorizonRates[index - 1])
     && !(horizonParameterization === "nugpt" && distributedMode === "fsdp")
@@ -1145,6 +1147,7 @@ export function AutoscalerStudio() {
         if (savedRuntime?.num_processes) setGpuCount(Math.max(2, savedRuntime.num_processes));
         if (savedRuntime?.gradient_accumulation_steps) setGradientAccumulationSteps(savedRuntime.gradient_accumulation_steps);
         if (savedRuntime?.checkpoint_interval_steps !== undefined) setCheckpointIntervalSteps(savedRuntime.checkpoint_interval_steps);
+        if (savedRuntime?.checkpoint_interval_seconds !== undefined) setCheckpointIntervalSeconds(savedRuntime.checkpoint_interval_seconds);
         const savedOptimizer = payload.config.optimizers?.[0]?.name;
         if (savedOptimizer) setPretrainingOptimizer(savedOptimizer);
         if (payload.config.target_validation_loss) setPretrainingTargetLoss(payload.config.target_validation_loss);
@@ -1333,8 +1336,8 @@ export function AutoscalerStudio() {
     if (campaign === "real_text_scaling_ladder") {
       setTargetDevice("cuda");
       setPrecision("bf16");
-      setAttentionBackend("auto");
-      setDistributedMode("ddp");
+      setAttentionBackend("flash");
+      setDistributedMode("none");
       setGpuCount(2);
       setHorizonParameterization("jiang_chizat");
       setTokenizer("olmo2_1124");
@@ -1350,7 +1353,8 @@ export function AutoscalerStudio() {
       setForecastContextLength(512);
       setForecastBatchExamples(16);
       setGradientAccumulationSteps(1);
-      setCheckpointIntervalSteps(100);
+      setCheckpointIntervalSteps(0);
+      setCheckpointIntervalSeconds(900);
       setHorizonRateGrid("0.0001, 0.0003, 0.001, 0.003, 0.01");
     }
     setPretrainingTargetLoss(5.4);
@@ -1554,6 +1558,7 @@ export function AutoscalerStudio() {
           beta2: 0.95,
           epsilon: useJiangChizat ? 1e-12 : 1e-16,
           weight_decay: 0,
+          fused: targetDevice === "cuda",
           learning_rates: parsedHorizonRates,
           ...(useJiangChizat ? { learning_rate_multipliers: {
             jiang_embeddings: 1,
@@ -1568,7 +1573,7 @@ export function AutoscalerStudio() {
         schedule: useJiangChizat ? "jiang_half_warmup_constant" : "cosine_to_10_percent",
         batch_examples: forecastBatchExamples,
         validation_examples: targetDevice === "cuda" ? 256 : 16,
-        validation_interval: targetDevice === "cuda" ? 100 : 1,
+        validation_interval_steps: targetDevice === "cuda" ? 2000 : 1,
         seeds: targetDevice === "cuda" ? [11, 29, 47] : [3],
         runtime: {
           precision,
@@ -1578,6 +1583,7 @@ export function AutoscalerStudio() {
           gradient_accumulation_steps: gradientAccumulationSteps,
           activation_checkpointing: true,
           checkpoint_interval_steps: checkpointIntervalSteps,
+          checkpoint_interval_seconds: checkpointIntervalSeconds,
           resume: true,
         },
         bootstrap_samples: targetDevice === "cuda" ? 400 : 0,
@@ -1763,6 +1769,7 @@ export function AutoscalerStudio() {
         gradient_accumulation_steps: gradientAccumulationSteps,
         activation_checkpointing: targetDevice === "cuda",
         checkpoint_interval_steps: checkpointIntervalSteps,
+        checkpoint_interval_seconds: checkpointIntervalSeconds,
         resume: true,
       },
       scales: onA100 ? [
@@ -2030,6 +2037,7 @@ export function AutoscalerStudio() {
                 <label><span>GPU processes</span><input disabled={batchJobLocked || distributedMode === "none"} type="number" min="2" max="8" value={gpuCount} onChange={(event) => { setGpuCount(Math.min(8, Math.max(2, Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
                 <label><span>Gradient accumulation</span><input disabled={batchJobLocked} type="number" min="1" value={gradientAccumulationSteps} onChange={(event) => { setGradientAccumulationSteps(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
                 <label><span>Checkpoint cadence</span><input disabled={batchJobLocked} type="number" min="0" value={checkpointIntervalSteps} onChange={(event) => { setCheckpointIntervalSteps(Math.max(0, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /><small>steps · 0 disables</small></label>
+                <label><span>Checkpoint timer</span><input disabled={batchJobLocked} type="number" min="0" step="60" value={checkpointIntervalSeconds} onChange={(event) => { setCheckpointIntervalSeconds(Math.max(0, Number(event.target.value))); markBatchCampaignEdited(); }} /><small>seconds · 900 recommended</small></label>
               </>}
             </div>
             {(batchCampaign === "standard_pretraining_census" || batchCampaign === "horizon_transfer" || batchCampaign === "real_text_scaling_ladder") && (

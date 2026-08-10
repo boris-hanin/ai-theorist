@@ -70,7 +70,8 @@ Transformer block and shards its state. Global batch size must divide
 applied at the block boundary when requested.
 
 An atomic runtime checkpoint can be written every declared number of optimizer
-steps. It contains the model, optimizer, CPU/CUDA and sampler RNG states, loss
+steps, every declared number of wall-clock seconds, or whichever cadence fires
+first. It contains the model, optimizer, CPU/CUDA and sampler RNG states, loss
 checkpoints, and elapsed time. DDP writes one complete state per rank; FSDP
 writes one sharded state per rank and therefore requires the same world size on
 resume. Completed trials still use the independent immutable trial cache.
@@ -141,10 +142,11 @@ completed result unsafe to reuse for the same request.
 
 ## Current boundary
 
-This runtime is intentionally single-node. It now implements activation
-checkpointing, gradient accumulation, and same-topology mid-trial recovery,
+This model runtime is intentionally single-node. It now implements activation
+checkpointing, gradient accumulation, fused Adam for the forecast path, and
+same-topology mid-trial recovery,
 but it does not yet implement multi-node rendezvous, sequence/tensor/pipeline
-parallelism, fused optimizers, data-loader workers, packed-document attention
+parallelism, data-loader workers, packed-document attention
 masks, FSDP checkpoint consolidation, or elastic world-size changes. Those are
 required before the app represents a full frontier-scale pretraining stack.
 The web selector targets the machine hosting the Autoscaler API; it is not an

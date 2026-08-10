@@ -39,6 +39,7 @@ from .pretraining import (
     close_distributed,
     load_runtime_checkpoint,
     prepare_distributed,
+    runtime_checkpoint_due,
     save_runtime_checkpoint,
     wrap_distributed_model,
 )
@@ -361,6 +362,9 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     )
     if validation_examples % runtime.num_processes:
         raise ValueError("validation_examples must be divisible by num_processes")
+    validation_interval_steps = _positive_int(
+        config.get("validation_interval_steps"), "validation_interval_steps"
+    )
     optimizer = config.get("optimizer")
     if not isinstance(optimizer, Mapping) or optimizer.get("name") != "adam":
         raise ValueError("theory scaling ladder currently requires Adam")
@@ -372,6 +376,12 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "optimizer.learning_rates must contain at least three increasing values"
         )
+    optimizer_contract = json.loads(json.dumps(dict(optimizer), sort_keys=True))
+    fused_optimizer = optimizer_contract.get("fused", False)
+    if not isinstance(fused_optimizer, bool):
+        raise ValueError("optimizer.fused must be boolean")
+    if fused_optimizer and runtime.precision != "bf16":
+        raise ValueError("the fused Adam forecast path requires bf16")
     seeds = tuple(int(value) for value in config.get("seeds", (11, 29, 47)))
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError("seeds must be non-empty and unique")
@@ -409,7 +419,12 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "batch_examples": batch_examples,
         "validation_examples": validation_examples,
         "learning_rates": list(rates),
+        "optimizer_contract": optimizer_contract,
         "seeds": list(seeds),
+        "measurement_contract": {
+            "validation_examples": validation_examples,
+            "validation_interval_steps": validation_interval_steps,
+        },
         "scales": [row.to_dict() for row in scales],
         "fit_parameter_span": observed_span,
         "minimum_parameter_span": minimum_span,
@@ -598,6 +613,9 @@ def _build_model_and_groups(
         ]
     else:
         raise ValueError("optimizer_mode must be theory or wrong_global")
+    fused = bool(optimizer_payload.get("fused", False))
+    if fused and not context.device.startswith("cuda"):
+        raise ValueError("fused Adam requires CUDA")
     optimizer = torch.optim.Adam(
         optimizer_groups,
         lr=eta,
@@ -607,7 +625,9 @@ def _build_model_and_groups(
         ),
         eps=float(optimizer_payload.get("epsilon", 1e-12)),
         weight_decay=0.0,
+        fused=fused,
     )
+    group_audit = {**group_audit, "optimizer_backend": "fused_adam" if fused else "adam"}
     return model, plain_model, optimizer, group_contract, group_audit
 
 
@@ -620,6 +640,41 @@ def _broadcast_record(
     payload: List[Any] = [record.to_dict() if record is not None else None]
     torch.distributed.broadcast_object_list(payload, src=0)
     return BatchRunRecord.from_dict(payload[0])
+
+
+def forecast_trial_cache_identity(
+    *,
+    config: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    scale: Mapping[str, Any],
+    dataset_fingerprint: str,
+    runtime: PretrainingRuntimeSpec,
+    eta: float,
+    seed: int,
+    optimizer_mode: str,
+) -> Tuple[str, str]:
+    """Return the immutable fingerprint and filename stem for one trial."""
+
+    schedule = LearningRateSchedule.from_payload(config["schedule"])
+    identity = {
+        "schema_version": 1,
+        "plan_fingerprint": plan["fingerprint"],
+        "scale": dict(scale),
+        "dataset_fingerprint": dataset_fingerprint,
+        "runtime": asdict(runtime),
+        "eta": eta,
+        "seed": seed,
+        "optimizer_mode": optimizer_mode,
+        "schedule": schedule.audit(int(scale["optimizer_steps"])),
+    }
+    identity_fingerprint = sha256(
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    run_id = (
+        f"forecast-{scale['name']}-{optimizer_mode}-eta{eta:g}-s{seed}-"
+        f"{identity_fingerprint[:12]}"
+    )
+    return identity_fingerprint, run_id
 
 
 def _run_trial(
@@ -636,23 +691,15 @@ def _run_trial(
     cache_directory: Path,
 ) -> BatchRunRecord:
     schedule = LearningRateSchedule.from_payload(config["schedule"])
-    identity = {
-        "schema_version": 1,
-        "plan_fingerprint": plan["fingerprint"],
-        "scale": dict(scale),
-        "dataset_fingerprint": corpus.identity_fingerprint,
-        "runtime": asdict(runtime),
-        "eta": eta,
-        "seed": seed,
-        "optimizer_mode": optimizer_mode,
-        "schedule": schedule.audit(int(scale["optimizer_steps"])),
-    }
-    identity_fingerprint = sha256(
-        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    run_id = (
-        f"forecast-{scale['name']}-{optimizer_mode}-eta{eta:g}-s{seed}-"
-        f"{identity_fingerprint[:12]}"
+    identity_fingerprint, run_id = forecast_trial_cache_identity(
+        config=config,
+        plan=plan,
+        scale=scale,
+        dataset_fingerprint=corpus.identity_fingerprint,
+        runtime=runtime,
+        eta=eta,
+        seed=seed,
+        optimizer_mode=optimizer_mode,
     )
     record_path = cache_directory / f"{run_id}.json"
     cache_hit = record_path.is_file() if context.is_primary else False
@@ -732,6 +779,7 @@ def _run_trial(
         "validation_interval_steps",
     )
     started = time.monotonic()
+    last_checkpoint_at = started
     model.train()
     for step in range(start_step + 1, steps + 1):
         multiplier = schedule.multiplier(step, steps)
@@ -786,8 +834,13 @@ def _run_trial(
                     "validation_loss": validation_loss,
                 }
             )
-        if runtime.checkpoint_interval_steps and (
-            step % runtime.checkpoint_interval_steps == 0 or step == steps
+        checkpoint_now = time.monotonic()
+        if runtime_checkpoint_due(
+            runtime,
+            step=step,
+            total_steps=steps,
+            last_checkpoint_at=last_checkpoint_at,
+            now=checkpoint_now,
         ):
             save_runtime_checkpoint(
                 base_path=resume_base,
@@ -806,6 +859,7 @@ def _run_trial(
                     - started,
                 },
             )
+            last_checkpoint_at = checkpoint_now
     duration = elapsed_before_resume + time.monotonic() - started
     final_loss = float(checkpoints[-1]["validation_loss"])
     diagnostics: Dict[str, Any] = {}

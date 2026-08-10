@@ -33,7 +33,7 @@ from .tokenization import token_stream_identity, tokenizer_catalog
 # Increment when job interpretation changes in a way that makes a persisted
 # result unsafe to reuse for an identical request (for example, a new
 # estimator qualification gate). Trial-level cache formats version separately.
-CAMPAIGN_JOB_IDENTITY_VERSION = 4
+CAMPAIGN_JOB_IDENTITY_VERSION = 5
 
 
 def _campaign_data_identity(config: Mapping[str, Any]) -> Optional[Dict[str, Any]]:

@@ -21,6 +21,13 @@ from .batch_scaling import (
 from .critical_batch import CriticalBatchEstimate
 from .campaign_jobs import run_campaign_job
 from .forecast_campaigns import compile_real_text_scaling_plan
+from .forecast_fleet import (
+    aggregate_forecast_fleet_cache,
+    assign_forecast_fleet_tasks,
+    build_forecast_fleet_tasks,
+    run_forecast_fleet_shard,
+    select_forecast_fleet_learning_rate,
+)
 from .horizon_campaigns import run_horizon_transfer_campaign
 from .joint_transfer_campaigns import run_joint_transfer_campaign
 from .pretraining import compile_standard_pretraining_plan
@@ -181,6 +188,49 @@ def main() -> None:
         "--output", type=Path, default=Path("runs/autoscaler/forecast-ladder")
     )
     forecast.add_argument("--progress-jsonl", action="store_true")
+
+    forecast_shard = subparsers.add_parser(
+        "forecast-shard",
+        help="run one independently schedulable shard of a forecast campaign",
+    )
+    forecast_shard.add_argument("config", type=Path)
+    forecast_shard.add_argument("--phase", choices=("tune", "ladder"), required=True)
+    forecast_shard.add_argument("--shard-index", type=int, required=True)
+    forecast_shard.add_argument("--shard-count", type=int, required=True)
+    forecast_shard.add_argument("--selected-learning-rate", type=float)
+    forecast_shard.add_argument("--task-id", action="append")
+    forecast_shard.add_argument("--device", default="cuda")
+    forecast_shard.add_argument("--output", type=Path, required=True)
+    forecast_shard.add_argument("--progress-jsonl", action="store_true")
+
+    forecast_tasks = subparsers.add_parser(
+        "forecast-tasks",
+        help="compile deterministic FLOP-balanced forecast fleet assignments",
+    )
+    forecast_tasks.add_argument("config", type=Path)
+    forecast_tasks.add_argument("--phase", choices=("tune", "ladder"), required=True)
+    forecast_tasks.add_argument("--shard-count", type=int, required=True)
+    forecast_tasks.add_argument("--selected-learning-rate", type=float)
+
+    forecast_select = subparsers.add_parser(
+        "forecast-select",
+        help="select the reference learning rate from complete fleet caches",
+    )
+    forecast_select.add_argument("config", type=Path)
+    forecast_select.add_argument(
+        "--cache-directory", type=Path, action="append", required=True
+    )
+    forecast_select.add_argument("--output", type=Path)
+
+    forecast_aggregate = subparsers.add_parser(
+        "forecast-aggregate",
+        help="validate and aggregate complete fleet trial caches",
+    )
+    forecast_aggregate.add_argument("config", type=Path)
+    forecast_aggregate.add_argument(
+        "--cache-directory", type=Path, action="append", required=True
+    )
+    forecast_aggregate.add_argument("--output", type=Path, required=True)
 
     corpus = subparsers.add_parser(
         "corpus-materialize",
@@ -438,6 +488,77 @@ def main() -> None:
             progress=progress,
         )
         _print(result)
+    elif args.command == "forecast-shard":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-shard config must be an object")
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        _print(
+            run_forecast_fleet_shard(
+                payload,
+                phase=args.phase,
+                shard_index=args.shard_index,
+                shard_count=args.shard_count,
+                selected_learning_rate=args.selected_learning_rate,
+                task_ids=args.task_id,
+                output_directory=args.output,
+                device=args.device,
+                progress=progress,
+            )
+        )
+    elif args.command == "forecast-tasks":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-tasks config must be an object")
+        plan = compile_real_text_scaling_plan(payload)
+        tasks = build_forecast_fleet_tasks(
+            plan,
+            phase=args.phase,
+            selected_learning_rate=args.selected_learning_rate,
+            run_negative_control=bool(payload.get("run_negative_control", True)),
+        )
+        assignments = assign_forecast_fleet_tasks(tasks, args.shard_count)
+        _print(
+            {
+                "plan_fingerprint": plan["fingerprint"],
+                "phase": args.phase,
+                "shard_count": args.shard_count,
+                "assignments": [
+                    {
+                        "shard_index": index,
+                        "estimated_flops": sum(
+                            task.estimated_flops for task in rows
+                        ),
+                        "tasks": [task.to_dict() for task in rows],
+                    }
+                    for index, rows in enumerate(assignments)
+                ],
+            }
+        )
+    elif args.command == "forecast-select":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-select config must be an object")
+        _write_and_print(
+            select_forecast_fleet_learning_rate(
+                payload, args.cache_directory
+            ),
+            args.output,
+        )
+    elif args.command == "forecast-aggregate":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-aggregate config must be an object")
+        _print(
+            aggregate_forecast_fleet_cache(
+                payload,
+                cache_directories=args.cache_directory,
+                output_directory=args.output,
+            )
+        )
     elif args.command == "corpus-materialize":
         payload = _read_json(args.config)
         if not isinstance(payload, dict):

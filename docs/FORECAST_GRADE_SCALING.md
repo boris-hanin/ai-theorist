@@ -39,6 +39,58 @@ provenance is recorded, and raw-text plus token-shard materialization resumes
 only at atomically committed boundaries. The forecast preset uses FineWeb-Edu
 and the pinned OLMo 2 tokenizer.
 
+Long trials may checkpoint by optimizer-step cadence, wall-clock cadence, or
+both. The production presets use a 15-minute timer instead of checkpointing
+every 100 steps; the latter would spend an unacceptable fraction of a large
+run rewriting optimizer state. The exact timer is part of the trial identity.
+
+## Independent GPU fleets
+
+The forecast campaign has a two-phase physical trial DAG. Phase `tune` runs
+every reference learning-rate/seed probe. Only after those exact cache records
+are complete does the controller select the preregistered mean-loss optimum.
+Phase `ladder` then runs every remaining rung/seed pair and the largest-rung
+wrong-global-LR controls. The selected reference trials are reused rather than
+trained twice, so the supplied three-seed, five-rate, six-rung campaign has 33
+physical trials and 36 logical analysis records.
+
+Tasks are assigned by deterministic longest-processing-time balancing using
+the declared `6*N*T` FLOP estimate. Each shard is a single-process worker with
+an immutable trial cache, so it works on independent one-GPU machines and does
+not require a multi-node process group. Interrupted shards safely replay their
+assignment and immediately reuse completed trials.
+
+Compile the balanced assignments without allocating a GPU:
+
+```bash
+ai-theorist-autoscale forecast-tasks CONFIG \
+  --phase tune --shard-count 2
+```
+
+Run tuning shards independently, gather their `trials/*.json` caches, and
+select the frozen learning rate:
+
+```bash
+ai-theorist-autoscale forecast-shard CONFIG \
+  --phase tune --shard-index 0 --shard-count 2 \
+  --device cuda --output RUN/tune-0 --progress-jsonl
+
+ai-theorist-autoscale forecast-select CONFIG \
+  --cache-directory RUN/tune-0/trials \
+  --cache-directory RUN/tune-1/trials \
+  --output RUN/reference-selection.json
+```
+
+Use the selected rate for every ladder shard. `forecast-aggregate` first
+proves that every expected cache filename and record contract is present; it
+refuses incomplete or stale fleets before invoking the canonical analysis.
+
+The checked-in 100M presets target independent GPU workers: explicit bf16
+FlashAttention, fused Adam, one process per trial, vectorized memory-mapped
+token sampling, activation checkpointing, and 15-minute atomic checkpoints.
+Single-node DDP/FSDP remains available through the web builder when one trial
+actually benefits from model sharding.
+
 ## Forecast decision
 
 The LR grid is tuned only at the declared reference rung. Every scale then uses
@@ -91,7 +143,7 @@ ai-theorist-autoscale forecast-ladder \
   --progress-jsonl
 ```
 
-The equivalent νGPT preset uses DDP. The web app exposes the same immutable
+The equivalent νGPT preset uses the same independent-worker execution. The web app exposes the same immutable
 fields, public-corpus job, progress, hidden-rung calibration, and forecast
 refusal reasons. The supplied 7M–100M stage intentionally retains the 30×
 span gate: it can qualify transfer and the hidden 100M rung, but it cannot by
@@ -101,9 +153,9 @@ pass.
 
 ## Remaining scale boundary
 
-This is a forecast-grade single-node campaign engine, not yet a frontier
-trainer. Multi-node training, elastic world-size changes, packed-document
-attention masks, fused optimizer kernels, and sequence/tensor/pipeline
+This is a forecast-grade independent-trial fleet and single-node model engine,
+not yet a frontier trainer. Multi-node model training, elastic world-size
+changes, packed-document attention masks, and sequence/tensor/pipeline
 parallelism remain outside the current contract. A serious 1B forecast still
 requires actually running and passing the 100M ladder and its hidden upper
 rung; implementation alone supplies no empirical certificate.
