@@ -42,7 +42,7 @@ from .public_corpora import (
 )
 from .schema import StudySpec, compile_plan, default_study_spec
 from .seesaw import SchedulePoint, compile_seesaw_schedule
-from .study import atomic_write_json, run_study
+from .study import atomic_write_json, json_safe, run_study
 from .training import train_trial
 from .tuning import (
     MOE_TABLE1_ADAM,
@@ -60,7 +60,7 @@ def _read_spec(path: Path) -> StudySpec:
 
 
 def _print(payload: object) -> None:
-    json.dump(payload, sys.stdout, indent=2, sort_keys=True, allow_nan=False)
+    json.dump(json_safe(payload), sys.stdout, indent=2, sort_keys=True, allow_nan=False)
     sys.stdout.write("\n")
 
 

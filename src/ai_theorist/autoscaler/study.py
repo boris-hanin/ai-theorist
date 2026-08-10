@@ -43,13 +43,14 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _json_safe(value: Any) -> Any:
+def json_safe(value: Any) -> Any:
+    """Return a recursively strict-JSON-compatible representation."""
     if isinstance(value, float) and not math.isfinite(value):
         return None
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        return {str(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
+        return [json_safe(item) for item in value]
     return value
 
 
@@ -58,7 +59,7 @@ def atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(_json_safe(payload), handle, indent=2, sort_keys=True, allow_nan=False)
+            json.dump(json_safe(payload), handle, indent=2, sort_keys=True, allow_nan=False)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
@@ -851,5 +852,5 @@ def run_study(
     if output_dir is not None:
         atomic_write_json(output_dir / "result.json", result)
     _emit(progress, "completed", trial_counter, trial_counter, "Study complete")
-    return _json_safe(result)
+    return json_safe(result)
     optimizer_group_learning_rates_from_normalized_eta,

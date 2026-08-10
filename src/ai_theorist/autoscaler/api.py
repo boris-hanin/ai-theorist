@@ -26,7 +26,7 @@ from .public_corpora import (
     public_corpus_catalog,
 )
 from .schema import SpecError, StudySpec, compile_plan, default_study_spec
-from .study import atomic_write_json, run_study
+from .study import atomic_write_json, json_safe, run_study
 from .tokenization import token_stream_identity, tokenizer_catalog
 
 
@@ -544,7 +544,7 @@ class RequestHandler(BaseHTTPRequestHandler):
         return self.headers.get("Origin") is not None and self._origin() is None
 
     def _send(self, status: int, payload: Dict[str, Any]) -> None:
-        body = json.dumps(payload, allow_nan=False).encode("utf-8")
+        body = json.dumps(json_safe(payload), allow_nan=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
