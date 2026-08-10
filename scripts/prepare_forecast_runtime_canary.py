@@ -20,9 +20,13 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=11)
     parser.add_argument("--learning-rate", type=float, default=0.001)
     parser.add_argument("--fused", choices=("true", "false"), default="true")
+    parser.add_argument("--checkpoint-steps", type=int, default=0)
+    parser.add_argument("--checkpoint-seconds", type=float, default=900)
     args = parser.parse_args()
     if args.steps < 1:
         raise ValueError("steps must be positive")
+    if args.checkpoint_steps < 0 or args.checkpoint_seconds < 0:
+        raise ValueError("checkpoint cadences must be non-negative")
 
     with args.config.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
@@ -44,8 +48,8 @@ def main() -> None:
             "distributed": "none",
             "num_processes": 1,
             "gradient_accumulation_steps": 1,
-            "checkpoint_interval_steps": 0,
-            "checkpoint_interval_seconds": 900,
+            "checkpoint_interval_steps": args.checkpoint_steps,
+            "checkpoint_interval_seconds": args.checkpoint_seconds,
             "resume": True,
         }
     )
