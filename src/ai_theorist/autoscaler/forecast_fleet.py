@@ -307,7 +307,10 @@ def _expected_record(
 
 
 def select_forecast_fleet_learning_rate(
-    config: Mapping[str, Any], cache_directories: Sequence[Path]
+    config: Mapping[str, Any],
+    cache_directories: Sequence[Path],
+    *,
+    require_interior: bool = False,
 ) -> Dict[str, Any]:
     """Validate every tuning task and select the preregistered mean-loss optimum."""
 
@@ -349,13 +352,19 @@ def select_forecast_fleet_learning_rate(
     selected_index = min(
         range(len(rows)), key=lambda index: rows[index]["mean_validation_loss"]
     )
-    return {
+    result = {
         "schema_version": FLEET_SCHEMA_VERSION,
         "plan_fingerprint": plan["fingerprint"],
         "selected_learning_rate": rows[selected_index]["learning_rate"],
         "optimum_is_interior": 0 < selected_index < len(rows) - 1,
         "grid": rows,
     }
+    if require_interior and not result["optimum_is_interior"]:
+        raise ValueError(
+            "reference learning-rate optimum is on the grid boundary; "
+            "expand the preregistered grid before launching the ladder"
+        )
+    return result
 
 
 def aggregate_forecast_fleet_cache(

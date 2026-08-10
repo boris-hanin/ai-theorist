@@ -236,6 +236,11 @@ def main() -> None:
     forecast_select.add_argument(
         "--cache-directory", type=Path, action="append", required=True
     )
+    forecast_select.add_argument(
+        "--require-interior",
+        action="store_true",
+        help="refuse a boundary optimum before launching a forecast ladder",
+    )
     forecast_select.add_argument("--output", type=Path)
 
     forecast_aggregate = subparsers.add_parser(
@@ -588,7 +593,9 @@ def main() -> None:
             raise ValueError("forecast-select config must be an object")
         _write_and_print(
             select_forecast_fleet_learning_rate(
-                payload, args.cache_directory
+                payload,
+                args.cache_directory,
+                require_interior=args.require_interior,
             ),
             args.output,
         )

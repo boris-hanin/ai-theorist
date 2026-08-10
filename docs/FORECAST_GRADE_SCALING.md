@@ -163,7 +163,9 @@ scripts/qualify_forecast_2gpu_ddp.sh \
 On one node with eight GPUs, production uses one independent trial worker per
 GPU rather than data-parallelizing small models. The controller freezes the
 plan and balanced assignments, completes all tuning workers, selects the LR,
-then completes the ladder workers and refuses partial aggregation:
+requires the selected LR to be interior to the preregistered grid, then
+completes the ladder workers and refuses partial aggregation. A boundary
+optimum halts before any ladder workers launch so the grid can be expanded:
 
 ```bash
 scripts/run_forecast_8gpu_fleet.sh \

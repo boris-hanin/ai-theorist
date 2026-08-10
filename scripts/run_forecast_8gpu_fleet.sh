@@ -85,6 +85,7 @@ for ((shard = 0; shard < worker_count; shard += 1)); do
 done
 "$cli" forecast-select "$config" \
   "${cache_args[@]}" \
+  --require-interior \
   --output "$run_root/reference-selection.json" > "$run_root/reference-selection.stdout.json"
 selected_learning_rate="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["selected_learning_rate"])' "$run_root/reference-selection.json")"
 

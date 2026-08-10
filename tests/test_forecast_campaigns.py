@@ -519,3 +519,38 @@ def test_two_shard_fleet_reuses_exact_caches_for_canonical_analysis(
         select_forecast_fleet_learning_rate(
             config, [*tune_caches, conflict]
         )
+
+
+def test_fleet_refuses_boundary_reference_optimum_before_ladder(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    tune_roots = [tmp_path / "tune-0", tmp_path / "tune-1"]
+    for shard_index, output in enumerate(tune_roots):
+        run_forecast_fleet_shard(
+            config,
+            phase="tune",
+            shard_index=shard_index,
+            shard_count=2,
+            output_directory=output,
+            device="cpu",
+        )
+    tune_caches = [path / "trials" for path in tune_roots]
+    for cache in tune_caches:
+        for path in cache.glob("*.json"):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["final_validation_loss"] = -float(
+                payload["optimizer"]["learning_rate"]
+            )
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+    selection = select_forecast_fleet_learning_rate(config, tune_caches)
+    assert selection["selected_learning_rate"] == max(
+        config["optimizer"]["learning_rates"]
+    )
+    assert selection["optimum_is_interior"] is False
+    with pytest.raises(ValueError, match="grid boundary"):
+        select_forecast_fleet_learning_rate(
+            config, tune_caches, require_interior=True
+        )
