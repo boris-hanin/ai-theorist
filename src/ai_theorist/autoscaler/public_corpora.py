@@ -6,8 +6,9 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import tempfile
+from time import sleep
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -100,19 +101,41 @@ def public_corpus_catalog() -> List[Dict[str, Any]]:
     ]
 
 
-def _json_request(url: str, timeout: float = 60.0) -> Dict[str, Any]:
-    request = Request(
-        url,
-        headers={
-            "Accept": "application/json",
-            "User-Agent": "ai-theorist-autoscaler/0.1 public-corpus-materializer",
-        },
-    )
-    with urlopen(request, timeout=timeout) as response:
-        payload = json.load(response)
-    if not isinstance(payload, dict):
-        raise RuntimeError("public dataset endpoint returned a non-object response")
-    return payload
+def _json_request(
+    url: str, timeout: float = 60.0, maximum_attempts: int = 10
+) -> Dict[str, Any]:
+    """Read one public JSON endpoint with bounded transient-failure retries."""
+    retryable_statuses = {429, 500, 502, 503, 504}
+    for attempt in range(maximum_attempts):
+        request = Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "ai-theorist-autoscaler/0.1 public-corpus-materializer",
+            },
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                payload = json.load(response)
+            if not isinstance(payload, dict):
+                raise RuntimeError(
+                    "public dataset endpoint returned a non-object response"
+                )
+            return payload
+        except HTTPError as error:
+            if error.code not in retryable_statuses or attempt + 1 >= maximum_attempts:
+                raise
+            retry_after = error.headers.get("Retry-After") if error.headers else None
+            try:
+                requested_delay = float(retry_after) if retry_after is not None else 0.0
+            except ValueError:
+                requested_delay = 0.0
+            sleep(max(requested_delay, min(30.0, float(2**attempt))))
+        except URLError:
+            if attempt + 1 >= maximum_attempts:
+                raise
+            sleep(min(30.0, float(2**attempt)))
+    raise RuntimeError("unreachable public dataset retry state")
 
 
 def _source_revision(dataset: str) -> str:
@@ -164,17 +187,62 @@ def _materialize_split(
     progress: ProgressCallback,
     completed_bytes: int,
     total_bytes: int,
+    source_revision: str,
 ) -> Tuple[Dict[str, Any], int]:
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{output_path.name}.", dir=output_path.parent, text=True
-    )
-    document_count = 0
-    text_bytes = 0
-    first_row: Optional[int] = None
-    last_row: Optional[int] = None
-    offset = start_offset
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    partial_path = output_path.with_name(f".{output_path.name}.partial")
+    checkpoint_path = output_path.with_name(f".{output_path.name}.partial.json")
+    contract = {
+        "schema_version": 1,
+        "source_revision": source_revision,
+        "start_offset": start_offset,
+        "target_bytes": target_bytes,
+        "maximum_documents": maximum_documents,
+    }
+    checkpoint: Optional[Dict[str, Any]] = None
+    if checkpoint_path.is_file() and partial_path.is_file():
+        try:
+            with checkpoint_path.open("r", encoding="utf-8") as checkpoint_handle:
+                candidate = json.load(checkpoint_handle)
+            if all(candidate.get(key) == value for key, value in contract.items()):
+                file_position = int(candidate["file_position"])
+                if 0 <= file_position <= partial_path.stat().st_size:
+                    checkpoint = candidate
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            checkpoint = None
+
+    if checkpoint is None:
+        document_count = 0
+        text_bytes = 0
+        first_row: Optional[int] = None
+        last_row: Optional[int] = None
+        offset = start_offset
+        handle = partial_path.open("wb")
+    else:
+        document_count = int(checkpoint["document_count"])
+        text_bytes = int(checkpoint["text_bytes"])
+        first_row = checkpoint.get("first_row")
+        last_row = checkpoint.get("last_row")
+        offset = int(checkpoint["offset"])
+        handle = partial_path.open("r+b")
+        handle.truncate(int(checkpoint["file_position"]))
+        handle.seek(0, os.SEEK_END)
+        if progress is not None:
+            progress(
+                {
+                    "phase": "materializing",
+                    "completed": min(
+                        total_bytes, completed_bytes + min(text_bytes, target_bytes)
+                    ),
+                    "total": total_bytes,
+                    "message": (
+                        f"Resuming {split_name}: {document_count:,} documents, "
+                        f"{text_bytes / (1024 * 1024):.1f} MiB"
+                    ),
+                }
+            )
+
+    with handle:
+        try:
             while text_bytes < target_bytes and document_count < maximum_documents:
                 remaining_documents = maximum_documents - document_count
                 length = min(100, remaining_documents)
@@ -220,10 +288,11 @@ def _materialize_split(
                         "source_row": row_index,
                         "source_id": source_id,
                     }
-                    handle.write(
+                    encoded_record = (
                         json.dumps(record, ensure_ascii=False, separators=(",", ":"))
-                    )
-                    handle.write("\n")
+                        + "\n"
+                    ).encode("utf-8")
+                    handle.write(encoded_record)
                     encoded_size = len(text.encode("utf-8"))
                     text_bytes += encoded_size
                     document_count += 1
@@ -232,6 +301,20 @@ def _materialize_split(
                     if text_bytes >= target_bytes or document_count >= maximum_documents:
                         break
                 offset += len(rows)
+                handle.flush()
+                os.fsync(handle.fileno())
+                atomic_write_json(
+                    checkpoint_path,
+                    {
+                        **contract,
+                        "offset": offset,
+                        "document_count": document_count,
+                        "text_bytes": text_bytes,
+                        "first_row": first_row,
+                        "last_row": last_row,
+                        "file_position": handle.tell(),
+                    },
+                )
                 if progress is not None:
                     progress(
                         {
@@ -247,16 +330,18 @@ def _materialize_split(
                             ),
                         }
                     )
+            if text_bytes < target_bytes:
+                raise RuntimeError(
+                    f"{split_name} reached its document cap before the byte target"
+                )
             handle.flush()
             os.fsync(handle.fileno())
-        if text_bytes < target_bytes:
-            raise RuntimeError(
-                f"{split_name} reached its document cap before the byte target"
-            )
-        os.replace(temporary_name, output_path)
-    finally:
-        if os.path.exists(temporary_name):
-            os.unlink(temporary_name)
+        except Exception:
+            # The checkpoint points only to fsynced complete records, so a later
+            # attempt can safely truncate and resume this exact source revision.
+            raise
+    os.replace(partial_path, output_path)
+    checkpoint_path.unlink(missing_ok=True)
     return (
         {
             "path": str(output_path.resolve()),
@@ -315,6 +400,7 @@ def materialize_public_corpus(
         progress=progress,
         completed_bytes=0,
         total_bytes=total_bytes,
+        source_revision=revision_before,
     )
     validation, _ = _materialize_split(
         catalog=catalog,
@@ -326,6 +412,7 @@ def materialize_public_corpus(
         progress=progress,
         completed_bytes=spec.train_bytes,
         total_bytes=total_bytes,
+        source_revision=revision_before,
     )
     revision_after = _source_revision(str(catalog["dataset"]))
     if revision_before != revision_after:
