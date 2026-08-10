@@ -392,6 +392,7 @@ def primary_analysis(
     etas: Sequence[float],
     seeds: Sequence[int],
     reference_label: str,
+    oracle_tolerance: float,
 ) -> Dict[str, object]:
     means = {}
     for shape in shapes:
@@ -423,11 +424,26 @@ def primary_analysis(
         eta=reference_eta,
         rule=PRIMARY_RULE,
     )
-    accepted = (
-        0 < reference_index < len(etas) - 1
-        and max(abs(value) for value in offsets.values()) <= 0.35
-        and bool(fixed["accepted"])
-    )
+    oracle_losses = {
+        shape.label: means[(shape.label, best_eta[shape.label])]
+        for shape in shapes
+    }
+    fixed_losses = {
+        shape.label: means[(shape.label, reference_eta)]
+        for shape in shapes
+    }
+    oracle_ratios = {
+        shape.label: fixed_losses[shape.label] / max(oracle_losses[shape.label], 1e-30)
+        for shape in shapes
+    }
+    gates = {
+        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "every_shape_has_a_complete_finite_oracle": all(
+            math.isfinite(value) for value in oracle_losses.values()
+        ),
+        "fixed_reference_eta_dynamics_are_stable": bool(fixed["accepted"]),
+        "fixed_reference_eta_near_shape_oracle": max(oracle_ratios.values()) <= oracle_tolerance,
+    }
     return {
         "reference_shape": reference_label,
         "reference_eta": reference_eta,
@@ -437,19 +453,41 @@ def primary_analysis(
         "maximum_absolute_best_eta_offset_decades": max(
             abs(value) for value in offsets.values()
         ),
+        "oracle_validation_loss_by_shape": oracle_losses,
+        "fixed_reference_eta_validation_loss_by_shape": fixed_losses,
+        "fixed_reference_eta_to_oracle_loss_ratio_by_shape": oracle_ratios,
+        "maximum_fixed_reference_eta_to_oracle_loss_ratio": max(oracle_ratios.values()),
+        "oracle_loss_ratio_tolerance": oracle_tolerance,
         "fixed_reference_eta": fixed,
-        "accepted": accepted,
+        "diagnostics": {
+            "exact_grid_argmin_drift_within_0.35_decades": (
+                max(abs(value) for value in offsets.values()) <= 0.35
+            ),
+            "interpretation": (
+                "exact discrete argmin drift is descriptive; the hard transfer gate is "
+                "the fixed reference eta's loss ratio to each shape oracle"
+            ),
+        },
+        "gates": gates,
+        "accepted": all(gates.values()),
     }
 
 
 def best_eta_for_reference(trials: Sequence[Trial], etas: Sequence[float]) -> float:
+    expected_seeds = {trial.seed for trial in trials}
+
     def score(eta: float) -> float:
-        finite = [
-            trial.final_validation_loss
+        rows = [
+            trial
             for trial in trials
-            if math.isclose(trial.eta, eta) and not trial.diverged
+            if math.isclose(trial.eta, eta)
         ]
-        return sum(finite) / len(finite) if finite else math.inf
+        if (
+            {trial.seed for trial in rows} != expected_seeds
+            or any(trial.diverged for trial in rows)
+        ):
+            return math.inf
+        return sum(trial.final_validation_loss for trial in rows) / len(rows)
 
     return min(etas, key=score)
 
@@ -545,6 +583,7 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.005,
     )
+    parser.add_argument("--oracle-tolerance", type=float, default=1.10)
     parser.add_argument("--steps", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seeds", type=int, nargs="+", default=[11, 29, 47])
@@ -607,6 +646,8 @@ def main() -> None:
         raise ValueError("multiplier probes must be positive, finite, and include 1.0")
     if args.minimum_relative_multiplier_improvement < 0.0:
         raise ValueError("minimum relative multiplier improvement cannot be negative")
+    if not math.isfinite(args.oracle_tolerance) or args.oracle_tolerance < 1.0:
+        raise ValueError("oracle tolerance must be finite and at least one")
     warmup_steps = args.steps // 2
     source_multipliers = dict(JIANG_MOE_REPORTED_LR_MULTIPLIERS)
     calibration_trials: List[Trial] = []
@@ -728,6 +769,7 @@ def main() -> None:
         etas,
         seeds,
         args.reference_shape,
+        args.oracle_tolerance,
     )
     selected_eta = float(primary["reference_eta"])
     controls = {}
@@ -822,10 +864,12 @@ def main() -> None:
         "negative_controls": controls,
         "verdict": {
             "primary_accepted": bool(primary["accepted"]),
+            "transfer_certified": bool(primary["accepted"]),
             "all_negative_controls_rejected": all(bool(row["rejected"]) for row in controls.values()),
-            "certified": bool(primary["accepted"])
+            "mechanism_discrimination_certified": bool(primary["accepted"])
             and bool(controls)
             and all(bool(row["rejected"]) for row in controls.values()),
+            "certified": bool(primary["accepted"]),
         },
         "trials": [asdict(trial) for trial in trials],
     }

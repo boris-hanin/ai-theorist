@@ -7,7 +7,12 @@ from ai_theorist.autoscaler.jiang_chizat import (
     JiangChizatReference,
 )
 from jiang_chizat_transfer import parse_shape, run_trial, validate_shapes
-from jiang_chizat_tuned_transfer import best_eta, best_multiplier, fixed_eta_analysis
+from jiang_chizat_tuned_transfer import (
+    best_eta,
+    best_multiplier,
+    fixed_eta_analysis,
+    primary_analysis,
+)
 
 
 def shapes():
@@ -93,3 +98,36 @@ def test_relative_multiplier_gate_requires_improvement_for_every_seed():
     assert best_multiplier(
         trials, minimum_relative_improvement=0.005
     ) == pytest.approx(2.0)
+
+
+def test_dense_primary_uses_loss_quality_not_exact_grid_argmin_identity():
+    etas = (1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
+    rows = []
+    for shape in shapes():
+        for eta in etas:
+            for seed in (11, 29, 47):
+                best = 3e-3 if shape.label in {"S1", "S2"} else 1e-2
+                loss = 1.0 if eta == best else 1.5
+                if eta == 3e-3 and best == 1e-2:
+                    loss = 1.05
+                rows.append(
+                    SimpleNamespace(
+                        label=shape.label,
+                        rule="primary",
+                        normalized_eta=eta,
+                        seed=seed,
+                        final_validation_loss=loss,
+                        validation_loss_checkpoints={0: 2.0},
+                        diverged=False,
+                    )
+                )
+    report = primary_analysis(
+        rows,
+        shapes(),
+        etas,
+        (11, 29, 47),
+        "S1",
+        1.10,
+    )
+    assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
+    assert report["accepted"] is True

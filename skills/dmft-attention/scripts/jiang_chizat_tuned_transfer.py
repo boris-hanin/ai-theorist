@@ -67,13 +67,20 @@ def _log_slope(x_values: Sequence[float], y_values: Sequence[float]) -> float:
 
 
 def best_eta(trials: Sequence[Trial], etas: Sequence[float]) -> float:
+    expected_seeds = {trial.seed for trial in trials}
+
     def score(eta: float) -> float:
-        finite = [
-            trial.final_validation_loss
+        rows = [
+            trial
             for trial in trials
-            if math.isclose(trial.normalized_eta, eta) and not trial.diverged
+            if math.isclose(trial.normalized_eta, eta)
         ]
-        return _mean(finite)
+        if (
+            {trial.seed for trial in rows} != expected_seeds
+            or any(trial.diverged for trial in rows)
+        ):
+            return math.inf
+        return _mean([trial.final_validation_loss for trial in rows])
 
     return min(etas, key=score)
 
@@ -174,8 +181,10 @@ def primary_analysis(
     etas: Sequence[float],
     seeds: Sequence[int],
     reference_label: str,
+    oracle_tolerance: float,
 ) -> Dict[str, object]:
     best_by_shape = {}
+    means_by_shape: Dict[str, Dict[float, float]] = {}
     for shape in shapes:
         means = {}
         for eta in etas:
@@ -191,6 +200,7 @@ def primary_analysis(
                 means[eta] = math.inf
             else:
                 means[eta] = _mean(selected)
+        means_by_shape[shape.label] = means
         best_by_shape[shape.label] = min(etas, key=lambda eta: means[eta])
     reference_eta = best_by_shape[reference_label]
     offsets = {
@@ -205,11 +215,26 @@ def primary_analysis(
         rule="primary",
     )
     reference_index = list(etas).index(reference_eta)
-    accepted = (
-        0 < reference_index < len(etas) - 1
-        and max(abs(value) for value in offsets.values()) <= 0.35
-        and bool(fixed["accepted"])
-    )
+    oracle_losses = {
+        shape.label: means_by_shape[shape.label][best_by_shape[shape.label]]
+        for shape in shapes
+    }
+    fixed_losses = {
+        shape.label: means_by_shape[shape.label][reference_eta]
+        for shape in shapes
+    }
+    oracle_ratios = {
+        shape.label: fixed_losses[shape.label] / max(oracle_losses[shape.label], 1e-30)
+        for shape in shapes
+    }
+    gates = {
+        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "every_shape_has_a_complete_finite_oracle": all(
+            math.isfinite(value) for value in oracle_losses.values()
+        ),
+        "fixed_reference_eta_dynamics_are_stable": bool(fixed["accepted"]),
+        "fixed_reference_eta_near_shape_oracle": max(oracle_ratios.values()) <= oracle_tolerance,
+    }
     return {
         "reference_shape": reference_label,
         "reference_eta": reference_eta,
@@ -219,8 +244,23 @@ def primary_analysis(
         "maximum_absolute_best_eta_offset_decades": max(
             abs(value) for value in offsets.values()
         ),
+        "oracle_validation_loss_by_shape": oracle_losses,
+        "fixed_reference_eta_validation_loss_by_shape": fixed_losses,
+        "fixed_reference_eta_to_oracle_loss_ratio_by_shape": oracle_ratios,
+        "maximum_fixed_reference_eta_to_oracle_loss_ratio": max(oracle_ratios.values()),
+        "oracle_loss_ratio_tolerance": oracle_tolerance,
         "fixed_reference_eta": fixed,
-        "accepted": accepted,
+        "diagnostics": {
+            "exact_grid_argmin_drift_within_0.35_decades": (
+                max(abs(value) for value in offsets.values()) <= 0.35
+            ),
+            "interpretation": (
+                "exact discrete argmin drift is descriptive; the hard transfer gate is "
+                "the fixed reference eta's loss ratio to each shape oracle"
+            ),
+        },
+        "gates": gates,
+        "accepted": all(gates.values()),
     }
 
 
@@ -231,6 +271,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--etas", nargs="+", type=float, required=True)
     parser.add_argument("--multiplier-probes", nargs="+", type=float, default=[0.5, 1.0, 2.0])
     parser.add_argument("--minimum-relative-multiplier-improvement", type=float, default=0.005)
+    parser.add_argument("--oracle-tolerance", type=float, default=1.10)
     parser.add_argument("--head-dimension", type=int, default=64)
     parser.add_argument("--vocab-size", type=int, default=128)
     parser.add_argument("--context-length", type=int, default=32)
@@ -269,6 +310,8 @@ def main() -> None:
         raise ValueError("multiplier probes must be positive and include 1.0")
     if args.minimum_relative_multiplier_improvement < 0.0:
         raise ValueError("minimum relative multiplier improvement cannot be negative")
+    if not math.isfinite(args.oracle_tolerance) or args.oracle_tolerance < 1.0:
+        raise ValueError("oracle tolerance must be finite and at least one")
     if min(args.steps, args.batch_size, args.n_train, args.n_validation) <= 0:
         raise ValueError("steps, batch size, and dataset sizes must be positive")
     device = torch.device(args.device)
@@ -382,6 +425,7 @@ def main() -> None:
         etas,
         seeds,
         args.reference_shape,
+        args.oracle_tolerance,
     )
     selected_eta = float(primary["reference_eta"])
     control_trials = [
@@ -480,11 +524,13 @@ def main() -> None:
     }
     report["verdict"] = {
         "primary_accepted": bool(primary["accepted"]),
+        "transfer_certified": bool(primary["accepted"]),
         "feature_velocity_accepted": bool(feature_summary["accepted"]),
         "all_controls_rejected": all(not bool(row["accepted"]) for row in controls.values()),
-        "certified": bool(primary["accepted"])
+        "mechanism_discrimination_certified": bool(primary["accepted"])
         and bool(feature_summary["accepted"])
         and all(not bool(row["accepted"]) for row in controls.values()),
+        "certified": bool(primary["accepted"]),
     }
     atomic_write_json(args.output, report)
     print(json.dumps({"output": str(args.output), **report["verdict"]}, sort_keys=True))

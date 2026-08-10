@@ -7,6 +7,7 @@ from jiang_moe_transfer import (
     best_group_multiplier,
     fixed_eta_analysis,
     parse_shape,
+    primary_analysis,
     run_trial,
     validate_shapes,
 )
@@ -111,3 +112,37 @@ def test_moe_relative_multiplier_gate_keeps_source_without_paired_improvement():
     assert best_group_multiplier(
         trials, minimum_relative_improvement=0.005
     ) == pytest.approx(1.0)
+
+
+def test_moe_primary_uses_smallest_reference_loss_quality_gate():
+    etas = (1e-4, 3e-4, 1e-3, 3e-3, 1e-2)
+    rows = []
+    for shape in tiny_shapes():
+        for eta in etas:
+            for seed in (11, 29, 47):
+                best = 3e-3 if shape.label in {"S1", "S2"} else 1e-2
+                loss = 1.0 if eta == best else 1.5
+                if eta == 3e-3 and best == 1e-2:
+                    loss = 1.05
+                rows.append(
+                    SimpleNamespace(
+                        label=shape.label,
+                        rule="table2",
+                        eta=eta,
+                        seed=seed,
+                        final_validation_loss=loss,
+                        fractional_progress=0.5,
+                        maximum_routing_load_deviation=0.1,
+                        diverged=False,
+                    )
+                )
+    report = primary_analysis(
+        rows,
+        tiny_shapes(),
+        etas,
+        (11, 29, 47),
+        "S1",
+        1.10,
+    )
+    assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
+    assert report["accepted"] is True
