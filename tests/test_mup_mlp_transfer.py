@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from ai_theorist.autoscaler.lr_contract import audit_optimizer_groups
-from mup_mlp_transfer import MuPResidualMLP, run_trial, theory_for
+from mup_mlp_transfer import MuPResidualMLP, json_safe, run_trial, theory_for
 
 
 def model(width=64, reference_width=32):
@@ -79,3 +79,10 @@ def test_tiny_mup_trial_executes_and_records_group_rates():
     assert trial.diverged is False
     assert trial.raw_learning_rates["mup_hidden_matrices"] == pytest.approx(1e-3)
     assert audit["complete"] is True
+
+
+def test_nonfinite_failed_control_diagnostics_are_strict_json_safe():
+    assert json_safe({"slope": float("nan"), "rows": [1.0, float("inf")]}) == {
+        "slope": None,
+        "rows": [1.0, None],
+    }
