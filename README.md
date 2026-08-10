@@ -107,6 +107,10 @@ single-node FSDP contracts are in `docs/PRETRAINING_RUNTIME.md`.
 Frozen real-text learning-rate schedule and token-horizon transfer is specified
 in `docs/HORIZON_TRANSFER.md`, with a CPU smoke manifest and a resumable
 FineWeb-Edu A100 campaign.
+The decision boundary between those transfer assays and larger real-text
+scaling-law forecasts is summarized in `docs/REAL_TEXT_SCALING_ROADMAP.md`,
+including the proposed 100M ladders, hidden-scale validation, and forecast
+refusal gates for 1B, 5B, and 10B targets.
 
 The deep-linear and nonlinear suites are more expensive:
 
