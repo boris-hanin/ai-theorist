@@ -11,6 +11,11 @@ type DatasetTask = "nonlinear_regression" | "synthetic_markov";
 type ScalePath = "width" | "depth" | "joint" | "moe_lmd";
 type DataScalingMode = "fixed" | "geometric";
 type HorizonPolicy = "fixed_updates" | "constant_epochs";
+type BatchCampaign = "standard_pretraining_census" | "transformer_census" | "constant_tpp";
+type Precision = "fp32" | "bf16";
+type AttentionBackend = "auto" | "math" | "flash";
+type DistributedMode = "none" | "fsdp";
+type PretrainingOptimizer = "sgd" | "adam" | "adamw";
 type Scale = { name: string; width: number; repeats: number; expert_width?: number };
 
 type StudySpec = {
@@ -92,7 +97,7 @@ type StudyResult = {
     maximum_norm_error_tolerance: number;
     scales: { scale: string; maximum_matrix_norm_error: number; maximum_hidden_norm_error: number; mean_attention_entropy: number }[];
   };
-  pilot_readiness: {
+  pilot_readiness: null | {
     ready: boolean;
     dynamic_range_to_noise: number;
     monotone_transition_fraction: number;
@@ -112,11 +117,293 @@ type StudyResult = {
 };
 type StudyJob = {
   id: string;
-  status: "queued" | "running" | "completed" | "failed";
+  status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  device?: "cpu" | "cuda" | string;
+  spec?: StudySpec;
   progress: Progress;
   result: StudyResult | null;
   error: string | null;
 };
+type StudyHistoryItem = {
+  id: string;
+  status: StudyJob["status"];
+  created_at: string | null;
+  updated_at: string | null;
+  device: string;
+  name: string;
+  run_profile: RunProfile;
+  architecture: BlockType;
+  optimizer: string;
+  dataset: DatasetTask;
+  progress: Progress;
+  error: string | null;
+  result_summary: null | {
+    forecastable: boolean;
+    selected_normalized_learning_rate: number;
+    scaling_exponent: number;
+    r_squared: number;
+    holdout_relative_error: number;
+    transfer_checks_accepted: boolean | null;
+    refusal_reasons: string[];
+    trial_count: number | null;
+  };
+};
+type BatchTransferResult = {
+  rule: string;
+  valid: boolean;
+  target: null | {
+    name: string;
+    learning_rate: number;
+    momentum: number;
+    beta1: number;
+    beta2: number;
+    epsilon: number;
+    weight_decay: number;
+  };
+  multipliers: Record<string, number>;
+  assumptions: string[];
+  refusal_reasons: string[];
+};
+type CriticalBatchEstimate = {
+  critical_batch_tokens: number | null;
+  qualified: boolean;
+  refusal_reasons: string[];
+};
+type BatchCampaignAnalysis = {
+  scale: { name: string };
+  optimizer: string;
+  consensus: CriticalBatchEstimate;
+};
+type BatchCampaignResult = {
+  status: string;
+  campaign: string;
+  records?: unknown[];
+  dataset?: {
+    tokenizer: string;
+    fingerprint: string;
+    training_tokens: number;
+    validation_tokens: number;
+  };
+  runtime?: {
+    precision: Precision;
+    attention_backend: AttentionBackend;
+    distributed: DistributedMode;
+    num_processes: number;
+    device: string;
+  };
+  scale_optimizer_analyses?: BatchCampaignAnalysis[];
+  analyses?: BatchCampaignAnalysis[];
+  geometry?: {
+    scale: { name: string; width: number; repeats: number };
+    parameters: number;
+    total_tokens: number;
+    batch_tokens: number;
+    realized_tpp: number;
+  }[];
+  tpp_spread_ratio?: number;
+  fitted_horizon_exponent?: number;
+  fit_qualification?: {
+    all_fit_optima_are_interior: boolean;
+    source_optimum_is_interior: boolean;
+  };
+  heldout_scale?: string;
+  heldout_oracle?: {
+    mean_loss: number;
+    learning_rate: number;
+    optimum_is_interior: boolean;
+  };
+  transfer_results?: {
+    rule: string;
+    valid: boolean;
+    evaluated: boolean;
+    recommendable?: boolean;
+    relative_regret?: number;
+    mean_heldout_loss?: number;
+    oracle_mean_heldout_loss?: number;
+    refusal_reasons: string[];
+  }[];
+};
+type BatchCampaignJob = {
+  id: string;
+  campaign: BatchCampaign;
+  device?: string;
+  status: "queued" | "running" | "completed" | "failed" | "interrupted";
+  progress: Progress;
+  result: BatchCampaignResult | null;
+  error: string | null;
+  config?: {
+    dataset?: { train_path?: string; validation_path?: string; tokenizer?: "byte_v1" | "uint16_bin_v1" };
+    runtime?: { precision?: Precision; attention_backend?: AttentionBackend; distributed?: DistributedMode; num_processes?: number };
+    optimizers?: { name?: PretrainingOptimizer }[];
+    target_validation_loss?: number;
+    validation_interval?: number;
+  };
+};
+
+type BatchHistoryItem = {
+  id: string;
+  campaign: BatchCampaign;
+  status: BatchCampaignJob["status"];
+  progress: Progress;
+  result_summary?: null | {
+    record_count: number;
+    qualified_analyses: number;
+    analysis_count: number;
+    recommendable_rules: number;
+    corpus_fingerprint: string | null;
+  };
+};
+
+type EvidenceCase = {
+  id: string;
+  title: string;
+  architecture: string;
+  optimizer: string;
+  data: string;
+  scalePath: string;
+  trials: number;
+  hardware: string;
+  eta: number;
+  transferAccepted: boolean;
+  negativeControlRejected: boolean;
+  forecastable: boolean;
+  r2: number;
+  exponent: number;
+  holdoutError: number;
+  conclusion: string;
+  fingerprint: string;
+};
+
+const PUBLISHED_EVIDENCE: EvidenceCase[] = [
+  {
+    id: "moe-lmd-adam-a100",
+    title: "Sparse MoE · LM/D constant",
+    architecture: "Top-1 MoE residual stack",
+    optimizer: "Adam",
+    data: "Fixed nonlinear teacher · 16,384 points",
+    scalePath: "D, L and expert M · LM/D invariant",
+    trials: 42,
+    hardware: "A100 80 GB",
+    eta: 0.03,
+    transferAccepted: true,
+    negativeControlRejected: true,
+    forecastable: true,
+    r2: 0.9424914405166642,
+    exponent: 0.06869443506581856,
+    holdoutError: 0.0030342822119086444,
+    conclusion: "Clean positive control: every transfer probe passed, the wrong global-rate control failed, and the largest held-out model landed within 0.3%.",
+    fingerprint: "05494395132d4814",
+  },
+  {
+    id: "mlp-adam-a100",
+    title: "Dense MLP · fixed-data width/depth",
+    architecture: "Pre-norm residual MLP",
+    optimizer: "Adam",
+    data: "Fixed nonlinear teacher · 16,384 points",
+    scalePath: "Joint width + repeats",
+    trials: 39,
+    hardware: "A100 80 GB",
+    eta: 0.003,
+    transferAccepted: true,
+    negativeControlRejected: false,
+    forecastable: false,
+    r2: 0.9907623861901285,
+    exponent: 0.18071057999876844,
+    holdoutError: 0.017468536338471237,
+    conclusion: "The fit and 1.7% holdout look strong, but the declared wrong rule was not separated. The app correctly withholds extrapolation.",
+    fingerprint: "cc29e690be68d646",
+  },
+  {
+    id: "mlp-sgd-a100",
+    title: "Dense MLP · SGD",
+    architecture: "Pre-norm residual MLP",
+    optimizer: "SGD",
+    data: "Fixed nonlinear teacher · 16,384 points",
+    scalePath: "Joint width + repeats",
+    trials: 39,
+    hardware: "A100 80 GB",
+    eta: 0.15,
+    transferAccepted: true,
+    negativeControlRejected: false,
+    forecastable: false,
+    r2: -2.175069010569538,
+    exponent: 0.001,
+    holdoutError: 0.0033660970455103288,
+    conclusion: "A useful refusal: HP transfer is locally non-inferior, yet loss barely moves relative to seed noise, so there is no defensible scaling law.",
+    fingerprint: "0520d28c58e724b6",
+  },
+  {
+    id: "nugpt-width-a100",
+    title: "νGPT · width only",
+    architecture: "Normalized Transformer",
+    optimizer: "Adam β₂=.95",
+    data: "Fixed synthetic Markov language",
+    scalePath: "128 → 512 width · depth 8",
+    trials: 96,
+    hardware: "A100 80 GB",
+    eta: 0.01,
+    transferAccepted: true,
+    negativeControlRejected: false,
+    forecastable: false,
+    r2: -0.1796876971214334,
+    exponent: 0.001,
+    holdoutError: 0.006976768218329974,
+    conclusion: "Normalized η transfers and unit-sphere checks pass, but the task saturates: loss is not monotone and the baseline control is indistinguishable.",
+    fingerprint: "1b081704bcdb9758",
+  },
+  {
+    id: "nugpt-depth-a100",
+    title: "νGPT · depth only",
+    architecture: "Normalized Transformer",
+    optimizer: "Adam β₂=.95",
+    data: "Fixed synthetic Markov language",
+    scalePath: "Depth 2 → 24 · width 256",
+    trials: 96,
+    hardware: "A100 80 GB",
+    eta: 0.01,
+    transferAccepted: true,
+    negativeControlRejected: false,
+    forecastable: false,
+    r2: 0.7435039401545588,
+    exponent: 1.6572526199767479,
+    holdoutError: 0.013585054296579599,
+    conclusion: "The held-out model is predicted within 1.4%, but floor identifiability and the negative control fail the stricter forecast contract.",
+    fingerprint: "1d3487474b0c89ff",
+  },
+  {
+    id: "nugpt-joint-a100",
+    title: "νGPT · width + depth",
+    architecture: "Normalized Transformer",
+    optimizer: "Adam β₂=.95",
+    data: "Fixed synthetic Markov language",
+    scalePath: "Width 128 → 512 · depth 4 → 16",
+    trials: 96,
+    hardware: "A100 80 GB",
+    eta: 0.01,
+    transferAccepted: true,
+    negativeControlRejected: false,
+    forecastable: false,
+    r2: -0.0018668371572312381,
+    exponent: 0.0010000000000026008,
+    holdoutError: 0.022162783912068693,
+    conclusion: "Normalized η and every sphere invariant pass, but fit loss saturates and turns upward. The global-rate control is better and the held-out point misses its narrow interval, so no law is issued.",
+    fingerprint: "674fe6c0938e8284",
+  },
+];
+
+const WEB_UI_EVIDENCE = [
+  { id: "ada53251904f", workflow: "MLP · Adam", coverage: "26 CPU trials", primary: "3.0% held-out error", secondary: "R² 0.984", verdict: "Smoke passed · forecast withheld" },
+  { id: "8fe3d0ddc101", workflow: "MLP · SGD", coverage: "24 CPU trials", primary: "Held-out miss", secondary: "2.6% relative error", verdict: "Failure surfaced correctly" },
+  { id: "a6151c86e759", workflow: "MoE · Adam · LM/D", coverage: "24 CPU trials", primary: "1.6% held-out error", secondary: "R² 0.836", verdict: "Smoke passed · forecast withheld" },
+  { id: "d3c3dfd23d5e", workflow: "νGPT · width", coverage: "50 CPU trials", primary: "0.8% held-out error", secondary: "Sphere invariants pass", verdict: "Smoke passed · span too narrow" },
+  { id: "8ed5ecb7beb5", workflow: "νGPT · depth", coverage: "50 CPU trials", primary: "5.6% held-out error", secondary: "Law non-identifiable", verdict: "Refusal surfaced correctly" },
+  { id: "d8270ce31988", workflow: "νGPT · width + depth", coverage: "50 CPU trials", primary: "1.0% held-out error", secondary: "Sphere invariants pass", verdict: "Smoke passed · forecast withheld" },
+  { id: "43ebfc92e5e6", workflow: "Real-text GPT census", coverage: "24 AdamW trials", primary: "4,012 train tokens", secondary: "0/2 assays qualified", verdict: "Estimator disagreement withheld" },
+  { id: "a522064cf12d", workflow: "Real-text GPT · SGD", coverage: "24 SGD trials", primary: "Bcrit assays differ 2.3–2.6×", secondary: "0/2 consensus qualified", verdict: "Near-threshold disagreement withheld" },
+  { id: "09a133642297", workflow: "Real-text GPT · Adam", coverage: "24 Adam trials", primary: "Bcrit assays differ 2.3–2.6×", secondary: "0/2 consensus qualified", verdict: "Near-threshold disagreement withheld" },
+  { id: "137f7fb48b4f", workflow: "νGPT batch census", coverage: "216 SGD/Adam trials", primary: "S2 Adam Bcrit 13.71", secondary: "1/6 assays qualified", verdict: "Selective qualification" },
+  { id: "49e2c7f6f731", workflow: "Constant T/P holdout", coverage: "4 scales · 5 rules", primary: "1.008× T/P spread", secondary: "Best regret −1.9%", verdict: "Boundary optimum · no recommendation" },
+] as const;
 
 const API_BASE = process.env.NEXT_PUBLIC_AUTOSCALER_API ?? "http://127.0.0.1:8787";
 function generateScaleLadder({
@@ -268,6 +555,27 @@ export function AutoscalerStudio() {
   const [job, setJob] = useState<StudyJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draggingBlock, setDraggingBlock] = useState<BlockType | null>(null);
+  const [targetBatchMultiplier, setTargetBatchMultiplier] = useState(1);
+  const [targetHorizonMultiplier, setTargetHorizonMultiplier] = useState(1);
+  const [batchRule, setBatchRule] = useState("complete_dp_joint");
+  const [batchTransfer, setBatchTransfer] = useState<BatchTransferResult | null>(null);
+  const [batchTransferError, setBatchTransferError] = useState<string | null>(null);
+  const [batchCampaign, setBatchCampaign] = useState<BatchCampaign>("standard_pretraining_census");
+  const [trainingPath, setTrainingPath] = useState("data/pretraining/sample_train.txt");
+  const [validationPath, setValidationPath] = useState("data/pretraining/sample_validation.txt");
+  const [tokenizer, setTokenizer] = useState<"byte_v1" | "uint16_bin_v1">("byte_v1");
+  const [precision, setPrecision] = useState<Precision>("fp32");
+  const [attentionBackend, setAttentionBackend] = useState<AttentionBackend>("math");
+  const [distributedMode, setDistributedMode] = useState<DistributedMode>("none");
+  const [pretrainingOptimizer, setPretrainingOptimizer] = useState<PretrainingOptimizer>("adamw");
+  const [pretrainingTargetLoss, setPretrainingTargetLoss] = useState(5.4);
+  const [pretrainingValidationInterval, setPretrainingValidationInterval] = useState(8);
+  const [gpuCount, setGpuCount] = useState(2);
+  const [batchJob, setBatchJob] = useState<BatchCampaignJob | null>(null);
+  const [batchJobError, setBatchJobError] = useState<string | null>(null);
+  const [studyHistory, setStudyHistory] = useState<StudyHistoryItem[]>([]);
+  const [batchHistory, setBatchHistory] = useState<BatchHistoryItem[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
 
   const generatedScales = useMemo(() => generateScaleLadder({
     blockType,
@@ -365,6 +673,12 @@ export function AutoscalerStudio() {
   // Reference tuning and the center holdout probe are reused from cache.
   const estimatedTrials = learningRates.length * 2 + (scales.length - 1) * 2 + 2 * 2 + 2;
   const totalParameters = parameterCount(scales[scales.length - 1], blockType, numExperts, vocabSize, mlpMultiplier);
+  const baseParameters = parameterCount(scales[0], blockType, numExperts, vocabSize, mlpMultiplier);
+  const parameterMultiplier = totalParameters / baseParameters;
+  const baseBatchTokens = batchSize * (blockType === "normalized_transformer" ? contextLength : 1);
+  const batchRuleOptions = useMemo(() => optimizer === "sgd"
+    ? ["none", "sgd_linear_batch"]
+    : ["none", "adam_sde_sqrt", "complete_dp_joint", "exact_token_half_life", "horizon_power_fit"], [optimizer]);
   const lmOverD = scales.map((scale) => scale.repeats * (scale.expert_width ?? 0) / scale.width);
   const moeInvariant = blockType !== "pre_norm_moe"
     || Math.max(...lmOverD) - Math.min(...lmOverD) < 1e-9;
@@ -381,6 +695,16 @@ export function AutoscalerStudio() {
     && (!microbatchSize || (microbatchSize <= batchSize && batchSize % microbatchSize === 0))
     && (blockType !== "normalized_transformer" || markovOrder < contextLength);
   const studyLocked = job?.status === "queued" || job?.status === "running";
+  const batchJobLocked = batchJob?.status === "queued" || batchJob?.status === "running";
+  const standardRuntimeValid = batchCampaign !== "standard_pretraining_census"
+    || (trainingPath.trim().length > 0
+      && validationPath.trim().length > 0
+      && Number.isFinite(pretrainingTargetLoss)
+      && pretrainingTargetLoss > 0
+      && Number.isInteger(pretrainingValidationInterval)
+      && pretrainingValidationInterval > 0
+      && (attentionBackend !== "flash" || (precision === "bf16" && targetDevice === "cuda"))
+      && (distributedMode !== "fsdp" || (targetDevice === "cuda" && gpuCount >= 2)));
 
   useEffect(() => {
     const controller = new AbortController();
@@ -403,6 +727,130 @@ export function AutoscalerStudio() {
     }, 1200);
     return () => window.clearTimeout(timer);
   }, [job]);
+
+  useEffect(() => {
+    if (!batchJob || !["queued", "running"].includes(batchJob.status)) return;
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`${API_BASE}/api/batch/jobs/${batchJob.id}`);
+        if (!response.ok) throw new Error("The batch campaign monitor lost contact with compute.");
+        setBatchJob(await response.json() as BatchCampaignJob);
+      } catch (caught) {
+        setBatchJobError(caught instanceof Error ? caught.message : "Could not refresh this campaign.");
+      }
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [batchJob]);
+
+  async function refreshHistory() {
+    try {
+      const [studyResponse, campaignResponse] = await Promise.all([
+        fetch(`${API_BASE}/api/studies`),
+        fetch(`${API_BASE}/api/batch/jobs`),
+      ]);
+      if (!studyResponse.ok || !campaignResponse.ok) {
+        throw new Error("The compute service did not return its run ledger.");
+      }
+      const studies = await studyResponse.json() as { studies: StudyHistoryItem[] };
+      const campaigns = await campaignResponse.json() as { jobs: BatchHistoryItem[] };
+      setStudyHistory(studies.studies);
+      setBatchHistory(campaigns.jobs);
+      setHistoryError(null);
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "Run history is unavailable.");
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void refreshHistory(), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (["completed", "failed", "interrupted"].includes(job?.status ?? "")
+      || ["completed", "failed", "interrupted"].includes(batchJob?.status ?? "")) {
+      const timer = window.setTimeout(() => void refreshHistory(), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [job?.status, batchJob?.status]);
+
+  async function loadStudy(studyId: string) {
+    try {
+      const response = await fetch(`${API_BASE}/api/studies/${studyId}`);
+      const payload = await response.json() as StudyJob & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The study could not be loaded.");
+      if (payload.spec) {
+        const saved = payload.spec;
+        setRunProfile(saved.run_profile);
+        setBlockType(saved.architecture.block_type);
+        setActivation(saved.architecture.activation);
+        setInputDimension(saved.architecture.input_dim);
+        setNumExperts(saved.architecture.num_experts ?? 4);
+        setActiveExperts(saved.architecture.active_experts ?? 1);
+        setVocabSize(saved.architecture.vocab_size ?? 32);
+        setContextLength(saved.architecture.context_length ?? 16);
+        setHeadDimension(saved.architecture.head_dimension ?? 8);
+        setMlpMultiplier(saved.architecture.mlp_multiplier ?? 4);
+        setOptimizer(saved.optimizer.name);
+        setBatchRule(saved.optimizer.name === "sgd" ? "sgd_linear_batch" : "complete_dp_joint");
+        setDifficulty(saved.dataset.difficulty);
+        setDatasetSize(saved.dataset.n_train);
+        setValidationSize(saved.dataset.n_validation);
+        setNoiseStd(saved.dataset.noise_std);
+        setTeacherWidth(saved.dataset.teacher_width);
+        setTeacherDepth(saved.dataset.teacher_depth);
+        setMarkovOrder(saved.dataset.markov_order);
+        setMarkovStates(saved.dataset.markov_states);
+        setSteps(saved.horizon.steps);
+        setBatchSize(saved.horizon.batch_size);
+        setMicrobatchSize(saved.horizon.microbatch_size);
+        setDataScalingMode(saved.data_scaling.mode);
+        setDataGrowthFactor(saved.data_scaling.growth_factor);
+        setHorizonPolicy(saved.data_scaling.horizon_policy);
+        setManualScales(saved.scales);
+        setScaleCount(saved.scales.length);
+        setTargetDevice(payload.device?.startsWith("cuda") ? "cuda" : "cpu");
+        const widthFixed = saved.scales.every((scale) => scale.width === saved.scales[0].width);
+        const depthFixed = saved.scales.every((scale) => scale.repeats === saved.scales[0].repeats);
+        setScalePath(saved.architecture.block_type === "pre_norm_moe" ? "moe_lmd" : widthFixed ? "depth" : depthFixed ? "width" : "joint");
+      }
+      setJob(payload);
+      setError(null);
+      document.getElementById("run")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "The study could not be loaded.");
+    }
+  }
+
+  async function loadBatchCampaign(jobId: string) {
+    try {
+      const response = await fetch(`${API_BASE}/api/batch/jobs/${jobId}`);
+      const payload = await response.json() as BatchCampaignJob & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The campaign could not be loaded.");
+      setBatchCampaign(payload.campaign);
+      setTargetDevice(payload.device?.startsWith("cuda") ? "cuda" : "cpu");
+      if (payload.campaign === "standard_pretraining_census" && payload.config) {
+        const savedDataset = payload.config.dataset;
+        const savedRuntime = payload.config.runtime;
+        if (savedDataset?.train_path) setTrainingPath(savedDataset.train_path);
+        if (savedDataset?.validation_path) setValidationPath(savedDataset.validation_path);
+        if (savedDataset?.tokenizer) setTokenizer(savedDataset.tokenizer);
+        if (savedRuntime?.precision) setPrecision(savedRuntime.precision);
+        if (savedRuntime?.attention_backend) setAttentionBackend(savedRuntime.attention_backend);
+        if (savedRuntime?.distributed) setDistributedMode(savedRuntime.distributed);
+        if (savedRuntime?.num_processes) setGpuCount(Math.max(2, savedRuntime.num_processes));
+        const savedOptimizer = payload.config.optimizers?.[0]?.name;
+        if (savedOptimizer) setPretrainingOptimizer(savedOptimizer);
+        if (payload.config.target_validation_loss) setPretrainingTargetLoss(payload.config.target_validation_loss);
+        if (payload.config.validation_interval) setPretrainingValidationInterval(payload.config.validation_interval);
+      }
+      setBatchJob(payload);
+      setBatchJobError(null);
+      document.getElementById("campaign")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    } catch (caught) {
+      setHistoryError(caught instanceof Error ? caught.message : "The campaign could not be loaded.");
+    }
+  }
 
   function markProfileEdited() {
     setRunProfile("custom");
@@ -521,15 +969,59 @@ export function AutoscalerStudio() {
     setJob(null);
   }
 
+  function applyWorkflow(workflow: "mlp-adam" | "mlp-sgd" | "moe-adam" | "nugpt-width" | "nugpt-depth" | "nugpt-joint") {
+    if (studyLocked) return;
+    const architecture: BlockType = workflow.startsWith("nugpt")
+      ? "normalized_transformer"
+      : workflow === "moe-adam"
+        ? "pre_norm_moe"
+        : "pre_norm_mlp";
+    applyRunProfile("smoke", architecture);
+    setBlockType(architecture);
+    setActivation(architecture === "normalized_transformer" ? "silu" : "gelu");
+    setOptimizer(workflow === "mlp-sgd" ? "sgd" : "adam");
+    setBatchRule(workflow === "mlp-sgd" ? "sgd_linear_batch" : "complete_dp_joint");
+    setScalePath(workflow === "nugpt-width" ? "width" : workflow === "nugpt-depth" ? "depth" : architecture === "pre_norm_moe" ? "moe_lmd" : "joint");
+    setBatchTransfer(null);
+    setJob(null);
+    window.setTimeout(() => document.getElementById("study")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
+  function applyBatchWorkflow(campaign: BatchCampaign) {
+    if (batchJobLocked) return;
+    setBatchCampaign(campaign);
+    setTargetDevice("cpu");
+    setDistributedMode("none");
+    setAttentionBackend("math");
+    setPrecision("fp32");
+    if (campaign === "standard_pretraining_census") setPretrainingOptimizer("adamw");
+    setPretrainingTargetLoss(5.4);
+    setPretrainingValidationInterval(8);
+    setBatchJob(null);
+    setBatchJobError(null);
+    window.setTimeout(() => document.getElementById("campaign")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+
   function chooseBlock(next: BlockType) {
     if (studyLocked) return;
     setBlockType(next);
     setManualScales(null);
     applyRunProfile(runProfile, next);
-    if (next === "pre_norm_moe" || next === "normalized_transformer") setOptimizer("adam");
+    if (next === "pre_norm_moe" || next === "normalized_transformer") {
+      setOptimizer("adam");
+      setBatchRule("complete_dp_joint");
+      setBatchTransfer(null);
+    }
     setActivation(next === "normalized_transformer" ? "silu" : "gelu");
     setSelectedNode("residual");
     setJob(null);
+  }
+
+  function markBatchCampaignEdited() {
+    if (!batchJobLocked) {
+      setBatchJob(null);
+      setBatchJobError(null);
+    }
   }
 
   function chooseDatasetTask(next: DatasetTask) {
@@ -563,10 +1055,204 @@ export function AutoscalerStudio() {
     }
   }
 
+  async function previewBatchTransfer() {
+    setBatchTransferError(null);
+    try {
+      const sourceRate = learningRates[Math.floor(learningRates.length / 2)];
+      const response = await fetch(`${API_BASE}/api/batch/transfer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rule: batchRule,
+          optimizer: optimizer === "sgd"
+            ? { name: "sgd", learning_rate: sourceRate, momentum: 0 }
+            : {
+              name: "adam",
+              learning_rate: sourceRate,
+              beta1: 0.9,
+              beta2: blockType === "normalized_transformer" ? 0.95 : 0.999,
+              epsilon: blockType === "normalized_transformer" ? 1e-16 : 1e-8,
+            },
+          context: {
+            base_parameters: baseParameters,
+            target_parameters: totalParameters,
+            base_total_tokens: tokenBudget,
+            target_total_tokens: Math.max(1, Math.round(tokenBudget * targetHorizonMultiplier)),
+            base_batch_tokens: baseBatchTokens,
+            target_batch_tokens: Math.max(1, Math.round(baseBatchTokens * targetBatchMultiplier)),
+          },
+        }),
+      });
+      const payload = await response.json() as BatchTransferResult & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The transfer rule could not be evaluated.");
+      setBatchTransfer(payload);
+    } catch (caught) {
+      setBatchTransferError(caught instanceof Error ? caught.message : "Batch transfer is unavailable.");
+    }
+  }
+
+  function batchCampaignConfig(): Record<string, unknown> {
+    const syntheticArchitecture = {
+      block_type: "normalized_transformer",
+      activation: "silu",
+      vocab_size: 16,
+      context_length: 8,
+      head_dimension: 4,
+      mlp_multiplier: 2,
+      reference_width: 16,
+      reference_depth: 2,
+    };
+    const syntheticDataset = {
+      task_type: "synthetic_markov",
+      n_train: 256,
+      n_validation: 128,
+      noise_std: 0.03,
+      seed: 1729,
+      markov_order: 2,
+      markov_states: 4,
+    };
+    if (batchCampaign === "transformer_census") {
+      return {
+        architecture: syntheticArchitecture,
+        dataset: syntheticDataset,
+        scales: [
+          { name: "S1", width: 8, repeats: 1 },
+          { name: "S2", width: 12, repeats: 1 },
+          { name: "S3", width: 16, repeats: 2 },
+        ],
+        batch_examples: [1, 2, 4, 8, 16, 32],
+        total_tokens: 2048,
+        checkpoint_tokens: 512,
+        continuation_tokens: 512,
+        target_validation_loss: 2.5,
+        validation_interval: 4,
+        gradient_noise_samples: 12,
+        seeds: [11, 29],
+        optimizers: [
+          { name: "sgd", momentum: 0, learning_rates: [0.01, 0.03, 0.1] },
+          { name: "adam", beta1: 0.9, beta2: 0.99, epsilon: 1e-8, learning_rates: [0.0003, 0.001, 0.003] },
+        ],
+      };
+    }
+    if (batchCampaign === "constant_tpp") {
+      return {
+        architecture: syntheticArchitecture,
+        dataset: syntheticDataset,
+        scales: [
+          { name: "S1", width: 8, repeats: 1 },
+          { name: "S2", width: 12, repeats: 1 },
+          { name: "S3", width: 16, repeats: 2 },
+          { name: "S4-heldout", width: 24, repeats: 3 },
+        ],
+        optimizer: { name: "adam", beta1: 0.9, beta2: 0.99, epsilon: 1e-8, learning_rates: [0.0003, 0.001, 0.003] },
+        tokens_per_parameter: 1,
+        base_batch_examples: 2,
+        batch_growth_exponent: 0,
+        validation_interval: 8,
+        seeds: [11, 29],
+        transfer_rules: ["none", "adam_sde_sqrt", "complete_dp_joint", "exact_token_half_life", "horizon_power_fit"],
+      };
+    }
+    const onA100 = targetDevice === "cuda";
+    const context = onA100 ? 128 : 16;
+    const processCount = distributedMode === "fsdp" ? gpuCount : 1;
+    const a100BaseBatch = Math.ceil(8 / processCount) * processCount;
+    const batches = onA100
+      ? [a100BaseBatch, 2 * a100BaseBatch, 4 * a100BaseBatch, 8 * a100BaseBatch]
+      : [1, 2, 4, 8];
+    const largestBatch = batches.at(-1) ?? 8;
+    const totalTokens = onA100 ? largestBatch * context * 128 : 2048;
+    return {
+      model: {
+        vocab_size: tokenizer === "byte_v1" ? 260 : 32768,
+        context_length: context,
+        width: onA100 ? 128 : 32,
+        depth: onA100 ? 4 : 2,
+        num_heads: 4,
+        mlp_multiplier: 4,
+        dropout: 0,
+        tie_embeddings: true,
+      },
+      dataset: {
+        train_path: trainingPath.trim(),
+        validation_path: validationPath.trim(),
+        tokenizer,
+        maximum_bytes: onA100 ? 68_719_476_736 : 536_870_912,
+      },
+      runtime: {
+        precision,
+        attention_backend: attentionBackend,
+        distributed: distributedMode,
+        num_processes: processCount,
+      },
+      scales: onA100 ? [
+        { name: "S1", width: 128, depth: 4, num_heads: 4 },
+        { name: "S2", width: 192, depth: 6, num_heads: 6 },
+        { name: "S3", width: 256, depth: 8, num_heads: 8 },
+      ] : [
+        { name: "S1", width: 24, depth: 1, num_heads: 3 },
+        { name: "S2", width: 32, depth: 2, num_heads: 4 },
+      ],
+      batch_examples: batches,
+      total_tokens: totalTokens,
+      checkpoint_tokens: onA100 ? largestBatch * context * 8 : 256,
+      continuation_tokens: onA100 ? largestBatch * context * 16 : 512,
+      target_validation_loss: pretrainingTargetLoss,
+      validation_interval: pretrainingValidationInterval,
+      validation_examples: onA100 ? 128 : 16,
+      gradient_noise_samples: 8,
+      warmup_steps: onA100 ? 16 : 4,
+      minimum_learning_rate_ratio: 0.1,
+      seeds: onA100 ? [11, 29] : [11],
+      optimizers: [pretrainingOptimizer === "sgd" ? {
+        name: "sgd",
+        momentum: 0,
+        weight_decay: 0,
+        learning_rates: [0.01, 0.03, 0.1],
+      } : {
+        name: pretrainingOptimizer,
+        beta1: 0.9,
+        beta2: 0.95,
+        epsilon: 1e-8,
+        weight_decay: pretrainingOptimizer === "adamw" ? 0.1 : 0,
+        learning_rates: onA100 ? [0.0001, 0.0003, 0.001] : [0.0003, 0.001, 0.003],
+      }],
+    };
+  }
+
+  async function startBatchCampaign() {
+    if (batchJobLocked || !standardRuntimeValid) return;
+    setBatchJobError(null);
+    try {
+      const response = await fetch(`${API_BASE}/api/batch/jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          campaign: batchCampaign,
+          config: batchCampaignConfig(),
+          device: targetDevice,
+        }),
+      });
+      const payload = await response.json() as BatchCampaignJob & { error?: string };
+      if (!response.ok) throw new Error(payload.error ?? "The batch campaign could not start.");
+      setApiOnline(true);
+      setBatchJob(payload);
+    } catch (caught) {
+      setApiOnline(false);
+      setBatchJobError(caught instanceof Error ? caught.message : "The batch campaign service is unavailable.");
+    }
+  }
+
   const progressPercent = job?.progress.total
     ? Math.min(100, Math.round((job.progress.completed / job.progress.total) * 100))
     : 0;
   const result = job?.result;
+  const batchProgressPercent = batchJob?.progress.total
+    ? Math.min(100, Math.round((batchJob.progress.completed / batchJob.progress.total) * 100))
+    : 0;
+  const batchAnalyses = batchJob?.result?.scale_optimizer_analyses
+    ?? batchJob?.result?.analyses
+    ?? [];
 
   return (
     <main>
@@ -576,9 +1262,13 @@ export function AutoscalerStudio() {
           <span><strong>AI Theorist</strong><small>Autoscaler</small></span>
         </a>
         <nav aria-label="Workspace sections">
+          <a href="#recipes">Recipes</a>
           <a href="#architecture">Architecture</a>
+          <a href="#campaign">Campaigns</a>
           <a href="#study">Study</a>
+          <a href="#batch">Batch scaling</a>
           <a href="#run">Results</a>
+          <a href="#evidence">Evidence</a>
         </nav>
         <div className={`service-pill ${apiOnline ? "online" : ""}`}>
           <span /> {apiOnline === null ? "Checking compute" : apiOnline ? "Compute ready" : "Compute offline"}
@@ -596,6 +1286,24 @@ export function AutoscalerStudio() {
           <div><strong>02</strong><span>Tune & transfer</span></div><i />
           <div><strong>03</strong><span>Calibrate</span></div><i />
           <div><strong>04</strong><span>Forecast</span></div>
+        </div>
+      </section>
+
+      <section className="recipe-section section-shell" id="recipes">
+        <div className="section-heading compact-heading">
+          <div><p className="eyebrow">Reproducible workflows</p><h2>Start from a validation recipe.</h2></div>
+          <p>Each recipe fills a conservative smoke contract first. Inspect every field, then launch it through the same job system used by the larger campaigns.</p>
+        </div>
+        <div className="recipe-grid">
+          <button onClick={() => applyWorkflow("mlp-adam")}><span>Dense</span><strong>MLP · Adam</strong><small>Fixed data · joint width/repeats</small></button>
+          <button onClick={() => applyWorkflow("mlp-sgd")}><span>Dense</span><strong>MLP · SGD</strong><small>Raw LR conversion stress test</small></button>
+          <button onClick={() => applyWorkflow("moe-adam")}><span>Sparse</span><strong>MoE · Adam</strong><small>Keep LM/D constant</small></button>
+          <button onClick={() => applyWorkflow("nugpt-width")}><span>Normalized</span><strong>νGPT · width</strong><small>Width-only transfer</small></button>
+          <button onClick={() => applyWorkflow("nugpt-depth")}><span>Normalized</span><strong>νGPT · depth</strong><small>Depth-only transfer</small></button>
+          <button onClick={() => applyWorkflow("nugpt-joint")}><span>Normalized</span><strong>νGPT · joint</strong><small>Width + depth transfer</small></button>
+          <button onClick={() => applyBatchWorkflow("standard_pretraining_census")}><span>Real text</span><strong>GPT batch census</strong><small>Tokenized corpus · critical batch</small></button>
+          <button onClick={() => applyBatchWorkflow("transformer_census")}><span>Synthetic</span><strong>νGPT batch census</strong><small>Three-estimator qualification</small></button>
+          <button onClick={() => applyBatchWorkflow("constant_tpp")}><span>Tokens / parameter</span><strong>Constant T/P</strong><small>Held-out schedule transfer</small></button>
         </div>
       </section>
 
@@ -633,7 +1341,7 @@ export function AutoscalerStudio() {
                 <b>{blockType === item ? "In use" : "Add"}</b>
               </button>
             ))}
-            <div className="coming-soon"><span>Later</span><p>Automatic batch-size scaling, the 2026 nGPT recipe, convolution, AdamW, Muon, and general DAGs remain outside this validated slice.</p></div>
+            <div className="coming-soon"><span>Later</span><p>Convolution, Muon, and general DAGs remain outside this validated slice. AdamW is available in the standard GPT pretraining census; scaling studies currently expose SGD and Adam.</p></div>
           </aside>
 
           <div className="panel canvas-panel">
@@ -721,6 +1429,70 @@ export function AutoscalerStudio() {
         </div>
       </section>
 
+      <section className="campaign-section section-shell" id="campaign">
+        <div className="section-heading compact-heading">
+          <div><p className="eyebrow">Executable batch campaigns</p><h2>Run the census on real or synthetic tokens.</h2></div>
+          <p>Every campaign is persisted, fingerprinted, and resumable. Use the CPU profile to validate the workflow, then switch the same contract to CUDA.</p>
+        </div>
+        <div className="panel campaign-panel">
+          <div className="panel-title"><span>Runnable campaign</span><small>Persistent · resumable</small></div>
+          <div className="campaign-body">
+            <div className="campaign-controls">
+              <label><span>Campaign</span><select disabled={batchJobLocked} value={batchCampaign} onChange={(event) => { setBatchCampaign(event.target.value as BatchCampaign); setBatchJob(null); setBatchJobError(null); }}><option value="standard_pretraining_census">Real-text Transformer census</option><option value="transformer_census">νGPT synthetic census</option><option value="constant_tpp">Constant T/P holdout</option></select></label>
+              <label><span>Compute</span><select disabled={batchJobLocked} value={targetDevice} onChange={(event) => { const next = event.target.value as "cpu" | "cuda"; setTargetDevice(next); setPretrainingTargetLoss(tokenizer === "byte_v1" ? (next === "cuda" ? 3 : 5.4) : 9.4); setPretrainingValidationInterval(next === "cuda" ? 16 : 8); if (next === "cpu") { setDistributedMode("none"); if (attentionBackend === "flash") setAttentionBackend("math"); } markBatchCampaignEdited(); }}><option value="cpu">Local CPU smoke</option><option value="cuda">A100 / CUDA</option></select></label>
+              {batchCampaign === "standard_pretraining_census" && <>
+                <label><span>Optimizer</span><select disabled={batchJobLocked} value={pretrainingOptimizer} onChange={(event) => { setPretrainingOptimizer(event.target.value as PretrainingOptimizer); markBatchCampaignEdited(); }}><option value="adamw">AdamW</option><option value="adam">Adam</option><option value="sgd">SGD</option></select></label>
+                <label><span>Precision</span><select disabled={batchJobLocked} value={precision} onChange={(event) => { const next = event.target.value as Precision; setPrecision(next); if (next === "fp32" && attentionBackend === "flash") setAttentionBackend("math"); markBatchCampaignEdited(); }}><option value="fp32">FP32</option><option value="bf16">BF16</option></select></label>
+                <label><span>Attention kernel</span><select disabled={batchJobLocked} value={attentionBackend} onChange={(event) => { const next = event.target.value as AttentionBackend; setAttentionBackend(next); if (next === "flash") { setPrecision("bf16"); setTargetDevice("cuda"); setPretrainingTargetLoss(3); setPretrainingValidationInterval(16); } markBatchCampaignEdited(); }}><option value="math">SDPA math</option><option value="auto">SDPA automatic</option><option value="flash">FlashAttention</option></select></label>
+                <label><span>Parallel mode</span><select disabled={batchJobLocked} value={distributedMode} onChange={(event) => { const next = event.target.value as DistributedMode; setDistributedMode(next); if (next === "fsdp") setTargetDevice("cuda"); markBatchCampaignEdited(); }}><option value="none">Single process</option><option value="fsdp">Single-node FSDP</option></select></label>
+                <label><span>GPU processes</span><input disabled={batchJobLocked || distributedMode === "none"} type="number" min="2" max="8" value={gpuCount} onChange={(event) => { setGpuCount(Math.min(8, Math.max(2, Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+              </>}
+            </div>
+            {batchCampaign === "standard_pretraining_census" && (
+              <div className="dataset-contract">
+                <label><span>Training corpus</span><input disabled={batchJobLocked} value={trainingPath} onChange={(event) => { setTrainingPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Validation corpus</span><input disabled={batchJobLocked} value={validationPath} onChange={(event) => { setValidationPath(event.target.value); markBatchCampaignEdited(); }} /></label>
+                <label><span>Tokenizer</span><select disabled={batchJobLocked} value={tokenizer} onChange={(event) => { const next = event.target.value as "byte_v1" | "uint16_bin_v1"; setTokenizer(next); setPretrainingTargetLoss(next === "byte_v1" ? (targetDevice === "cuda" ? 3 : 5.4) : 9.4); markBatchCampaignEdited(); }}><option value="byte_v1">UTF-8 byte tokenizer</option><option value="uint16_bin_v1">Pretokenized uint16 stream</option></select></label>
+                <label><span>Target validation loss</span><input disabled={batchJobLocked} type="number" min="0.01" step="0.1" value={pretrainingTargetLoss} onChange={(event) => { setPretrainingTargetLoss(Number(event.target.value)); markBatchCampaignEdited(); }} /></label>
+                <label><span>Validation cadence</span><input disabled={batchJobLocked} type="number" min="1" step="1" value={pretrainingValidationInterval} onChange={(event) => { setPretrainingValidationInterval(Math.max(1, Math.round(Number(event.target.value)))); markBatchCampaignEdited(); }} /></label>
+              </div>
+            )}
+            <div className="campaign-summary">
+              <div><small>Model contract</small><strong>{batchCampaign === "standard_pretraining_census" ? "Standard pre-norm GPT" : batchCampaign === "transformer_census" ? "Normalized Transformer" : "νGPT constant T/P"}</strong><span>{batchCampaign === "standard_pretraining_census" ? "Learned token + position embeddings · causal MHSA · GELU MLP · tied unembed" : "Theory-specific synthetic control"}</span></div>
+              <div><small>Execution</small><strong>{batchCampaign === "standard_pretraining_census" ? `${pretrainingOptimizer.toUpperCase()} · ${precision.toUpperCase()} · ${attentionBackend === "flash" ? "FlashAttention" : "PyTorch SDPA"}` : "FP32 reference"}</strong><span>{distributedMode === "fsdp" && batchCampaign === "standard_pretraining_census" ? `${gpuCount} GPUs · torchrun FSDP` : targetDevice === "cuda" ? "Single CUDA process" : "Local smoke profile"}</span></div>
+              <button className="run-button campaign-run" disabled={batchJobLocked || !standardRuntimeValid} onClick={startBatchCampaign}>{batchJobLocked ? "Campaign running" : batchJob?.status === "completed" ? "Run or resume" : "Launch campaign"}<span>→</span></button>
+            </div>
+            <p className="campaign-location-note">CUDA and FSDP execute on the machine hosting the compute service. Remote-cluster dispatch is not implied by this browser control.</p>
+            {!standardRuntimeValid && <p className="validation-error campaign-error">Provide both corpus paths, a positive target and cadence. FlashAttention requires BF16 on CUDA; FSDP requires at least two CUDA processes.</p>}
+            {batchJobError && <p className="validation-error campaign-error">{batchJobError}</p>}
+            {batchJob && (
+              <div className={`campaign-status ${batchJob.status}`}>
+                <div className="campaign-status-head"><span className={`status-badge ${batchJob.status}`}>{batchJob.status}</span><code>{batchJob.id}</code><strong>{batchJob.progress.message}</strong></div>
+                {batchJobLocked && <div className="progress-track"><span style={{ width: `${batchProgressPercent}%` }} /></div>}
+                {batchJobLocked && <small>{batchJob.progress.completed} / {batchJob.progress.total || "?"} grid trials · cached trials resume automatically</small>}
+                {batchJob.status === "failed" && <p>{batchJob.error}</p>}
+                {batchJob.status === "interrupted" && <p>{batchJob.error} Launch again to continue from its trial cache.</p>}
+                {batchJob.result?.dataset && <div className="campaign-data-result"><span><b>{formatNumber(batchJob.result.dataset.training_tokens)}</b> training tokens</span><span><b>{formatNumber(batchJob.result.dataset.validation_tokens)}</b> validation tokens</span><span><b>{batchJob.result.dataset.tokenizer.replaceAll("_", " ")}</b> tokenizer</span><span><b>{batchJob.result.dataset.fingerprint.slice(0, 12)}</b> corpus fingerprint</span></div>}
+                {batchAnalyses.length > 0 && <div className="campaign-analysis-list">{batchAnalyses.map((analysis) => <div key={`${analysis.scale.name}-${analysis.optimizer}`}><span><strong>{analysis.scale.name}</strong><small>{analysis.optimizer}</small></span><b className={analysis.consensus.qualified ? "qualified" : "refused"}>{analysis.consensus.qualified && analysis.consensus.critical_batch_tokens ? `${formatNumber(analysis.consensus.critical_batch_tokens)} tokens` : "Withheld"}</b><small>{analysis.consensus.qualified ? "Estimator consensus" : analysis.consensus.refusal_reasons.join(" · ")}</small></div>)}</div>}
+                {batchJob.result?.geometry && (
+                  <div className="tpp-result">
+                    <div className={`tpp-verdict ${batchJob.result.fit_qualification?.source_optimum_is_interior ? "qualified" : "refused"}`}>
+                      <span><small>Constant T/P qualification</small><strong>{batchJob.result.fit_qualification?.source_optimum_is_interior ? "Fit range qualified" : "Recommendation withheld"}</strong></span>
+                      <span><small>Realized spread</small><strong>{batchJob.result.tpp_spread_ratio?.toFixed(3)}×</strong></span>
+                      <span><small>Fitted horizon exponent</small><strong>{batchJob.result.fitted_horizon_exponent?.toFixed(4)}</strong></span>
+                      <span><small>Held-out oracle</small><strong>{batchJob.result.heldout_oracle ? formatLoss(batchJob.result.heldout_oracle.mean_loss) : "—"}</strong></span>
+                    </div>
+                    {!batchJob.result.fit_qualification?.source_optimum_is_interior && <p>The source optimum lies on the tested learning-rate boundary. Regret is reported for diagnosis, but no transfer rule is recommended.</p>}
+                    <div className="tpp-geometry">{batchJob.result.geometry.map((row) => <span key={row.scale.name}><strong>{row.scale.name}</strong><small>{formatNumber(row.parameters)} parameters · {formatNumber(row.total_tokens)} tokens</small><b>{row.realized_tpp.toFixed(3)} T/P</b></span>)}</div>
+                    <div className="tpp-rule-list">{batchJob.result.transfer_results?.map((row) => <div key={row.rule}><strong>{row.rule.replaceAll("_", " ")}</strong><span>{row.evaluated && row.mean_heldout_loss !== undefined ? formatLoss(row.mean_heldout_loss) : "Not evaluated"}</span><b className={row.recommendable ? "qualified" : "refused"}>{row.relative_regret !== undefined ? `${row.relative_regret >= 0 ? "+" : ""}${(row.relative_regret * 100).toFixed(1)}% regret` : row.refusal_reasons.join(" · ")}</b></div>)}</div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
       <section className="study-section section-shell" id="study">
         <div className="section-heading">
           <div><p className="eyebrow">Study design</p><h2>Choose the regime. Generate the ladder.</h2></div>
@@ -772,8 +1544,8 @@ export function AutoscalerStudio() {
             <div className="panel-title"><span>Training budget</span><small>{targetDevice === "cuda" ? "CUDA runner" : "Local CPU"}</small></div>
             <div className="field-label">Optimizer</div>
             <div className="optimizer-choice">
-              <button disabled={studyLocked || blockType === "pre_norm_moe" || blockType === "normalized_transformer"} className={optimizer === "sgd" ? "active" : ""} onClick={() => { setOptimizer("sgd"); markProfileEdited(); }}><strong>SGD</strong><small>Momentum 0</small></button>
-              <button disabled={studyLocked} className={optimizer === "adam" ? "active" : ""} onClick={() => { setOptimizer("adam"); markProfileEdited(); }}><strong>Adam</strong><small>{blockType === "normalized_transformer" ? "β₂ .95" : "β₂ .999"}</small></button>
+              <button disabled={studyLocked || blockType === "pre_norm_moe" || blockType === "normalized_transformer"} className={optimizer === "sgd" ? "active" : ""} onClick={() => { setOptimizer("sgd"); setBatchRule("sgd_linear_batch"); setBatchTransfer(null); markProfileEdited(); }}><strong>SGD</strong><small>Momentum 0</small></button>
+              <button disabled={studyLocked} className={optimizer === "adam" ? "active" : ""} onClick={() => { setOptimizer("adam"); setBatchRule("complete_dp_joint"); setBatchTransfer(null); markProfileEdited(); }}><strong>Adam</strong><small>{blockType === "normalized_transformer" ? "β₂ .95" : "β₂ .999"}</small></button>
             </div>
             <div className="paired-inputs dense-inputs">
               <label><span>Base training {datasetTask === "synthetic_markov" ? "sequences" : "points"}</span><input disabled={studyLocked} type="number" min={batchSize} value={datasetSize} onChange={(event) => { setDatasetSize(Math.max(batchSize, Number(event.target.value))); markProfileEdited(); }} /></label>
@@ -839,6 +1611,49 @@ export function AutoscalerStudio() {
         </div>
       </section>
 
+      <section className="study-section section-shell batch-section" id="batch">
+        <div className="section-heading">
+          <div><p className="eyebrow">Batch scaling</p><h2>Qualify the transition before changing the schedule.</h2></div>
+          <p>Every rule is inspectable. Three independent critical-batch assays must agree before the app can unlock a dynamic Seesaw schedule.</p>
+        </div>
+
+        <div className="setup-grid">
+          <div className="panel data-panel">
+            <div className="panel-title"><span>Transfer preview</span><small>Static rule registry</small></div>
+            <div className="paired-inputs dense-inputs">
+              <label><span>Target batch multiplier</span><input type="number" min="0.125" step="0.25" value={targetBatchMultiplier} onChange={(event) => { setTargetBatchMultiplier(Math.max(0.125, Number(event.target.value))); setBatchTransfer(null); }} /></label>
+              <label><span>Target token-horizon multiplier</span><input type="number" min="0.125" step="0.25" value={targetHorizonMultiplier} onChange={(event) => { setTargetHorizonMultiplier(Math.max(0.125, Number(event.target.value))); setBatchTransfer(null); }} /></label>
+              <label><span>Transfer rule</span><select value={batchRule} onChange={(event) => { setBatchRule(event.target.value); setBatchTransfer(null); }}>{batchRuleOptions.map((rule) => <option key={rule} value={rule}>{rule.replaceAll("_", " ")}</option>)}</select></label>
+              <label><span>Normalized-time ratio q</span><input readOnly value={(targetBatchMultiplier / targetHorizonMultiplier).toPrecision(4)} /></label>
+            </div>
+            <div className="batch-shortcuts">
+              <button onClick={() => { setTargetHorizonMultiplier(parameterMultiplier); setBatchTransfer(null); }}>Set constant T/P</button>
+              <button onClick={() => { setTargetBatchMultiplier(1); setTargetHorizonMultiplier(1); setBatchTransfer(null); }}>Reset ratios</button>
+              <button className="run-button compact-run" onClick={previewBatchTransfer}>Preview rule <span>→</span></button>
+            </div>
+            <div className="fixed-callout"><b>Canonical geometry</b><span>{formatNumber(baseBatchTokens)} base batch tokens · {parameterMultiplier.toFixed(2)}× parameter span · T/P target {(tokenBudget * targetHorizonMultiplier / totalParameters).toPrecision(3)}</span></div>
+            {batchTransferError && <p className="validation-error">{batchTransferError}</p>}
+            {batchTransfer && (
+              <div className={`batch-rule-result ${batchTransfer.valid ? "accepted" : "refused"}`}>
+                <strong>{batchTransfer.valid ? "Rule is algebraically valid" : "Rule refused"}</strong>
+                {batchTransfer.target ? <span>η {batchTransfer.target.learning_rate.toExponential(3)} · β₁ {batchTransfer.target.beta1.toPrecision(5)} · β₂ {batchTransfer.target.beta2.toPrecision(6)} · ε {batchTransfer.target.epsilon.toExponential(2)}</span> : <span>{batchTransfer.refusal_reasons.join(" · ")}</span>}
+                <small>{batchTransfer.assumptions.join(" ")}</small>
+              </div>
+            )}
+          </div>
+
+          <aside className="panel protocol-panel">
+            <div className="panel-title"><span>Qualification gate</span><small>Seesaw locked</small></div>
+            <div className="batch-estimators">
+              <div><b>1</b><span><strong>Steps to target</strong><small>Fit S(B) = a + b/B; require a bracketed 20% transition.</small></span><em>Required</em></div>
+              <div><b>2</b><span><strong>Checkpoint fork</strong><small>Continue one checkpoint at matched tokens across the batch sweep.</small></span><em>Required</em></div>
+              <div><b>3</b><span><strong>Gradient noise</strong><small>Debiased trace covariance over squared mean-gradient norm.</small></span><em>Required</em></div>
+            </div>
+            <div className="batch-gate"><span>🔒</span><div><strong>Dynamic Seesaw schedule</strong><small>Unlocks only when two or more estimators qualify, agree within 2×, and late training is variance dominated.</small></div></div>
+          </aside>
+        </div>
+      </section>
+
       <section className="results-section section-shell" id="run">
         <div className="section-heading results-heading">
           <div><p className="eyebrow">Calibration report</p><h2>Forecasts must earn the right to appear</h2></div>
@@ -874,12 +1689,16 @@ export function AutoscalerStudio() {
                 <div><small>Scaling exponent α</small><strong>{result.scaling_law.exponent.toFixed(3)}</strong><span>R² {result.scaling_law.r_squared.toFixed(3)}</span></div>
                 <div><small>Estimated loss floor</small><strong>{formatLoss(result.scaling_law.loss_floor)}</strong><span>{dataScalingMode === "fixed" ? "Model scaling" : "Joint compute scaling"}</span></div>
               </div>
-              <div className={`readiness-card ${result.pilot_readiness.ready ? "ready" : "needs-work"}`}>
-                <div><small>Power-law readiness</small><strong>{result.pilot_readiness.ready ? "Ready for the larger campaign" : "Pilot recommends another pass"}</strong></div>
-                <div className="readiness-metrics"><span><b>{result.pilot_readiness.parameter_span_ratio.toFixed(1)}×</b> parameter span</span><span><b>{result.pilot_readiness.dynamic_range_to_noise.toFixed(1)}×</b> signal / noise</span><span><b>{Math.round(result.pilot_readiness.monotone_transition_fraction * 100)}%</b> decreasing transitions</span></div>
-                {result.pilot_readiness.recommendations.length > 0 && <ul>{result.pilot_readiness.recommendations.map((recommendation) => <li key={recommendation}>{recommendation}</li>)}</ul>}
-                <p>Suggested next level: D {result.pilot_readiness.suggested_next_scale.width} · L/R {result.pilot_readiness.suggested_next_scale.repeats} · {formatNumber(result.pilot_readiness.suggested_next_training_points)} training examples</p>
-              </div>
+              {result.pilot_readiness ? (
+                <div className={`readiness-card ${result.pilot_readiness.ready ? "ready" : "needs-work"}`}>
+                  <div><small>Power-law readiness</small><strong>{result.pilot_readiness.ready ? "Ready for the larger campaign" : "Pilot recommends another pass"}</strong></div>
+                  <div className="readiness-metrics"><span><b>{result.pilot_readiness.parameter_span_ratio.toFixed(1)}×</b> parameter span</span><span><b>{result.pilot_readiness.dynamic_range_to_noise.toFixed(1)}×</b> signal / noise</span><span><b>{Math.round(result.pilot_readiness.monotone_transition_fraction * 100)}%</b> decreasing transitions</span></div>
+                  {result.pilot_readiness.recommendations.length > 0 && <ul>{result.pilot_readiness.recommendations.map((recommendation) => <li key={recommendation}>{recommendation}</li>)}</ul>}
+                  <p>Suggested next level: D {result.pilot_readiness.suggested_next_scale.width} · L/R {result.pilot_readiness.suggested_next_scale.repeats} · {formatNumber(result.pilot_readiness.suggested_next_training_points)} training examples</p>
+                </div>
+              ) : (
+                <div className="readiness-card needs-work"><div><small>Power-law readiness</small><strong>Legacy campaign · readiness audit not recorded</strong></div></div>
+              )}
             </div>
             <aside className="panel evidence-panel">
               <div className="panel-title"><span>Held-out evidence</span><small>{result.holdout_calibration.length} check</small></div>
@@ -907,6 +1726,110 @@ export function AutoscalerStudio() {
             </aside>
           </div>
         )}
+      </section>
+
+      <section className="evidence-section section-shell" id="evidence">
+        <div className="section-heading evidence-heading">
+          <div><p className="eyebrow">Validation atlas</p><h2>Transfer success and scaling-law quality are separate claims.</h2></div>
+          <p>These are observed campaign outcomes, including the refusals. A good one-step prediction does not earn an extrapolation unless the loss law, negative control, and uncertainty gates also pass.</p>
+        </div>
+
+        <div className="atlas-summary">
+          <div><small>Published campaigns</small><strong>{PUBLISHED_EVIDENCE.length}</strong><span>Dense, sparse, normalized</span></div>
+          <div><small>Recorded trials</small><strong>{PUBLISHED_EVIDENCE.reduce((sum, item) => sum + item.trials, 0)}</strong><span>Paired seeds and holdouts</span></div>
+          <div><small>HP transfer</small><strong>{PUBLISHED_EVIDENCE.filter((item) => item.transferAccepted).length}/{PUBLISHED_EVIDENCE.length}</strong><span>Largest-scale probes accepted</span></div>
+          <div><small>Forecasts issued</small><strong>{PUBLISHED_EVIDENCE.filter((item) => item.forecastable).length}/{PUBLISHED_EVIDENCE.length}</strong><span>Strict refusal contract</span></div>
+        </div>
+
+        <div className="evidence-grid">
+          {PUBLISHED_EVIDENCE.map((item) => (
+            <article className={`evidence-case ${item.forecastable ? "forecast" : "withheld"}`} key={item.id}>
+              <div className="evidence-case-head">
+                <div><small>{item.hardware} · {item.trials} trials</small><h3>{item.title}</h3></div>
+                <span>{item.forecastable ? "Forecast issued" : "Forecast withheld"}</span>
+              </div>
+              <p>{item.conclusion}</p>
+              <dl>
+                <div><dt>Architecture</dt><dd>{item.architecture}</dd></div>
+                <div><dt>Data</dt><dd>{item.data}</dd></div>
+                <div><dt>Scale path</dt><dd>{item.scalePath}</dd></div>
+                <div><dt>Optimizer</dt><dd>{item.optimizer}</dd></div>
+              </dl>
+              <div className="evidence-metrics">
+                <div><small>normalized η</small><strong>{item.eta.toPrecision(3)}</strong></div>
+                <div><small>holdout error</small><strong>{(item.holdoutError * 100).toFixed(1)}%</strong></div>
+                <div><small>R²</small><strong>{item.r2.toFixed(3)}</strong></div>
+                <div><small>α</small><strong>{item.exponent.toFixed(3)}</strong></div>
+              </div>
+              <div className="gate-strip">
+                <span className={item.transferAccepted ? "pass" : "fail"}>HP transfer {item.transferAccepted ? "pass" : "fail"}</span>
+                <span className={item.negativeControlRejected ? "pass" : "fail"}>Negative control {item.negativeControlRejected ? "separated" : "not separated"}</span>
+              </div>
+              <code>fingerprint prefix {item.fingerprint}</code>
+            </article>
+          ))}
+        </div>
+
+        <div className="web-snapshot">
+          <div className="ledger-heading">
+            <div><p className="eyebrow">Observed UI walkthroughs</p><h3>{WEB_UI_EVIDENCE.length} workflows executed end-to-end through the web app</h3></div>
+            <span>2026-08-10 · localhost compute · <a href="/evidence/autoscaler-validation.json" download>evidence JSON</a></span>
+          </div>
+          <div className="snapshot-table" role="table" aria-label="Observed web workflow evidence">
+            <div className="snapshot-row snapshot-head" role="row"><span>Workflow</span><span>Coverage</span><span>Primary observation</span><span>Control</span><span>Outcome</span><span>Job</span></div>
+            {WEB_UI_EVIDENCE.map((item) => <div className="snapshot-row" role="row" key={item.id}><strong>{item.workflow}</strong><span>{item.coverage}</span><span>{item.primary}</span><span>{item.secondary}</span><b>{item.verdict}</b><code>{item.id}</code></div>)}
+          </div>
+        </div>
+
+        <div className="runtime-canary">
+          <div className="runtime-canary-head">
+            <div><p className="eyebrow">A100 runtime assay</p><h3>Real text · AdamW + Adam + SGD · BF16 · explicit FlashAttention</h3></div>
+            <span>432 completed trials</span>
+          </div>
+          <div className="runtime-canary-grid">
+            <div><small>Scale ladder</small><strong>121k → 835k</strong><span>parameters · 3 Transformer sizes</span></div>
+            <div><small>Batch horizon</small><strong>256 → 2,048</strong><span>tokens/update · independently tuned</span></div>
+            <div><small>Direct-checkpoint Bcrit</small><strong>724 / 362</strong><span>tokens · Adam(W) / SGD</span></div>
+            <div><small>Gradient-noise Bcrit</small><strong>30 → 54</strong><span>tokens · rises with model size</span></div>
+          </div>
+          <div className="runtime-canary-verdict">
+            <span className="verdict-mark refuse">!</span>
+            <div><strong>No batch recommendation issued</strong><p>Adam and AdamW estimators disagree by 13.4–23.9× and SGD by 6.7–12.0×. Targets 4.8, 3.0, 2.8, and 2.5 expose early, quantized, and missing crossings; the new dynamic-range gate refuses flat curves instead of turning roundoff into evidence.</p></div>
+          </div>
+          <p className="runtime-provenance">Observed on A100 80 GB · CUDA · Torch SDPA Flash path · corpus <code>0e6fad5d74666d17</code> · AdamW targets <code>4.8</code>, <code>3.0</code>, <code>2.8</code>, <code>2.5</code> · Adam/SGD target <code>3.0</code></p>
+        </div>
+
+        <div className="run-ledger">
+          <div className="ledger-heading">
+            <div><p className="eyebrow">Web job ledger</p><h3>Workflows launched through this interface</h3></div>
+            <button onClick={() => void refreshHistory()}>Refresh ledger</button>
+          </div>
+          {historyError && <p className="ledger-offline">{apiOnline === false ? "Connect the local compute service to load private run history." : historyError}</p>}
+          <div className="ledger-columns">
+            <div>
+              <h4>Scaling studies <span>{studyHistory.length}</span></h4>
+              {studyHistory.length === 0 ? <p className="ledger-empty">No persisted web studies are available on this compute service yet.</p> : studyHistory.map((item) => (
+                <button className="ledger-row" key={item.id} onClick={() => void loadStudy(item.id)}>
+                  <span className={`status-dot ${item.status}`} />
+                  <span><strong>{item.name}</strong><small>{item.architecture?.replaceAll("_", " ")} · {item.optimizer} · {item.device}</small></span>
+                  <span>{item.result_summary ? `${(item.result_summary.holdout_relative_error * 100).toFixed(1)}% holdout` : item.progress.phase.replaceAll("-", " ")}</span>
+                  <code>{item.id}</code>
+                </button>
+              ))}
+            </div>
+            <div>
+              <h4>Batch campaigns <span>{batchHistory.length}</span></h4>
+              {batchHistory.length === 0 ? <p className="ledger-empty">No persisted batch campaigns are available on this compute service yet.</p> : batchHistory.map((item) => (
+                <button className="ledger-row" key={item.id} onClick={() => void loadBatchCampaign(item.id)}>
+                  <span className={`status-dot ${item.status}`} />
+                  <span><strong>{item.campaign.replaceAll("_", " ")}</strong><small>{item.progress.completed} / {item.progress.total || "?"} trials</small></span>
+                  <span>{item.result_summary ? item.campaign === "constant_tpp" ? `${item.result_summary.recommendable_rules} rules qualified` : `${item.result_summary.qualified_analyses}/${item.result_summary.analysis_count} assays qualified` : item.status}</span>
+                  <code>{item.id}</code>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
       </section>
 
       <footer><span>AI Theorist · Autoscaler v0.1</span><p>Typed architectures. Paired evidence. Refusal before false precision.</p><span>Largest plan level: {formatNumber(totalParameters)} parameters</span></footer>

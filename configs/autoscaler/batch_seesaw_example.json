@@ -1,0 +1,20 @@
+{
+  "initial_batch_tokens": 256,
+  "variance_dominated": true,
+  "safety_fraction": 0.8,
+  "maximum_single_cut": 4.0,
+  "critical_batch_consensus": {
+    "estimator": "consensus",
+    "critical_batch_tokens": 4096.0,
+    "lower_batch_tokens": 3072.0,
+    "upper_batch_tokens": 5120.0,
+    "qualified": true,
+    "diagnostics": {},
+    "refusal_reasons": []
+  },
+  "baseline_schedule": [
+    {"start_tokens": 0, "learning_rate": 0.001},
+    {"start_tokens": 1000000, "learning_rate": 0.0005},
+    {"start_tokens": 2000000, "learning_rate": 0.00025}
+  ]
+}

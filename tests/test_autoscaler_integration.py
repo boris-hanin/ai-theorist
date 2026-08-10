@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from ai_theorist.autoscaler.api import AutoscalerServer, RequestHandler, StudyStore
+from ai_theorist.autoscaler.api import AutoscalerServer, CampaignStore, RequestHandler, StudyStore
 from ai_theorist.autoscaler.schema import StudySpec, compile_plan, default_study_spec
 from ai_theorist.autoscaler.study import run_study
 
@@ -106,6 +106,7 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
     except PermissionError:
         pytest.skip("local socket binding is disabled in this sandbox")
     server.store = StudyStore(tmp_path)
+    server.campaign_store = CampaignStore(tmp_path)
     server.allowed_origins = set()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -117,6 +118,14 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
             assert health["status"] == "ok"
             assert health["schema_version"] == 2
             assert response.headers["Access-Control-Allow-Origin"] == "http://localhost:3000"
+
+        private_origin = "https://autoscaler.example"
+        server.allowed_origins.add(private_origin)
+        private_request = Request(
+            f"{base}/api/health", headers={"Origin": private_origin}
+        )
+        with urlopen(private_request, timeout=3) as response:
+            assert response.headers["Access-Control-Allow-Origin"] == private_origin
 
         spec = integration_spec().to_dict()
         compile_request = Request(
@@ -154,6 +163,108 @@ def test_api_health_compile_and_async_study(tmp_path: Path):
                 job = json.load(response)
         assert job["status"] == "completed", job.get("error")
         assert job["result"]["status"] == "completed"
+        assert (tmp_path / job["id"] / "job.json").is_file()
+        with urlopen(f"{base}/api/studies", timeout=3) as response:
+            study_history = json.load(response)["studies"]
+        assert study_history[0]["id"] == job["id"]
+        assert study_history[0]["architecture"] == "pre_norm_mlp"
+        assert study_history[0]["optimizer"] == "adam"
+        assert study_history[0]["result_summary"]["trial_count"] == len(
+            job["result"]["trials"]
+        )
+        restored = StudyStore(tmp_path).get(job["id"])
+        assert restored is not None
+        assert restored["status"] == "completed"
+        assert restored["result"]["study_fingerprint"] == job["result"]["study_fingerprint"]
+
+        train_path = tmp_path / "web-train.txt"
+        validation_path = tmp_path / "web-validation.txt"
+        train_path.write_text("Web batch jobs train on actual tokens. " * 20, encoding="utf-8")
+        validation_path.write_text("Validation stays held out. " * 10, encoding="utf-8")
+        campaign_config = {
+            "model": {
+                "vocab_size": 260,
+                "context_length": 4,
+                "width": 8,
+                "depth": 1,
+                "num_heads": 2,
+                "mlp_multiplier": 2,
+            },
+            "dataset": {
+                "train_path": str(train_path),
+                "validation_path": str(validation_path),
+            },
+            "runtime": {
+                "precision": "fp32",
+                "attention_backend": "math",
+                "distributed": "none",
+                "num_processes": 1,
+            },
+            "scales": [
+                {"name": "S1", "width": 8, "depth": 1, "num_heads": 2}
+            ],
+            "batch_examples": [1, 2, 4, 8],
+            "total_tokens": 32,
+            "checkpoint_tokens": 8,
+            "continuation_tokens": 32,
+            "target_validation_loss": 6.0,
+            "validation_interval": 1,
+            "validation_examples": 4,
+            "gradient_noise_samples": 8,
+            "seeds": [3],
+            "optimizers": [{"name": "adam", "learning_rates": [0.001]}],
+        }
+        campaign_request_body = json.dumps(
+            {
+                "campaign": "standard_pretraining_census",
+                "config": campaign_config,
+                "device": "cpu",
+            }
+        ).encode("utf-8")
+        campaign_request = Request(
+            f"{base}/api/batch/jobs",
+            data=campaign_request_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(campaign_request, timeout=3) as response:
+            campaign_job = json.load(response)
+        deadline = time.time() + 10
+        while (
+            campaign_job["status"] in {"queued", "running"}
+            and time.time() < deadline
+        ):
+            time.sleep(0.05)
+            with urlopen(
+                f"{base}/api/batch/jobs/{campaign_job['id']}", timeout=3
+            ) as response:
+                campaign_job = json.load(response)
+        assert campaign_job["status"] == "completed", campaign_job.get("error")
+        assert campaign_job["campaign_job_identity_version"] == 2
+        assert campaign_job["result"]["dataset"]["training_tokens"] > 32
+        assert len(campaign_job["result"]["scale_optimizer_analyses"]) == 1
+        assert campaign_job["config"]["optimizers"][0]["name"] == "adam"
+        restored_campaign = CampaignStore(tmp_path).get(campaign_job["id"])
+        assert restored_campaign is not None
+        assert restored_campaign["status"] == "completed"
+        assert restored_campaign["config"] == campaign_job["config"]
+        with urlopen(f"{base}/api/batch/jobs", timeout=3) as response:
+            campaign_history = json.load(response)["jobs"]
+        assert campaign_history[0]["id"] == campaign_job["id"]
+        assert campaign_history[0]["result_summary"]["record_count"] == len(
+            campaign_job["result"]["records"]
+        )
+
+        repeated_campaign_request = Request(
+            f"{base}/api/batch/jobs",
+            data=campaign_request_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(repeated_campaign_request, timeout=3) as response:
+            repeated_campaign = json.load(response)
+        assert repeated_campaign["id"] == campaign_job["id"]
+        assert repeated_campaign["status"] == "completed"
 
         invalid = Request(
             f"{base}/api/compile",

@@ -1,0 +1,49 @@
+{
+  "model": {
+    "vocab_size": 260,
+    "context_length": 16,
+    "width": 32,
+    "depth": 2,
+    "num_heads": 4,
+    "mlp_multiplier": 4,
+    "dropout": 0.0,
+    "tie_embeddings": true
+  },
+  "dataset": {
+    "train_path": "data/pretraining/sample_train.txt",
+    "validation_path": "data/pretraining/sample_validation.txt",
+    "tokenizer": "byte_v1"
+  },
+  "runtime": {
+    "precision": "fp32",
+    "attention_backend": "math",
+    "distributed": "none",
+    "num_processes": 1
+  },
+  "scales": [
+    {"name": "S1", "width": 24, "depth": 1, "num_heads": 3},
+    {"name": "S2", "width": 32, "depth": 2, "num_heads": 4}
+  ],
+  "batch_examples": [1, 2, 4, 8],
+  "total_tokens": 2048,
+  "checkpoint_tokens": 256,
+  "continuation_tokens": 512,
+  "target_validation_loss": 5.4,
+  "validation_interval": 8,
+  "validation_examples": 16,
+  "gradient_noise_samples": 8,
+  "warmup_steps": 4,
+  "minimum_learning_rate_ratio": 0.1,
+  "seeds": [11],
+  "optimizers": [
+    {
+      "name": "adamw",
+      "beta1": 0.9,
+      "beta2": 0.95,
+      "epsilon": 1e-8,
+      "weight_decay": 0.1,
+      "learning_rates": [0.0003, 0.001, 0.003]
+    }
+  ],
+  "cache_directory": "runs/autoscaler/pretraining-text-smoke/trials"
+}

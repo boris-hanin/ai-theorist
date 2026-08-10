@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import torch
 from torch import Tensor
@@ -119,6 +119,7 @@ def train_trial(
     checkpoint_every: int = 0,
     stop_after_steps: Optional[int] = None,
     resume: bool = True,
+    prepared_dataset: Optional[Tuple[Tensor, Tensor, Tensor, Tensor]] = None,
 ) -> TrialResult:
     """Train at a normalized eta and record the parameterization's raw LR.
 
@@ -175,14 +176,27 @@ def train_trial(
         for index, group in enumerate(optimizer.param_groups)
     }
     peak_group_learning_rates = [float(group["lr"]) for group in optimizer.param_groups]
-    if spec.architecture.block_type == "normalized_transformer":
-        x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
-            spec.architecture, spec.dataset, device=device
-        )
+    if prepared_dataset is None:
+        if spec.architecture.block_type == "normalized_transformer":
+            x_train, y_train, x_validation, y_validation = make_synthetic_markov_dataset(
+                spec.architecture, spec.dataset, device=device
+            )
+        else:
+            x_train, y_train, x_validation, y_validation = make_teacher_dataset(
+                spec.architecture, spec.dataset, device=device
+            )
     else:
-        x_train, y_train, x_validation, y_validation = make_teacher_dataset(
-            spec.architecture, spec.dataset, device=device
-        )
+        x_train, y_train, x_validation, y_validation = prepared_dataset
+        if x_train.shape[0] != spec.dataset.n_train:
+            raise ValueError(
+                "prepared training data does not match dataset.n_train: "
+                f"{x_train.shape[0]} != {spec.dataset.n_train}"
+            )
+        if x_validation.shape[0] != spec.dataset.n_validation:
+            raise ValueError(
+                "prepared validation data does not match dataset.n_validation: "
+                f"{x_validation.shape[0]} != {spec.dataset.n_validation}"
+            )
     batch_generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     step = 0
     trace: List[Dict[str, float]] = []

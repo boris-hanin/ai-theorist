@@ -4,9 +4,25 @@ import argparse
 import json
 from pathlib import Path
 import sys
+from typing import Optional
 
 from .api import serve
+from .batch_campaigns import (
+    run_constant_tpp_campaign,
+    run_quadratic_calibration,
+    run_transformer_batch_census,
+)
+from .batch_scaling import (
+    OptimizerHyperparameters,
+    TransferContext,
+    apply_transfer_rule,
+    transfer_rule_registry,
+)
+from .critical_batch import CriticalBatchEstimate
+from .campaign_jobs import run_campaign_job
+from .pretraining import compile_standard_pretraining_plan
 from .schema import StudySpec, compile_plan, default_study_spec
+from .seesaw import SchedulePoint, compile_seesaw_schedule
 from .study import atomic_write_json, run_study
 from .training import train_trial
 from .tuning import (
@@ -27,6 +43,17 @@ def _read_spec(path: Path) -> StudySpec:
 def _print(payload: object) -> None:
     json.dump(payload, sys.stdout, indent=2, sort_keys=True, allow_nan=False)
     sys.stdout.write("\n")
+
+
+def _read_json(path: Path) -> object:
+    with path.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _write_and_print(payload: object, output: Optional[Path]) -> None:
+    if output is not None:
+        atomic_write_json(output, payload)
+    _print(payload)
 
 
 def main() -> None:
@@ -67,6 +94,55 @@ def main() -> None:
     server.add_argument("--host", default="127.0.0.1")
     server.add_argument("--port", type=int, default=8787)
     server.add_argument("--run-root", type=Path, default=Path("runs/autoscaler"))
+
+    subparsers.add_parser("batch-rules", help="list batch/duration transfer rules")
+
+    transfer = subparsers.add_parser(
+        "batch-transfer", help="apply one inspectable optimizer transfer rule"
+    )
+    transfer.add_argument("config", type=Path)
+
+    quadratic = subparsers.add_parser(
+        "batch-quadratic", help="calibrate critical-batch estimators on a noisy quadratic"
+    )
+    quadratic.add_argument("config", type=Path)
+    quadratic.add_argument("--output", type=Path)
+
+    census = subparsers.add_parser(
+        "batch-census", help="run an SGD/Adam normalized-Transformer batch census"
+    )
+    census.add_argument("config", type=Path)
+    census.add_argument("--device", default="cpu")
+    census.add_argument("--output", type=Path)
+
+    tpp = subparsers.add_parser(
+        "batch-tpp", help="run a held-out constant-tokens-per-parameter campaign"
+    )
+    tpp.add_argument("config", type=Path)
+    tpp.add_argument("--device", default="cpu")
+    tpp.add_argument("--output", type=Path)
+
+    seesaw = subparsers.add_parser(
+        "batch-seesaw", help="compile a Seesaw schedule after qualification"
+    )
+    seesaw.add_argument("config", type=Path)
+    seesaw.add_argument("--output", type=Path)
+
+    pretrain_plan = subparsers.add_parser(
+        "pretrain-plan", help="validate a real-text Transformer pretraining census"
+    )
+    pretrain_plan.add_argument("config", type=Path)
+
+    pretrain = subparsers.add_parser(
+        "pretrain-census",
+        help="run real-text batch scaling with bf16/FlashAttention/FSDP support",
+    )
+    pretrain.add_argument("config", type=Path)
+    pretrain.add_argument("--device", default="cpu")
+    pretrain.add_argument(
+        "--output", type=Path, default=Path("runs/autoscaler/pretraining-census")
+    )
+    pretrain.add_argument("--progress-jsonl", action="store_true")
 
     args = parser.parse_args()
     if args.command == "sample-spec":
@@ -199,6 +275,79 @@ def main() -> None:
         _print(payload)
     elif args.command == "serve":
         serve(args.host, args.port, args.run_root)
+    elif args.command == "batch-rules":
+        _print(transfer_rule_registry())
+    elif args.command == "batch-transfer":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("batch-transfer config must be an object")
+        source = OptimizerHyperparameters(**payload["optimizer"])
+        context = TransferContext(**payload["context"])
+        _print(
+            apply_transfer_rule(
+                payload["rule"],
+                source,
+                context,
+                horizon_exponent=float(payload.get("horizon_exponent", 0.32)),
+            ).to_dict()
+        )
+    elif args.command == "batch-quadratic":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("batch-quadratic config must be an object")
+        _write_and_print(run_quadratic_calibration(payload), args.output)
+    elif args.command == "batch-census":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("batch-census config must be an object")
+        _write_and_print(
+            run_transformer_batch_census(payload, device=args.device), args.output
+        )
+    elif args.command == "batch-tpp":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("batch-tpp config must be an object")
+        _write_and_print(run_constant_tpp_campaign(payload, device=args.device), args.output)
+    elif args.command == "batch-seesaw":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("batch-seesaw config must be an object")
+        estimate_payload = dict(payload["critical_batch_consensus"])
+        estimate_payload["refusal_reasons"] = tuple(
+            estimate_payload.get("refusal_reasons", ())
+        )
+        estimate = CriticalBatchEstimate(**estimate_payload)
+        schedule = [SchedulePoint(**point) for point in payload["baseline_schedule"]]
+        result = compile_seesaw_schedule(
+            schedule,
+            initial_batch_tokens=int(payload["initial_batch_tokens"]),
+            critical_batch_consensus=estimate,
+            variance_dominated=bool(payload["variance_dominated"]),
+            safety_fraction=float(payload.get("safety_fraction", 0.8)),
+            maximum_single_cut=float(payload.get("maximum_single_cut", 4.0)),
+        )
+        _write_and_print(result, args.output)
+    elif args.command == "pretrain-plan":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("pretrain-plan config must be an object")
+        _print(compile_standard_pretraining_plan(payload))
+    elif args.command == "pretrain-census":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("pretrain-census config must be an object")
+        progress = None
+        if args.progress_jsonl:
+            def progress(event):
+                print(json.dumps(event, sort_keys=True), flush=True)
+        result = run_campaign_job(
+            "standard_pretraining_census",
+            payload,
+            device=args.device,
+            output_dir=args.output,
+            progress=progress,
+        )
+        _print(result)
 
 
 if __name__ == "__main__":

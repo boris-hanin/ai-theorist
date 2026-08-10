@@ -1,0 +1,23 @@
+Scaling experiments are scientific measurements. A useful run records the model, the data stream, the optimizer, the batch geometry, and the exact number of non-padding tokens. If any of those quantities is implicit, a later comparison can mistake an implementation change for a scaling law.
+
+A language model receives a sequence of discrete tokens and predicts the next token at every position. The training loss is the average negative log probability assigned to the observed continuation. A held-out stream estimates how well this prediction rule transfers beyond the examples used for optimization.
+
+Width, depth, token horizon, and batch size affect training in different ways. Width and depth change the number and arrangement of parameters. Token horizon changes how long the optimizer follows the data stream. Batch size changes both the noise in each update and the number of serial updates available under a fixed token budget.
+
+Critical batch size is not a single universal constant. One operational definition asks where steps-to-target cease to improve nearly linearly. A second definition forks a common checkpoint and compares matched-token continuations. A third estimates the ratio between gradient covariance and squared mean-gradient norm. The definitions should be stored separately even when their numerical estimates agree.
+
+Hyperparameter transfer is a prospective claim. A rule is selected using smaller runs, frozen, and then evaluated on a model whose validation loss has not influenced the rule. An independently tuned held-out oracle may be run afterward to measure regret, but it cannot be used to revise the transferred setting.
+
+Tokens per parameter provide one useful coordinate for joint scaling. Holding this ratio constant makes the training horizon grow with model size. That path does not by itself determine the batch schedule. Batch may remain fixed, grow sublinearly, or follow a qualified critical-batch model.
+
+Modern training systems separate scientific contracts from execution details. The same declared experiment can use full precision for a local smoke test, bfloat16 on an accelerator, fused scaled-dot-product attention, or fully sharded data parallelism. The stored run record must say which path was actually used.
+
+Fully sharded data parallel training partitions parameters, gradients, and optimizer state across devices while preserving data-parallel semantics. Every rank must begin from the same parameters, process its assigned local microbatch, and participate in collective communication in the same order. A mismatch can hang the entire job, which is why launch plans and batch divisibility are validated before training begins.
+
+Attention kernels also have explicit preconditions. Flash attention is an accelerator kernel, not a label for arbitrary attention code. The runtime checks device support, precision, and head geometry before requesting the kernel. On a CPU, the standard baseline uses the mathematical scaled-dot-product attention backend.
+
+Resumability is part of experimental correctness. Each completed trial is written atomically with a content-derived identity. Relaunching an interrupted campaign reloads matching cells and continues with the missing cells. Changing the model, corpus, optimizer, or runtime changes the identity and therefore cannot silently reuse an incompatible result.
+
+Good scaling software refuses unsupported conclusions. A transition outside the measured batch range is not bracketed. An optimum on the edge of a learning-rate grid is not securely tuned. Two critical-batch estimates that disagree by an order of magnitude are evidence of unresolved regime dependence, not an invitation to average them.
+
+The smallest experiments exist to test plumbing and definitions. Larger experiments establish dynamic range, uncertainty, and prospective accuracy. Neither stage should claim more than it measured. The purpose of automation is to make these distinctions easier to maintain as the number of runs grows.

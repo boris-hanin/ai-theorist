@@ -30,6 +30,13 @@ during the project; it is not retroactively claimed for early rounds.
 - `apps/web/`: the drag-and-drop Autoscaler workbench.  Its canvas intentionally
   compiles only typed `Embed -> repeated {MLP, top-k MoE, or νGPT} block ->
   Unembed` graphs.
+- `src/ai_theorist/autoscaler/batch_*.py`: the separately qualified batch
+  subsystem: canonical token/batch records, an inspectable transfer-rule
+  registry, three critical-batch estimators, noisy-quadratic calibration,
+  matched SGD/Adam Transformer censuses, and honest constant-TPP holdouts.
+- `src/ai_theorist/autoscaler/pretraining.py`: a standard GPT-style pre-norm
+  baseline over content-hashed real token streams, with fp32/bf16, PyTorch
+  SDPA or explicit FlashAttention, Adam/AdamW/SGD, and single-node FSDP.
 
 ## Current status
 
@@ -87,9 +94,16 @@ shows a next-scale forecast only after every calibration gate passes.  See
 campaign configurations, and `docs/autoscaler-validation-report.md` for the
 measured evidence, retained negative results, and current A100 revalidation
 status after the fixed-eta transfer correction.
+The in-product validation atlas also records the exact IDs and outcomes of eleven
+browser-launched dense, MoE, normalized-Transformer, real-text, batch, and
+constant-T/P workflows; the ledger survives service restarts and restores the
+immutable controls behind each result.
 The normalized-Transformer contract is documented separately in
 `docs/normalized-transformer-contract.md`; its A100 manifest is
 `configs/autoscaler/a100_nugpt_adam.json`.
+Batch scaling and its A100 manifests are documented in
+`docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision, and
+single-node FSDP contracts are in `docs/PRETRAINING_RUNTIME.md`.
 
 The deep-linear and nonlinear suites are more expensive:
 

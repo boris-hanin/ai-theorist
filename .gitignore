@@ -28,3 +28,7 @@ apps/web/node_modules/
 apps/web/.next/
 apps/web/dist/
 apps/web/.wrangler/
+
+# Local scratch and platform metadata
+/work/
+.DS_Store

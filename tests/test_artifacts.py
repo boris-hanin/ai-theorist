@@ -12,13 +12,16 @@ def reject_nonstandard_constant(value):
 def test_all_json_artifacts_are_standard_json():
     failures = []
     for path in ROOT.rglob("*.json"):
-        if "node_modules" in path.parts:
+        # Runtime and build directories are mutable while campaigns and web
+        # builds are active. This test guards repository inputs and fixtures,
+        # not partially copied result/cache files.
+        relative = path.relative_to(ROOT)
+        if {"node_modules", ".next", ".wrangler", "dist", "runs", "work"} & set(relative.parts):
             continue
         try:
-            json.loads(path.read_text(encoding="utf-8"),
-                       parse_constant=reject_nonstandard_constant)
-        except Exception as exc:  # collect every invalid artifact in one report
-            failures.append("%s: %s" % (path.relative_to(ROOT), exc))
+            json.loads(path.read_text(encoding="utf-8"), parse_constant=reject_nonstandard_constant)
+        except Exception as exc:  # collect every invalid source artifact in one report
+            failures.append("%s: %s" % (relative, exc))
     assert not failures, "\n".join(failures)
 
 

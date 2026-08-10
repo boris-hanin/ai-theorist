@@ -22,6 +22,7 @@ test("server-renders the Autoscaler product shell", async () => {
   const html = await response.text();
   assert.match(html, developmentPreviewMeta);
   assert.match(html, /<title>Autoscaler · AI Theorist<\/title>/i);
+  assert.match(html, /autoscaler-social-preview-v2\.png/);
   assert.match(html, /Build the model/);
   assert.match(html, /Residual stack/);
   assert.match(html, /Choose the regime\. Generate the ladder/);
@@ -64,4 +65,42 @@ test("exposes profiles, datasets, generated ladders, and joint scaling", async (
   assert.match(html, /Token budget|Sample budget/);
   assert.match(html, /Joint model \+ data/);
   assert.match(html, /power-law readiness/i);
+});
+
+test("exposes qualified batch transfer and keeps Seesaw gated", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.match(html, /Qualify the transition before changing the schedule/);
+  assert.match(html, /Steps to target/);
+  assert.match(html, /Checkpoint fork/);
+  assert.match(html, /Gradient noise/);
+  assert.match(html, /Dynamic Seesaw schedule/);
+  assert.match(html, /Set constant T\/P/);
+  assert.match(html, /Real-text Transformer census/);
+  assert.match(html, /Standard pre-norm GPT/);
+  assert.match(html, /Target validation loss/);
+  assert.match(html, /AdamW/);
+  assert.match(html, />Adam</);
+  assert.match(html, />SGD</);
+  assert.match(html, /FlashAttention/);
+  assert.match(html, /Single-node FSDP/);
+  assert.match(html, /Remote-cluster dispatch is not implied/);
+  assert.match(html, /Launch campaign/);
+});
+
+test("publishes recipes, strict evidence, and the persistent web ledger", async () => {
+  const response = await render();
+  const html = await response.text();
+  assert.match(html, /Start from a validation recipe/);
+  assert.match(html, /MoE · Adam/);
+  assert.match(html, /GPT batch census/);
+  assert.match(html, /Transfer success and scaling-law quality are separate claims/);
+  assert.match(html, /Forecasts issued/);
+  assert.match(html, /Negative control\s*(?:<!-- -->)?\s*separated/);
+  assert.match(html, /11\s*(?:<!-- -->)?\s*workflows executed end-to-end through the web app/);
+  assert.match(html, /evidence JSON/);
+  assert.match(html, /A100 runtime assay/);
+  assert.match(html, /No batch recommendation issued/);
+  assert.match(html, /Workflows launched through this interface/);
+  assert.match(html, /Refresh ledger/);
 });

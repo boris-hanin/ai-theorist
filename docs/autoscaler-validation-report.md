@@ -2,6 +2,58 @@
 
 Date: 2026-08-09
 
+## 2026-08-10 overnight product stress test
+
+The web product was exercised through eleven distinct workflows using the actual
+browser interface and local job service.  The evidence page records the exact
+job IDs, not reconstructed examples:
+
+| Workflow | Job | Observation |
+| --- | --- | --- |
+| Dense MLP + Adam | `ada53251904f` | 26 trials; 3.0% held-out error; `R^2=0.984`; smoke verdict withheld from extrapolation |
+| Dense MLP + SGD | `8fe3d0ddc101` | 24 trials; holdout gate failed; refusal displayed |
+| Sparse MoE + Adam, constant `LM/D` | `a6151c86e759` | 24 trials; 1.6% held-out error; transfer passed |
+| normalized Transformer, width | `d3c3dfd23d5e` | 50 trials; 0.8% held-out error; sphere invariants passed; span gate refused forecast |
+| normalized Transformer, depth | `8ed5ecb7beb5` | 50 trials; non-identifiable law; refusal displayed |
+| normalized Transformer, joint width/depth | `d8270ce31988` | 50 trials; 1.0% held-out error; sphere invariants passed |
+| real-text GPT batch census | `43ebfc92e5e6` | 24 AdamW trials; critical-batch estimators disagreed; recommendation withheld |
+| real-text GPT batch census | `a522064cf12d` | 24 SGD trials; direct and gradient-noise estimates differed by 2.3x to 2.6x; recommendation withheld |
+| real-text GPT batch census | `09a133642297` | 24 Adam trials; direct and gradient-noise estimates differed by 2.3x to 2.6x; recommendation withheld |
+| synthetic normalized-Transformer batch census | `137f7fb48b4f` | 216 SGD/Adam trials; 1 of 6 scale/optimizer assays qualified |
+| constant tokens/parameter holdout | `49e2c7f6f731` | T/P spread 1.008x; source optimum on boundary; no rule recommended |
+
+Study and batch histories now persist across service restarts.  Selecting a
+ledger row restores the complete immutable plan and its result, including
+constant-T/P per-rule regret, qualification status, and refusal reasons.
+
+The six-scale joint normalized-Transformer A100 campaign also completed during
+the audit (96 trials; width 128 to 512 and depth 4 to 16).  Normalized eta and
+unit-sphere invariants transfer, but validation loss saturates and then rises:
+`R^2=-0.0019`, the fitted exponent pins at 0.001, the largest-scale point misses
+its bootstrap interval despite only 2.22% point error, and the deliberately
+simple global-rate control is better.  The product therefore refuses the law.
+
+The real-text path was also run on an A100-SXM4-80GB with AdamW, Adam, and SGD,
+BF16, and an explicit FlashAttention request.  Six 72-trial assays covered
+three standard Transformer sizes (120,832 to 834,816 parameters) and batches
+of 256 to 2,048 tokens/update.  Runtime evidence confirms CUDA, BF16, Torch
+SDPA, and the requested Flash path.  The Adam and AdamW direct-checkpoint
+estimator returned about 724 tokens while SGD returned about 362;
+gradient-noise estimates ranged from 30 to 54 tokens.  Adam/AdamW disagreement
+was 13.4x to 23.9x and SGD disagreement was 6.7x to 12.0x, correctly blocking
+every consensus.
+Loss targets 4.8, 3.0, 2.8, and 2.5 additionally exposed checkpoint-quantization and
+crossing-coverage pathologies.  A flat steps-to-target curve at the 3.0 target
+was initially accepted because numerical roundoff made its fitted inverse-batch
+coefficient barely positive.  The estimator now requires at least 5% relative
+dynamic range, and a regression test fixes this failure mode.
+
+This is hardware and product validation, not a useful pretraining scaling-law
+claim.  The checked-in corpus is a deterministic 4,012-token fixture, and each
+provided host exposes one A100.  Therefore explicit Flash BF16 is physically
+validated, while multi-GPU FSDP remains implementation- and CPU-test-validated
+only until a single host with at least two GPUs is available.
+
 ## Decision
 
 The reduced-scope product, corrected normalized-learning-rate contract, joint
@@ -21,9 +73,12 @@ relaxing its gates.
 
 ## Validated product boundary
 
-- Graph: `Embed -> repeat(pre-norm residual {MLP or top-k MoE}) -> Unembed`.
-- Blocks: GELU or ReLU residual MLP; fixed-sparsity top-k MoE.
-- Optimizers: actual PyTorch SGD and Adam for MLP; Adam for MoE.
+- Graph: `Embed -> repeat(pre-norm residual {MLP, top-k MoE, or normalized
+  Transformer}) -> Unembed`.
+- Blocks: GELU or ReLU residual MLP; fixed-sparsity top-k MoE; normalized
+  causal self-attention interleaved with MLPs.
+- Optimizers: actual PyTorch SGD and Adam for scaling studies; AdamW is also
+  available in the standard real-text GPT census.
 - Scaling axes: MLP width/depth; independent MoE `L`, `M`, and `D`.
 - Constant within a study: dataset, examples, batch size, and update horizon.
 - Tuned value: one normalized learning-rate coordinate `eta`.
@@ -36,14 +91,14 @@ relaxing its gates.
   transfer merely because a larger model has more stability headroom.
 - Target: final validation loss at the declared horizon.
 - Shape policy: the default MoE ladder grows all three axes with `LM/D=4`.
-- Deferred: attention, arbitrary graphs, AdamW, production Muon support, data
-  scaling, and horizon scaling.
+- Deferred: arbitrary graphs, production Muon support, multi-node training,
+  general data scaling, and general horizon scaling.
 
 ## Automated and interactive validation
 
 | Layer | Evidence | Result |
 | --- | --- | --- |
-| Python unit/e2e | 68 passed and 1 socket-restricted test skipped locally; includes MLP/MoE schema, exact parameter counts, normalized/group-rate conversion, fixed-`eta` gates, routing refusal, optimizer parity, replay, checkpoints, scaling, and persistence | Pass |
+| Python unit/e2e | 124 passed and 1 socket-restricted test skipped locally; includes MLP/MoE/normalized-Transformer schema, exact parameter counts, normalized/group-rate conversion, fixed-`eta` gates, routing refusal, batch estimators, real-text pretraining, optimizer parity, replay, checkpoints, scaling, and persistence | Pass |
 | New Chizat LR contract | CPU smoke plus two-worker A100 campaigns through 1280 steps and M=2048; fixed-eta transfer passed and omitted-M control was rejected | Pass for Chizat subclaim |
 | Joint `L/M/D` | Pure-axis and joint two-worker A100 campaigns; exact duplicates, wrong-rule controls, and a dedicated `LM/D=8` ladder | Pass; constant `LM/D` preferred |
 | Sparse-MoE A100 | Six `LM/D=4` scales, six seeds, 84 trials, two independent A100 workers, held-out scale, wrong-global-rate control, and routing gate | Pass |
@@ -195,11 +250,13 @@ a different training regime.
 
 ## Release conclusion
 
-The sparse-MoE MVP is ready for the next fixed-data, fixed-horizon research
-phase in the tested regime.  Its A100 evidence validates the implementation,
-the `LM/D` default path, Table-1 Adam group transfer, router-load refusal, and
-one adjacent-scale validation-loss forecast.  It does not certify arbitrary
-expert counts, sparsity fractions, tasks, horizons, optimizers, or full MoE
-DMFT.  The historical MLP forecasts likewise remain historical until their
-schema-v2 fixed-eta campaigns are rerun.  No horizon result may be silently
-pooled into another horizon's law.
+The Autoscaler is now a useful fixed-budget research workbench, not a general
+pretraining scaling service.  Its A100 evidence validates the sparse-MoE
+`LM/D` path, normalized-Transformer invariants, real-text BF16/Flash execution,
+three optimizer implementations, held-out calibration, and refusal behavior.
+The eleven replayable browser workflows make successful transfer, failed loss
+laws, critical-batch disagreement, and constant-T/P boundary failures equally
+inspectable.  It still does not certify arbitrary expert counts, sparsity
+fractions, tasks, horizons, optimizers, datasets, general DAGs, multi-node
+training, or full MoE DMFT.  No horizon, threshold, tokenizer, or corpus result
+may be silently pooled into another campaign's law.
