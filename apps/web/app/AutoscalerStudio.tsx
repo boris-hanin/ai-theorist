@@ -2177,6 +2177,28 @@ export function AutoscalerStudio() {
 
         <div className="runtime-canary">
           <div className="runtime-canary-head">
+            <div><p className="eyebrow">Frozen FineWeb-Edu horizon holdout</p><h3>Schedule transfer is architecture-specific</h3></div>
+            <span>465 completed A100 trials</span>
+          </div>
+          <div className="runtime-canary-grid">
+            <div><small>Presented-token span</small><strong>65k → 1.05M</strong><span>8× fit span · largest horizon hidden</span></div>
+            <div><small>Normalized control</small><strong>351 trials</strong><span>cosine · warmup/decay · WSD</span></div>
+            <div><small>Jiang + Chizat MHSA</small><strong>114 trials</strong><span>seven CompleteP LR groups</span></div>
+            <div><small>Frozen data</small><strong>16,384 / 1,024</strong><span>train / validation windows · 3 seeds</span></div>
+          </div>
+          <div className="runtime-canary-verdict">
+            <span className="verdict-mark pass">✓</span>
+            <div><strong>Normalized Transformer: one-third rule certified on all three schedules</strong><p>Held-out regret is 0.40% for cosine, 0% for warmup/decay, and 0.20% for WSD. The corresponding flat controls are 5.2–9.5% above their scoring oracles, so the mechanism gate is identifiable and passes.</p></div>
+          </div>
+          <div className="runtime-canary-verdict">
+            <span className="verdict-mark refuse">!</span>
+            <div><strong>Jiang + Chizat MHSA: one-third duration transfer rejected</strong><p>The source-faithful half-warmup/constant run preserves all seven CompleteP group rules, yet T<sup>−1/3</sup> has 2.93% oracle regret. A flat peak LR is only 0.049% above oracle, so the app refuses a horizon-scaling claim; the fitted exponent is negative with R² 0.353 and is rejected too.</p></div>
+          </div>
+          <p className="runtime-provenance">Observed on A100 80 GB · corpus <code>666710b377c444e7</code> · byte_v1 · context 64 · held-out 1,048,576 presented tokens · seeds <code>11, 29, 47</code> · the historical 0.32 sensitivity point is grouped with one-third and removed from new defaults</p>
+        </div>
+
+        <div className="runtime-canary">
+          <div className="runtime-canary-head">
             <div><p className="eyebrow">Frozen FineWeb-Edu transfer assay</p><h3>Jiang attention + Chizat FFN and full Jiang sparse MoE</h3></div>
             <span>429 full trials + 12 feature probes</span>
           </div>

@@ -96,3 +96,13 @@ The exact conclusion is therefore **HP transfer certified; mechanism
 discrimination not certified** for both architectures.  The public web
 evidence view preserves that distinction rather than turning a clean optimum
 match into a stronger causal claim.
+
+The subsequent held-out token-horizon assay separates that fixed-duration
+model-scale conclusion from duration transfer.  On the same corpus fingerprint,
+the normalized Transformer certified `T^(-1/3)` across cosine, warmup/decay,
+and WSD with at most `0.400%` held-out grid-oracle regret.  The interleaved
+Jiang-MHSA + Chizat-FFN model did not: `T^(-1/3)` incurred `2.927%` regret under
+the source-faithful half-warmup/constant schedule, while a flat peak LR was
+within `0.049%` of oracle.  Thus the evidence supports the CompleteP model-scale
+parameterization at fixed duration, but does not support importing the νGPT
+one-third duration rule into the Jiang schedule.

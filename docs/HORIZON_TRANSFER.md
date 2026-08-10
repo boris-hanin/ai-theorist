@@ -140,6 +140,31 @@ scripts/run_fineweb_jiang_chizat_horizon_a100.sh \
   runs/autoscaler/fineweb-horizon-a100/corpus
 ```
 
+## 2026-08-10 A100 real-text horizon evidence
+
+Both assays froze corpus fingerprint
+`666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1`,
+16,384 training windows, 1,024 validation windows, and seeds `11, 29, 47`.
+Rules were fit on `65,536..524,288` presented tokens, frozen, and evaluated at
+the hidden `1,048,576`-token horizon before revealing its LR grid oracle.
+
+The 1.12M-parameter normalized Transformer completed 351 trials.  The
+`T^(-1/3)` rule passed transfer and mechanism gates for all three schedules:
+cosine loss `1.74412` with `0.400%` oracle regret; warmup/decay loss `1.73327`
+with zero grid-oracle regret; and WSD loss `1.73637` with `0.202%` regret.  Flat
+controls were `5.2%..9.5%` above their schedule oracles.  The old `0.32`
+sensitivity point is retained only in that artifact; it is grouped with the
+one-third family and no longer run by default.
+
+The 306,688-parameter Jiang-MHSA + Chizat-FFN assay completed 114 trials while
+preserving all seven CompleteP LR and epsilon groups.  It is a qualified
+negative result for duration transfer.  The one-third rule produced loss
+`2.13133`, or `2.927%` regret, and failed the `2%` gate.  A flat peak-LR rule
+produced `2.07174`, only `0.049%` above the `2.07072` held-out oracle, so the
+mechanism is non-identifiable and no horizon rule is certified.  The fitted
+exponent was `-0.652` with `R^2=0.353`; the campaign correctly refused it
+because fitted optimal LR increased with horizon.
+
 ## Joint composition
 
 The next fixed-model stage is implemented in `JOINT_HORIZON_BATCH_TRANSFER.md`.
