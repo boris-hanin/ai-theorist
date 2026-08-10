@@ -20,7 +20,10 @@ from .batch_scaling import (
 )
 from .critical_batch import CriticalBatchEstimate
 from .campaign_jobs import run_campaign_job
-from .forecast_campaigns import compile_real_text_scaling_plan
+from .forecast_campaigns import (
+    bind_real_text_scaling_config,
+    compile_real_text_scaling_plan,
+)
 from .forecast_fleet import (
     aggregate_forecast_fleet_cache,
     assign_forecast_fleet_tasks,
@@ -188,6 +191,14 @@ def main() -> None:
         "--output", type=Path, default=Path("runs/autoscaler/forecast-ladder")
     )
     forecast.add_argument("--progress-jsonl", action="store_true")
+
+    forecast_bind = subparsers.add_parser(
+        "forecast-bind",
+        help="bind and validate a forecast template against an immutable token stream",
+    )
+    forecast_bind.add_argument("config", type=Path)
+    forecast_bind.add_argument("manifest", type=Path)
+    forecast_bind.add_argument("--output", type=Path, required=True)
 
     forecast_shard = subparsers.add_parser(
         "forecast-shard",
@@ -472,6 +483,13 @@ def main() -> None:
         if not isinstance(payload, dict):
             raise ValueError("forecast-plan config must be an object")
         _print(compile_real_text_scaling_plan(payload))
+    elif args.command == "forecast-bind":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-bind config must be an object")
+        bound, summary = bind_real_text_scaling_config(payload, args.manifest)
+        atomic_write_json(args.output, bound)
+        _print({**summary, "config": str(args.output.resolve())})
     elif args.command == "forecast-ladder":
         payload = _read_json(args.config)
         if not isinstance(payload, dict):

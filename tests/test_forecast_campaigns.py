@@ -10,6 +10,7 @@ from tokenizers.pre_tokenizers import Whitespace
 
 from ai_theorist.autoscaler import tokenization
 from ai_theorist.autoscaler.forecast_campaigns import (
+    bind_real_text_scaling_config,
     compile_real_text_scaling_plan,
     jiang_parameter_count,
     nugpt_parameter_count,
@@ -241,6 +242,33 @@ def test_plan_compiles_exact_vocab_aware_constant_tpp_ladder(
     changed = _jiang_config(tmp_path, manifest_path)
     changed["validation_microbatch_examples"] = 2
     assert compile_real_text_scaling_plan(changed)["fingerprint"] != plan["fingerprint"]
+
+
+def test_forecast_binding_replaces_placeholder_and_compiles_verified_plan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["dataset"]["token_stream_manifest_path"] = "__TOKEN_STREAM_MANIFEST__"
+
+    bound, summary = bind_real_text_scaling_config(config, manifest_path)
+
+    assert bound["dataset"]["token_stream_manifest_path"] == str(
+        manifest_path.resolve()
+    )
+    assert config["dataset"]["token_stream_manifest_path"] == (
+        "__TOKEN_STREAM_MANIFEST__"
+    )
+    assert summary["status"] == "bound"
+    assert summary["dataset_identity"]["tokenizer_id"] == "forecast_test"
+    assert summary["plan_fingerprint"] == compile_real_text_scaling_plan(bound)[
+        "fingerprint"
+    ]
+
+
+def test_forecast_binding_refuses_missing_manifest(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="manifest does not exist"):
+        bind_real_text_scaling_config({}, tmp_path / "missing.json")
 
 
 def test_smoke_campaign_runs_accelerated_checkpointed_theory_path(

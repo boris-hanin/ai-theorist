@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from contextlib import nullcontext
 from hashlib import sha256
@@ -478,6 +479,41 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         )
     ).hexdigest()
     return plan_payload
+
+
+def bind_real_text_scaling_config(
+    config: Mapping[str, Any], manifest_path: Path
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Bind a forecast template to one verified, immutable token stream.
+
+    Compilation is deliberately part of binding: a deployable config is never
+    written unless tokenizer provenance, vocabulary, corpus size, ladder
+    geometry, runtime, and repetition limits all pass the production gates.
+    """
+
+    resolved_manifest = manifest_path.expanduser().resolve()
+    if not resolved_manifest.is_file():
+        raise ValueError(f"token stream manifest does not exist: {resolved_manifest}")
+    bound = deepcopy(dict(config))
+    dataset = bound.get("dataset")
+    if not isinstance(dataset, dict):
+        raise ValueError("dataset must be an object")
+    dataset["token_stream_manifest_path"] = str(resolved_manifest)
+    plan = compile_real_text_scaling_plan(bound)
+    summary = {
+        "schema_version": 1,
+        "status": "bound",
+        "token_stream_manifest_path": str(resolved_manifest),
+        "plan_fingerprint": plan["fingerprint"],
+        "dataset_identity": plan["dataset_identity"],
+        "architecture_contract": plan["architecture_contract"],
+        "scales": plan["scales"],
+        "planned_grid_trials": plan["planned_grid_trials"],
+        "tuning_trials": plan["tuning_trials"],
+        "scale_trials": plan["scale_trials"],
+        "negative_control_trials": plan["negative_control_trials"],
+    }
+    return bound, summary
 
 
 @torch.no_grad()
