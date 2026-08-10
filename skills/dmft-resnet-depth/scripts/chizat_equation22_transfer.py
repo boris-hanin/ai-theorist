@@ -351,6 +351,7 @@ def summarize(
             }
         )
 
+    exact_argmin_drift_within_tolerance = max(drifts) <= drift_tolerance_decades
     gates = {
         "every_shape_has_a_complete_finite_oracle": all(
             math.isfinite(row["oracle_validation_loss"]) for row in rows
@@ -362,7 +363,6 @@ def summarize(
             reference_pair[0] not in {min(eta_us), max(eta_us)}
             and reference_pair[1] not in {min(eta_vs), max(eta_vs)}
         ),
-        "normalized_optimum_drift_within_tolerance": max(drifts) <= drift_tolerance_decades,
         "reference_pair_near_shape_oracle": max(oracle_ratios) <= oracle_tolerance,
         "reference_pair_makes_progress_at_every_shape": all(
             row["reference_pair_fractional_progress"] > 0 for row in rows
@@ -383,6 +383,15 @@ def summarize(
         "exploratory_divergent_trial_count": sum(
             record.diverged for record in primary
         ),
+        "diagnostics": {
+            "maximum_exact_grid_argmin_drift_decades": max(drifts),
+            "exact_grid_argmin_drift_tolerance_decades": drift_tolerance_decades,
+            "exact_grid_argmin_drift_within_tolerance": exact_argmin_drift_within_tolerance,
+            "interpretation": (
+                "exact discrete argmin drift is descriptive; the hard transfer gate is "
+                "the fixed reference pair's loss ratio to each shape oracle"
+            ),
+        },
         "gates": gates,
         "verdict": "PASS" if all(gates.values()) else "FAIL",
     }

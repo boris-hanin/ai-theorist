@@ -1,8 +1,11 @@
+import math
+
 import pytest
 import torch
+from types import SimpleNamespace
 
 from ai_theorist.autoscaler.lr_contract import audit_optimizer_groups
-from mup_mlp_transfer import MuPResidualMLP, json_safe, run_trial, theory_for
+from mup_mlp_transfer import MuPResidualMLP, analyze, json_safe, run_trial, theory_for
 
 
 def model(width=64, reference_width=32):
@@ -86,3 +89,37 @@ def test_nonfinite_failed_control_diagnostics_are_strict_json_safe():
         "slope": None,
         "rows": [1.0, None],
     }
+
+
+def test_near_oracle_transfer_is_not_rejected_by_a_noisy_discrete_argmin():
+    widths = (64, 128, 256, 512)
+    etas = (0.001, 0.003, 0.01, 0.03, 0.1)
+    rows = []
+    for width in widths:
+        for eta in etas:
+            for seed in (11, 29, 47):
+                loss = 1.0 + abs(math.log10(eta / 0.01))
+                if width == 512 and eta == 0.03:
+                    loss = 0.99
+                rows.append(
+                    SimpleNamespace(
+                        rule="mup",
+                        width=width,
+                        eta=eta,
+                        final_validation_loss=loss,
+                        fractional_progress=0.5,
+                        final_feature_rms=1.0,
+                        diverged=False,
+                    )
+                )
+    report = analyze(
+        rows,
+        widths=widths,
+        etas=etas,
+        seeds=(11, 29, 47),
+        reference_width=64,
+        rule="mup",
+        oracle_tolerance=1.10,
+    )
+    assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
+    assert report["accepted"] is True

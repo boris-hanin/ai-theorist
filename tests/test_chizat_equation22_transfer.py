@@ -80,15 +80,17 @@ def test_divergent_boundary_probes_bracket_but_do_not_invalidate_transfer():
     shapes = parse_shapes("base:1:8:4,large:2:16:16")
     records = []
     for named_shape in shapes:
-        for eta_u in (0.1, 0.3, 1.0):
-            for eta_v in (0.1, 0.3, 1.0):
+        for eta_u in (0.03, 0.3, 3.0):
+            for eta_v in (0.03, 0.3, 3.0):
                 for seed in (11, 29):
-                    diverged = eta_u == 1.0 and eta_v == 1.0
+                    diverged = eta_u == 3.0 and eta_v == 3.0
                     # A tempting but incomplete candidate must not beat a
                     # complete paired-seed optimum.
-                    partial = eta_u == 0.1 and eta_v == 0.1 and seed == 29
+                    partial = eta_u == 0.03 and eta_v == 0.03 and seed == 29
                     loss = 1.0 if (eta_u, eta_v) == (0.3, 0.3) else 2.0
-                    if eta_u == 0.1 and eta_v == 0.1 and seed == 11:
+                    if named_shape.label == "large" and (eta_u, eta_v) == (3.0, 0.3):
+                        loss = 0.95
+                    if eta_u == 0.03 and eta_v == 0.03 and seed == 11:
                         loss = 0.5
                     if diverged or partial:
                         loss = float("inf")
@@ -122,9 +124,10 @@ def test_divergent_boundary_probes_bracket_but_do_not_invalidate_transfer():
         shapes=shapes,
         reference_label="base",
         drift_tolerance_decades=0.55,
-        oracle_tolerance=1.25,
-        eta_us=(0.1, 0.3, 1.0),
-        eta_vs=(0.1, 0.3, 1.0),
+        oracle_tolerance=1.10,
+        eta_us=(0.03, 0.3, 3.0),
+        eta_vs=(0.03, 0.3, 3.0),
     )
     assert report["exploratory_divergent_trial_count"] > 0
+    assert report["diagnostics"]["exact_grid_argmin_drift_within_tolerance"] is False
     assert report["verdict"] == "PASS"

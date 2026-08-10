@@ -384,6 +384,7 @@ def analyze(
     seeds: Sequence[int],
     reference_width: int,
     rule: RuleName,
+    oracle_tolerance: float,
 ) -> Dict[str, object]:
     selected = [trial for trial in trials if trial.rule == rule]
     mean_losses: Dict[Tuple[int, float], float] = {}
@@ -413,6 +414,32 @@ def analyze(
     progress = [sum(row.fractional_progress for row in rows) / len(rows) for rows in fixed_rows]
     feature_rms = [sum(row.final_feature_rms for row in rows) / len(rows) for rows in fixed_rows]
     best_offsets = [math.log10(best_eta_by_width[width] / reference_eta) for width in widths]
+    oracle_losses = [mean_losses[(width, best_eta_by_width[width])] for width in widths]
+    fixed_losses = [mean_losses[(width, reference_eta)] for width in widths]
+    oracle_ratios = [
+        fixed_loss / max(oracle_loss, 1e-30)
+        for fixed_loss, oracle_loss in zip(fixed_losses, oracle_losses)
+    ]
+    exact_argmin_drift_within_tolerance = (
+        max(abs(value) for value in best_offsets) <= 0.35
+    )
+    all_fixed_finite = all(
+        not row.diverged and math.isfinite(row.final_validation_loss)
+        for rows in fixed_rows
+        for row in rows
+    )
+    gates = {
+        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "every_width_has_a_complete_finite_oracle": all(
+            math.isfinite(value) for value in oracle_losses
+        ),
+        "reference_eta_complete_and_finite_at_every_width": all_fixed_finite,
+        "reference_eta_near_width_oracle": max(oracle_ratios) <= oracle_tolerance,
+        "reference_eta_makes_progress_at_every_width": all(
+            value >= 1e-3 for value in progress
+        ),
+        "reference_eta_progress_slope_is_stable": abs(_log_slope(widths, progress)) <= 0.30,
+    }
     return {
         "rule": rule,
         "reference_width": reference_width,
@@ -421,18 +448,31 @@ def analyze(
         "best_eta_by_width": {str(width): best_eta_by_width[width] for width in widths},
         "best_eta_offset_decades": {str(width): value for width, value in zip(widths, best_offsets)},
         "maximum_absolute_best_eta_offset_decades": max(abs(value) for value in best_offsets),
+        "oracle_validation_loss_by_width": {
+            str(width): value for width, value in zip(widths, oracle_losses)
+        },
+        "fixed_reference_eta_validation_loss_by_width": {
+            str(width): value for width, value in zip(widths, fixed_losses)
+        },
+        "fixed_reference_eta_to_oracle_loss_ratio_by_width": {
+            str(width): value for width, value in zip(widths, oracle_ratios)
+        },
+        "maximum_fixed_reference_eta_to_oracle_loss_ratio": max(oracle_ratios),
+        "oracle_loss_ratio_tolerance": oracle_tolerance,
         "fixed_reference_eta_mean_fractional_progress": progress,
         "fixed_reference_eta_log_progress_slope": _log_slope(widths, progress),
         "fixed_reference_eta_final_feature_rms": feature_rms,
         "fixed_reference_eta_log_feature_rms_slope": _log_slope(widths, feature_rms),
-        "all_fixed_eta_trials_finite": all(not row.diverged for rows in fixed_rows for row in rows),
-        "accepted": (
-            0 < reference_index < len(etas) - 1
-            and all(not row.diverged for rows in fixed_rows for row in rows)
-            and all(value >= 1e-3 for value in progress)
-            and abs(_log_slope(widths, progress)) <= 0.30
-            and max(abs(value) for value in best_offsets) <= 0.35
-        ),
+        "all_fixed_eta_trials_finite": all_fixed_finite,
+        "diagnostics": {
+            "exact_grid_argmin_drift_within_0.35_decades": exact_argmin_drift_within_tolerance,
+            "interpretation": (
+                "exact discrete argmin drift is descriptive; the hard transfer gate is "
+                "the fixed reference eta's loss ratio to each width oracle"
+            ),
+        },
+        "gates": gates,
+        "accepted": all(gates.values()),
     }
 
 
@@ -481,6 +521,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-validation", type=int, default=2048)
     parser.add_argument("--dataset-seed", type=int, default=1729)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--oracle-tolerance", type=float, default=1.10)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -500,6 +541,8 @@ def main() -> None:
         raise ValueError("at least three unique paired seeds are required")
     if args.batch_size > args.n_train:
         raise ValueError("batch size cannot exceed n_train")
+    if not math.isfinite(args.oracle_tolerance) or args.oracle_tolerance < 1.0:
+        raise ValueError("oracle tolerance must be finite and at least one")
     optimizer_name: OptimizerName = args.optimizer
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -557,6 +600,7 @@ def main() -> None:
             seeds=seeds,
             reference_width=args.reference_width,
             rule=rule,
+            oracle_tolerance=args.oracle_tolerance,
         )
         for rule in args.rules
     }
