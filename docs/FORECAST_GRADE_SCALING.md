@@ -125,23 +125,35 @@ ai-theorist-autoscale corpus-materialize \
   --progress-jsonl
 ```
 
-Copy the completed token-stream manifest path into one of the ladder configs,
-then compile it before allocating GPUs:
+Bind the completed manifest to a checked-in template. Binding verifies every
+token shard and tokenizer asset, compiles all forecast gates, and atomically
+writes a deployable config; a placeholder or undersized corpus never reaches a
+GPU:
 
 ```bash
-ai-theorist-autoscale forecast-plan \
-  configs/autoscaler/jiang_olmo2_100m_ladder.json
+ai-theorist-autoscale forecast-bind \
+  configs/autoscaler/jiang_olmo2_100m_ladder.json \
+  runs/autoscaler/public-corpora/CORPUS/token-streams/manifest.json \
+  --output runs/autoscaler/jiang-olmo2-100m.json
 ```
 
 Launch the resumable campaign:
 
 ```bash
 ai-theorist-autoscale forecast-ladder \
-  configs/autoscaler/jiang_olmo2_100m_ladder.json \
+  runs/autoscaler/jiang-olmo2-100m.json \
   --device cuda \
   --output runs/autoscaler/jiang-olmo2-100m \
   --progress-jsonl
 ```
+
+For the current two-independent-A100 topology,
+`scripts/launch_two_a100_forecast_pair.sh` waits for corpus completion, checks
+destination capacity, streams only the immutable token shards and tokenizer to
+the second worker, proves dataset-fingerprint parity by binding on both hosts,
+and launches Jiang + Chizat and νGPT under nonduplicating file locks. It does
+not copy credentials to either worker, and both remote campaigns remain
+resumable after the launcher exits.
 
 The equivalent νGPT preset uses the same independent-worker execution. The web app exposes the same immutable
 fields, public-corpus job, progress, hidden-rung calibration, and forecast
