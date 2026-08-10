@@ -99,6 +99,8 @@ def test_near_oracle_transfer_is_not_rejected_by_a_noisy_discrete_argmin():
         for eta in etas:
             for seed in (11, 29, 47):
                 loss = 1.0 + abs(math.log10(eta / 0.01))
+                if width == 64 and eta == 0.03:
+                    loss = 0.99
                 if width == 512 and eta == 0.03:
                     loss = 0.99
                 rows.append(
@@ -121,5 +123,7 @@ def test_near_oracle_transfer_is_not_rejected_by_a_noisy_discrete_argmin():
         rule="mup",
         oracle_tolerance=1.10,
     )
+    assert report["reference_oracle_eta"] == pytest.approx(0.03)
+    assert report["reference_eta"] == pytest.approx(0.01)
     assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
     assert report["accepted"] is True

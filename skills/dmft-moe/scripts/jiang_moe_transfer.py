@@ -411,7 +411,14 @@ def primary_analysis(
         shape.label: min(etas, key=lambda eta: means[(shape.label, eta)])
         for shape in shapes
     }
-    reference_eta = best_eta[reference_label]
+    reference_oracle_eta = best_eta[reference_label]
+    reference_oracle_loss = means[(reference_label, reference_oracle_eta)]
+    reference_eta = min(
+        eta
+        for eta in etas
+        if math.isfinite(means[(reference_label, eta)])
+        and means[(reference_label, eta)] <= oracle_tolerance * reference_oracle_loss
+    )
     reference_index = list(etas).index(reference_eta)
     offsets = {
         shape.label: math.log10(best_eta[shape.label] / reference_eta)
@@ -437,7 +444,7 @@ def primary_analysis(
         for shape in shapes
     }
     gates = {
-        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
         "every_shape_has_a_complete_finite_oracle": all(
             math.isfinite(value) for value in oracle_losses.values()
         ),
@@ -447,7 +454,12 @@ def primary_analysis(
     return {
         "reference_shape": reference_label,
         "reference_eta": reference_eta,
-        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "reference_oracle_eta": reference_oracle_eta,
+        "reference_selection_method": (
+            "smallest fully finite eta within the oracle loss-ratio tolerance "
+            "on the reference shape"
+        ),
+        "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
         "best_eta_by_shape": best_eta,
         "best_eta_offset_decades": offsets,
         "maximum_absolute_best_eta_offset_decades": max(

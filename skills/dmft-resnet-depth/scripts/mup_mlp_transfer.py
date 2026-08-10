@@ -401,7 +401,15 @@ def analyze(
     best_eta_by_width = {
         width: min(etas, key=lambda eta: mean_losses[(width, eta)]) for width in widths
     }
-    reference_eta = best_eta_by_width[reference_width]
+    reference_oracle_eta = best_eta_by_width[reference_width]
+    reference_oracle_loss = mean_losses[(reference_width, reference_oracle_eta)]
+    reference_eta = min(
+        eta
+        for eta in etas
+        if math.isfinite(mean_losses[(reference_width, eta)])
+        and mean_losses[(reference_width, eta)]
+        <= oracle_tolerance * reference_oracle_loss
+    )
     reference_index = list(etas).index(reference_eta)
     fixed_rows = [
         [
@@ -429,7 +437,7 @@ def analyze(
         for row in rows
     )
     gates = {
-        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
         "every_width_has_a_complete_finite_oracle": all(
             math.isfinite(value) for value in oracle_losses
         ),
@@ -444,7 +452,12 @@ def analyze(
         "rule": rule,
         "reference_width": reference_width,
         "reference_eta": reference_eta,
-        "reference_optimum_is_interior": 0 < reference_index < len(etas) - 1,
+        "reference_oracle_eta": reference_oracle_eta,
+        "reference_selection_method": (
+            "smallest fully finite eta within the oracle loss-ratio tolerance "
+            "on the reference width"
+        ),
+        "reference_selection_is_interior": 0 < reference_index < len(etas) - 1,
         "best_eta_by_width": {str(width): best_eta_by_width[width] for width in widths},
         "best_eta_offset_decades": {str(width): value for width, value in zip(widths, best_offsets)},
         "maximum_absolute_best_eta_offset_decades": max(abs(value) for value in best_offsets),

@@ -120,7 +120,7 @@ def test_moe_primary_uses_smallest_reference_loss_quality_gate():
     for shape in tiny_shapes():
         for eta in etas:
             for seed in (11, 29, 47):
-                best = 3e-3 if shape.label in {"S1", "S2"} else 1e-2
+                best = 3e-3 if shape.label == "S2" else 1e-2
                 loss = 1.0 if eta == best else 1.5
                 if eta == 3e-3 and best == 1e-2:
                     loss = 1.05
@@ -144,5 +144,7 @@ def test_moe_primary_uses_smallest_reference_loss_quality_gate():
         "S1",
         1.10,
     )
+    assert report["reference_oracle_eta"] == pytest.approx(1e-2)
+    assert report["reference_eta"] == pytest.approx(3e-3)
     assert report["diagnostics"]["exact_grid_argmin_drift_within_0.35_decades"] is False
     assert report["accepted"] is True

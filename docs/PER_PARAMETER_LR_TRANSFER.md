@@ -21,6 +21,14 @@ trainable tensor belongs to exactly one named optimizer group.
 scale-independent fitted multiplier is part of the base model; it is not a
 replacement for the theoretical scale factor.
 
+For every campaign, the reference is the smallest model in the scaling ladder.
+The deployable reference learning rate is the smallest fully finite grid point
+whose paired-seed mean validation loss is within 10% of the reference model's
+grid oracle. This conservative near-optimal choice is made from reference-model
+data only. Transfer succeeds only if that fixed choice remains within 10% of
+each larger model's separately swept oracle; exact discrete argmin equality is
+reported as a diagnostic rather than treated as a hard gate.
+
 ## Fixed-depth μP residual MLP
 
 Source: Tensor Programs V, arXiv:2203.03466v2, and the official

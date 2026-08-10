@@ -30,7 +30,7 @@ PYTHONPATH=src "$python_bin" skills/dmft-moe/scripts/jiang_moe_transfer.py \
   --context-length 32 \
   --n-train 4096 \
   --n-validation 512 \
-  --etas 0.0001 0.0003 0.001 0.003 0.01 \
+  --etas 0.0001 0.0003 0.001 0.003 0.01 0.03 0.1 \
   --steps 200 \
   --batch-size 16 \
   --seeds 11 29 47 \
@@ -44,7 +44,7 @@ echo "$(date -u +%FT%TZ) jiang-dense-smallest-reference-start"
 PYTHONPATH=src:skills/dmft-attention/scripts "$python_bin" skills/dmft-attention/scripts/jiang_chizat_tuned_transfer.py \
   --shapes S1:2:128:64:1 S2:2:256:128:2 S3:4:256:256:4 S4:4:512:512:8 \
   --reference-shape S1 \
-  --etas 0.0001 0.0003 0.001 0.003 0.01 \
+  --etas 0.0001 0.0003 0.001 0.003 0.01 0.03 0.1 \
   --head-dimension 64 \
   --vocab-size 128 \
   --context-length 32 \
