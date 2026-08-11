@@ -1,0 +1,82 @@
+{
+  "run_profile": "extension",
+  "architecture": {
+    "block_type": "jiang_chizat_transformer",
+    "vocab_size": 32768,
+    "context_length": 512,
+    "head_dimension": 64,
+    "reference_depth": 2,
+    "reference_hidden_width": 128,
+    "reference_residual_width": 64
+  },
+  "dataset": {
+    "task_type": "tokenized_text",
+    "token_stream_manifest_path": "__TOKEN_STREAM_MANIFEST__",
+    "tokenizer": "mistral_7b_v03",
+    "maximum_bytes": 2199023255552
+  },
+  "ladder": {
+    "target_parameters": [2200000, 4500000, 7500000, 16000000, 30000000, 70000000, 100000000, 300000000],
+    "depths": [2, 2, 4, 4, 6, 8, 8, 8],
+    "rho_lm_over_d": 4.0,
+    "hidden_width_multiple": 8,
+    "maximum_rho_relative_error": 1e-12,
+    "tokens_per_parameter": 20.0,
+    "heldout_scale_count": 1,
+    "reference_scale_index": 0,
+    "maximum_parameter_error_fraction": 0.05,
+    "minimum_parameter_span": 30.0,
+    "maximum_repetition_ratio": 1.0,
+    "target_forecasts": [500000000, 1000000000],
+    "maximum_extrapolation_factor": 10.1,
+    "require_gate_eligible_plan": true,
+    "maximum_family_spread": 0.08,
+    "maximum_backtest_relative_error": 0.1
+  },
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-12,
+    "weight_decay": 0.0,
+    "fused": true,
+    "learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.06, 0.1],
+    "learning_rate_multipliers": {
+      "jiang_embeddings": 1.0,
+      "jiang_norms": 1.0,
+      "jiang_attention_qkv": 0.0625,
+      "jiang_attention_output": 1.0,
+      "jiang_ffn_up": 1.0,
+      "jiang_ffn_down": 0.0625,
+      "jiang_other_biases": 1.0
+    }
+  },
+  "schedule": "jiang_half_warmup_constant",
+  "batch_examples": 16,
+  "validation_examples": 256,
+  "validation_microbatch_examples": 4,
+  "validation_interval_steps": 2000,
+  "seeds": [11],
+  "runtime": {
+    "precision": "bf16",
+    "attention_backend": "flash",
+    "distributed": "none",
+    "num_processes": 1,
+    "gradient_accumulation_steps": 1,
+    "activation_checkpointing": true,
+    "checkpoint_interval_steps": 0,
+    "checkpoint_interval_seconds": 900,
+    "resume": true
+  },
+  "bootstrap_samples": 400,
+  "run_negative_control": false,
+  "extension_contract": {
+    "parent_plan_fingerprint": "1fa9eae3ac1204b50eecf2a48a0024712edea53d181a46b3685f3937c99d3edd",
+    "parent_dataset_fingerprint": "1b854ee220230e0421acd8312d313a72d396de2234474ec20f63ba1ce4f1d703",
+    "parent_aggregate_sha256": "a3d7c26cf79369040a76ec885e6ba7f75f9a4bc2fe4209f3057da6fe17496ba8",
+    "selected_learning_rate": 0.03,
+    "target_scale": "S8",
+    "target_seed": 11,
+    "expected_target_parameters": 303288704
+  }
+}

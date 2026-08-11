@@ -433,10 +433,66 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError("seeds must be non-empty and unique")
     run_profile = str(config.get("run_profile", "forecast"))
-    if run_profile not in {"smoke", "forecast"}:
-        raise ValueError("run_profile must be smoke or forecast")
+    if run_profile not in {"smoke", "forecast", "extension"}:
+        raise ValueError("run_profile must be smoke, forecast, or extension")
     if run_profile == "forecast" and len(seeds) < 3:
         raise ValueError("forecast profile requires at least three seeds")
+    extension_contract: Optional[Dict[str, Any]] = None
+    raw_extension_contract = config.get("extension_contract")
+    if run_profile == "extension":
+        if len(seeds) != 1:
+            raise ValueError("extension profile requires exactly one seed")
+        if bool(config.get("run_negative_control", True)):
+            raise ValueError("extension profile refuses a wrong-LR control")
+        if not isinstance(raw_extension_contract, Mapping):
+            raise ValueError("extension profile requires extension_contract")
+        required_extension_fields = {
+            "parent_plan_fingerprint",
+            "parent_dataset_fingerprint",
+            "parent_aggregate_sha256",
+            "selected_learning_rate",
+            "target_scale",
+            "target_seed",
+            "expected_target_parameters",
+        }
+        if set(raw_extension_contract) != required_extension_fields:
+            raise ValueError(
+                "extension_contract must contain exactly: "
+                + ", ".join(sorted(required_extension_fields))
+            )
+        extension_contract = json.loads(
+            json.dumps(dict(raw_extension_contract), sort_keys=True)
+        )
+        for name in (
+            "parent_plan_fingerprint",
+            "parent_dataset_fingerprint",
+            "parent_aggregate_sha256",
+        ):
+            digest = extension_contract[name]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"extension_contract.{name} must be a SHA-256 digest")
+        selected_extension_rate = _positive_float(
+            extension_contract["selected_learning_rate"],
+            "extension_contract.selected_learning_rate",
+        )
+        if selected_extension_rate not in rates:
+            raise ValueError(
+                "extension selected_learning_rate is not in the frozen LR grid"
+            )
+        if extension_contract["target_scale"] != scales[-1].name:
+            raise ValueError("extension target_scale must be the largest ladder scale")
+        if int(extension_contract["target_seed"]) != seeds[0]:
+            raise ValueError("extension target_seed must equal the sole campaign seed")
+        if int(extension_contract["expected_target_parameters"]) != scales[-1].parameters:
+            raise ValueError(
+                "extension expected_target_parameters disagrees with compiled geometry"
+            )
+    elif raw_extension_contract is not None:
+        raise ValueError("extension_contract requires run_profile=extension")
     schedule = LearningRateSchedule.from_payload(config.get("schedule", "cosine_to_10_percent"))
     ladder = config["ladder"]
     target_forecasts = tuple(
@@ -475,6 +531,36 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 "forecast plan is guaranteed to fail its extrapolation gate"
             )
+    if run_profile == "extension":
+        tuning_trials = 0
+        scale_trials = 1
+        negative_control_trials = 0
+        execution_order = [
+            "verify_parent_evidence_and_frozen_learning_rate",
+            "verify_tokenizer_training_stream_and_identical_validation_split",
+            "compile_exact_constant_tpp_target_geometry",
+            "preregister_parent_fit_prediction_before_reveal",
+            "train_one_theory_scaled_target_seed",
+            "evaluate_preregistered_prediction_without_retuning",
+        ]
+    else:
+        tuning_trials = len(rates) * len(seeds)
+        scale_trials = len(scales) * len(seeds)
+        negative_control_trials = (
+            len(seeds) if bool(config.get("run_negative_control", True)) else 0
+        )
+        execution_order = [
+            "verify_tokenizer_and_token_stream",
+            "compile_exact_vocab_aware_ladder",
+            "recall_architecture_specific_parameter_group_rules",
+            "tune_reference_scale",
+            "freeze_learning_rate_and_training_path",
+            "train_nonheldout_scales",
+            "evaluate_hidden_upper_rungs",
+            "run_wrong_global_learning_rate_control",
+            "rolling_scaling_law_backtests",
+            "issue_or_refuse_bounded_forecasts",
+        ]
     plan_payload = {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
         "campaign": "real_text_scaling_ladder",
@@ -500,29 +586,16 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "maximum_extrapolation_factor": maximum_extrapolation,
         "require_gate_eligible_plan": require_gate_eligible_plan,
         "target_forecasts": list(target_forecasts),
-        "tuning_trials": len(rates) * len(seeds),
-        "scale_trials": len(scales) * len(seeds),
-        "negative_control_trials": (
-            len(seeds) if bool(config.get("run_negative_control", True)) else 0
-        ),
+        "tuning_trials": tuning_trials,
+        "scale_trials": scale_trials,
+        "negative_control_trials": negative_control_trials,
         "planned_grid_trials": (
-            len(rates) * len(seeds)
-            + len(scales) * len(seeds)
-            + (len(seeds) if bool(config.get("run_negative_control", True)) else 0)
+            tuning_trials + scale_trials + negative_control_trials
         ),
-        "execution_order": [
-            "verify_tokenizer_and_token_stream",
-            "compile_exact_vocab_aware_ladder",
-            "recall_architecture_specific_parameter_group_rules",
-            "tune_reference_scale",
-            "freeze_learning_rate_and_training_path",
-            "train_nonheldout_scales",
-            "evaluate_hidden_upper_rungs",
-            "run_wrong_global_learning_rate_control",
-            "rolling_scaling_law_backtests",
-            "issue_or_refuse_bounded_forecasts",
-        ],
+        "execution_order": execution_order,
     }
+    if extension_contract is not None:
+        plan_payload["extension_contract"] = extension_contract
     plan_payload["fingerprint"] = sha256(
         json.dumps(plan_payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"

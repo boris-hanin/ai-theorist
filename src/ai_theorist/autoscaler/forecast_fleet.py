@@ -92,6 +92,20 @@ def build_forecast_fleet_tasks(
             )
         )
 
+    if plan.get("run_profile") == "extension":
+        if phase == "tune":
+            raise ValueError("forecast extensions reuse the frozen parent LR and skip tuning")
+        if run_negative_control:
+            raise ValueError("forecast extensions refuse a wrong-LR control")
+        if selected_learning_rate is None:
+            raise ValueError("forecast extension requires selected_learning_rate")
+        selected = float(selected_learning_rate)
+        contract = dict(plan["extension_contract"])
+        if selected != float(contract["selected_learning_rate"]):
+            raise ValueError("forecast extension LR disagrees with its frozen contract")
+        append(scales[-1], selected, seeds[0], "theory")
+        return tasks
+
     if phase == "tune":
         for eta in plan["learning_rates"]:
             for seed in seeds:

@@ -230,6 +230,51 @@ def test_analytic_counts_match_both_theory_models() -> None:
     )
 
 
+def test_extension_profile_binds_one_seed_and_frozen_parent_contract(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    provisional = compile_real_text_scaling_plan(config)
+    target = provisional["scales"][-1]
+    config["run_profile"] = "extension"
+    config["extension_contract"] = {
+        "parent_plan_fingerprint": "a" * 64,
+        "parent_dataset_fingerprint": "b" * 64,
+        "parent_aggregate_sha256": "c" * 64,
+        "selected_learning_rate": 0.001,
+        "target_scale": target["name"],
+        "target_seed": 3,
+        "expected_target_parameters": target["parameters"],
+    }
+    plan = compile_real_text_scaling_plan(config)
+    assert plan["run_profile"] == "extension"
+    assert plan["extension_contract"]["selected_learning_rate"] == 0.001
+    assert plan["scales"][-1]["heldout"] is True
+    assert plan["planned_grid_trials"] == 1
+    tasks = build_forecast_fleet_tasks(
+        plan,
+        phase="ladder",
+        selected_learning_rate=0.001,
+        run_negative_control=False,
+    )
+    assert len(tasks) == 1
+    assert tasks[0].scale_name == target["name"]
+    assert tasks[0].seed == 3
+    with pytest.raises(ValueError, match="skip tuning"):
+        build_forecast_fleet_tasks(plan, phase="tune")
+
+    invalid = json.loads(json.dumps(config))
+    invalid["seeds"] = [3, 5]
+    with pytest.raises(ValueError, match="exactly one seed"):
+        compile_real_text_scaling_plan(invalid)
+
+    invalid = json.loads(json.dumps(config))
+    invalid["run_negative_control"] = True
+    with pytest.raises(ValueError, match="refuses a wrong-LR control"):
+        compile_real_text_scaling_plan(invalid)
+
+
 def test_ddp_sampling_partitions_the_same_global_draw_as_one_gpu() -> None:
     class DeterministicCorpus:
         def sample_batch(self, _split, count, generator, _device):

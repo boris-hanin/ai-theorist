@@ -35,6 +35,7 @@ def main() -> None:
     with args.config.open("r", encoding="utf-8") as handle:
         config = json.load(handle)
     config["run_profile"] = "smoke"
+    config.pop("extension_contract", None)
     config["dataset"]["token_stream_manifest_path"] = str(
         args.manifest.resolve()
     )
