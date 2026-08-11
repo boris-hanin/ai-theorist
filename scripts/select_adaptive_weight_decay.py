@@ -50,7 +50,10 @@ def _rows(selection: Mapping[str, Any], source: str) -> List[Dict[str, Any]]:
 
 
 def _deduplicate(
-    rows: Sequence[Mapping[str, Any]], *, maximum_overlap_delta: float
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    maximum_overlap_delta: float,
+    allow_failed_overlaps: bool = False,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     unique: Dict[Tuple[float, Optional[float]], Dict[str, Any]] = {}
     overlaps = []
@@ -73,7 +76,7 @@ def _deduplicate(
             "passed": max(deltas) <= maximum_overlap_delta,
         }
         overlaps.append(overlap)
-        if not overlap["passed"]:
+        if not overlap["passed"] and not allow_failed_overlaps:
             raise ValueError(
                 "duplicated adaptive tuning cell failed reproducibility gate: "
                 + json.dumps(overlap, sort_keys=True)
@@ -149,6 +152,8 @@ def main() -> None:
     parser.add_argument("zero_jiang_selection", type=Path)
     parser.add_argument("original_completep_selection", type=Path)
     parser.add_argument("zero_completep_selection", type=Path)
+    parser.add_argument("--waive-overlap-gate", action="store_true")
+    parser.add_argument("--waiver-record", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -178,6 +183,7 @@ def main() -> None:
             for row in _rows(selections[name], name)
         ],
         maximum_overlap_delta=0.005,
+        allow_failed_overlaps=args.waive_overlap_gate,
     )
     completep_rows, completep_overlaps = _deduplicate(
         [
@@ -198,6 +204,38 @@ def main() -> None:
         zero_source="zero_completep",
     )
 
+    failed_overlaps = [row for row in overlaps if not row["passed"]]
+    overlap_reproduced = bool(overlaps) and not failed_overlaps
+    waiver = None
+    waiver_valid = False
+    if args.waive_overlap_gate:
+        if args.waiver_record is None:
+            raise ValueError("--waive-overlap-gate requires --waiver-record")
+        waiver = _read(args.waiver_record, "overlap waiver")
+        recorded_hashes = _object(
+            waiver.get("selection_sha256"), "waiver selection hashes"
+        )
+        maximum_observed = max(
+            float(row["maximum_seed_loss_delta"]) for row in failed_overlaps
+        )
+        waiver_valid = (
+            waiver.get("status") == "authorized"
+            and waiver.get("authorized_by") == "user"
+            and waiver.get("scope") == "jiang_overlap_reproducibility_only"
+            and failed_overlaps
+            and abs(
+                float(waiver.get("observed_maximum_seed_loss_delta"))
+                - maximum_observed
+            )
+            <= 1e-12
+            and recorded_hashes.get("original_jiang")
+            == _sha256(args.original_jiang_selection)
+            and recorded_hashes.get("expanded_jiang")
+            == _sha256(args.expanded_jiang_selection)
+        )
+    elif args.waiver_record is not None:
+        raise ValueError("--waiver-record requires --waive-overlap-gate")
+
     def source_selection_matches(decision: Mapping[str, Any]) -> bool:
         source = str(decision["selected_source"])
         source_selection = selections[source]
@@ -214,8 +252,7 @@ def main() -> None:
             and all(_object(prereg.get("gates"), "preregistration gates").values())
         ),
         **fingerprint_gates,
-        "jiang_overlap_reproduced": bool(overlaps)
-        and all(row["passed"] for row in overlaps),
+        "jiang_overlap_requirement_resolved": overlap_reproduced or waiver_valid,
         "completep_has_no_unexpected_overlap": not completep_overlaps,
         "jiang_decision_passed": all(jiang["gates"].values()),
         "completep_decision_passed": all(completep["gates"].values()),
@@ -229,8 +266,21 @@ def main() -> None:
     passed = all(gates.values())
     payload = {
         "schema_version": 1,
-        "status": "passed" if passed else "failed",
-        "claim_scope": prereg["claim_scope"],
+        "status": (
+            "passed_with_user_waiver"
+            if passed and waiver_valid
+            else "passed"
+            if passed
+            else "failed"
+        ),
+        "claim_scope": (
+            prereg["claim_scope"]
+            + (
+                "; duplicated-cell reproducibility gate explicitly waived by user"
+                if waiver_valid
+                else ""
+            )
+        ),
         "preregistration_sha256": _sha256(args.preregistration),
         "selection_inputs": {
             name: {"path": str(path), "sha256": _sha256(path)}
@@ -239,6 +289,16 @@ def main() -> None:
         "jiang": jiang,
         "completep": completep,
         "overlap_reproducibility": overlaps,
+        "waiver": (
+            {
+                "valid": waiver_valid,
+                "path": str(args.waiver_record),
+                "sha256": _sha256(args.waiver_record),
+                "record": waiver,
+            }
+            if args.waiver_record is not None
+            else None
+        ),
         "gates": gates,
     }
     atomic_write_json(args.output, payload)

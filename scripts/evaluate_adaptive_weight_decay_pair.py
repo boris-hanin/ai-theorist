@@ -74,7 +74,8 @@ def main() -> None:
             prereg.get("status") == "preregistered_adaptive_extension"
             and all(_object(prereg.get("gates"), "preregistration gates").values())
         ),
-        "adaptive_decision_passed": decision.get("status") == "passed"
+        "adaptive_decision_passed": decision.get("status")
+        in {"passed", "passed_with_user_waiver"}
         and all(_object(decision.get("gates"), "decision gates").values()),
         "jiang_result_completed": jiang.get("status") == "completed",
         "completep_result_passed": completep.get("status") == "passed",
@@ -115,9 +116,16 @@ def main() -> None:
         and math.isfinite(completep_loss),
     }
     passed = all(gates.values())
+    used_waiver = decision.get("status") == "passed_with_user_waiver"
     payload = {
         "schema_version": 1,
-        "status": "passed" if passed else "failed",
+        "status": (
+            "passed_with_user_waiver"
+            if passed and used_waiver
+            else "passed"
+            if passed
+            else "failed"
+        ),
         "claim_scope": prereg["claim_scope"],
         "source_hashes": {
             "preregistration": _sha256(args.preregistration),
@@ -125,6 +133,7 @@ def main() -> None:
             "jiang_result": _sha256(args.jiang_result),
             "completep_result": _sha256(args.completep_result),
         },
+        "waiver": decision.get("waiver"),
         "jiang": {
             "selected_weight_decay_mode": decision["jiang"][
                 "selected_weight_decay_mode"

@@ -168,6 +168,17 @@ collect_cache_arguments "$campaigns/completep-zero" tune zero_completep_tune
   "${zero_completep_tune[@]}" \
   --output "$extension_root/zero-completep-selection.json" >/dev/null
 
+adaptive_selection_args=()
+if [[ -n "${ADAPTIVE_OVERLAP_WAIVER_FILE:-}" ]]; then
+  if [[ ! -f "$ADAPTIVE_OVERLAP_WAIVER_FILE" ]]; then
+    echo "adaptive overlap waiver does not exist: $ADAPTIVE_OVERLAP_WAIVER_FILE" >&2
+    exit 1
+  fi
+  adaptive_selection_args+=(
+    --waive-overlap-gate
+    --waiver-record "$ADAPTIVE_OVERLAP_WAIVER_FILE"
+  )
+fi
 "$python" scripts/select_adaptive_weight_decay.py \
   "$extension_root/preregistration.json" \
   "$extension_root/original-jiang-selection.json" \
@@ -175,6 +186,7 @@ collect_cache_arguments "$campaigns/completep-zero" tune zero_completep_tune
   "$extension_root/zero-jiang-selection.json" \
   "$extension_root/original-completep-selection.json" \
   "$extension_root/zero-completep-selection.json" \
+  "${adaptive_selection_args[@]}" \
   --output "$extension_root/decision.json" \
   > "$extension_root/decision.stdout.json"
 

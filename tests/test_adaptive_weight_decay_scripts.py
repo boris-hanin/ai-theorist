@@ -92,6 +92,13 @@ def test_overlap_reproducibility_is_seed_matched() -> None:
     right["seed_losses"][0] += 0.01
     with pytest.raises(ValueError, match="reproducibility gate"):
         SELECTOR._deduplicate([left, right], maximum_overlap_delta=0.005)
+    unique, overlaps = SELECTOR._deduplicate(
+        [left, right],
+        maximum_overlap_delta=0.005,
+        allow_failed_overlaps=True,
+    )
+    assert len(unique) == 1
+    assert overlaps[0]["passed"] is False
 
 
 def test_zero_decay_config_is_explicit_adamw_endpoint() -> None:
