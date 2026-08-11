@@ -168,6 +168,56 @@ def test_completep_adamw_decay_scales_rectangular_hidden_groups() -> None:
     assert audit["theory"]["optimizer"] == "adamw"
 
 
+def test_rho32_endpoint_uses_reference_relative_group_rules() -> None:
+    eta = 0.03
+    model = JiangChizatTransformer(
+        JiangChizatShape(
+            depth=8,
+            hidden_width=448,
+            residual_width=112,
+            head_dimension=8,
+        ),
+        vocab_size=16,
+        context_length=8,
+        reference=JiangChizatReference(
+            depth=2,
+            hidden_width=128,
+            residual_width=8,
+        ),
+        capture_attention_diagnostics=False,
+    )
+    groups = {
+        str(group["name"]): group
+        for group in model.optimizer_parameter_groups(
+            eta,
+            epsilon0=1e-12,
+            optimizer_name="adamw",
+        )
+    }
+    assert model.shape.rho == pytest.approx(32.0)
+    assert groups["jiang_embeddings"]["lr"] == pytest.approx(eta)
+    assert groups["jiang_norms"]["lr"] == pytest.approx(eta)
+    assert groups["jiang_attention_qkv"]["lr"] == pytest.approx(eta / 14 / 16)
+    assert groups["jiang_attention_output"]["lr"] == pytest.approx(eta / 14)
+    assert groups["jiang_ffn_up"]["lr"] == pytest.approx(eta / 14)
+    assert groups["jiang_ffn_down"]["lr"] == pytest.approx(eta / 3.5 / 16)
+    assert groups["jiang_other_biases"]["lr"] == pytest.approx(eta)
+    assert groups["jiang_attention_qkv"]["eps"] == pytest.approx(1e-12 / 56)
+    assert groups["jiang_ffn_down"]["eps"] == pytest.approx(
+        1e-12 * 14 / (3.5**2) / 4
+    )
+    audit = model.optimizer_contract_audit(
+        eta,
+        epsilon0=1e-12,
+        optimizer_name="adamw",
+    )
+    assert audit["complete"] is True
+    assert audit["disjoint"] is True
+    assert audit["trainable_parameter_count"] == sum(
+        parameter.numel() for parameter in model.parameters()
+    )
+
+
 def test_omitted_factor_controls_change_only_the_declared_groups():
     shape = JiangChizatShape(depth=4, hidden_width=96, residual_width=32, head_dimension=8)
     model = make_model(shape)

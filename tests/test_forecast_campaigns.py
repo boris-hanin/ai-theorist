@@ -376,6 +376,7 @@ def test_jiang_adamw_plan_jointly_tunes_eta_and_tau_ema(
     assert plan["architecture_contract"]["parameterization"] == (
         "jiang_completep_adamw"
     )
+    assert plan["weight_decay_tau_ema_grid"] == [0.05, 0.1, 0.2]
     assert plan["architecture_contract"]["theory"]["optimizer"] == "adamw"
     assert plan["tuning_trials"] == 9
     tasks = build_forecast_fleet_tasks(plan, phase="tune")
@@ -620,6 +621,81 @@ def test_adamw_tau_ema_100m_presets_compile_exact_joint_grids(monkeypatch) -> No
         0.2814,
         0.5628,
     ]
+
+
+def test_jiang_rho32_preset_has_exact_reference_and_l8_endpoint(monkeypatch) -> None:
+    config_path = (
+        Path(__file__).parents[1]
+        / "configs"
+        / "autoscaler"
+        / "jiang_mistral_100m_rho32_adamw_tau_ema.json"
+    )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(
+        forecast_campaigns,
+        "token_stream_identity",
+        lambda _path: {
+            "format": "sharded_uint32_le_v1",
+            "fingerprint": "a" * 64,
+            "content_fingerprint": "b" * 64,
+            "tokenizer_id": "mistral_7b_v03",
+            "tokenizer_fingerprint": "c" * 64,
+            "vocab_size": 32_768,
+            "packing": {"contract": "document_eos_concatenation_v1"},
+            "training_tokens": 3_080_501_458,
+            "validation_tokens": 129_177_154,
+        },
+    )
+
+    plan = compile_real_text_scaling_plan(config)
+
+    assert plan["architecture_contract"]["rho_lm_over_d"] == pytest.approx(32.0)
+    assert plan["architecture_contract"]["parameterization"] == (
+        "jiang_completep_adamw"
+    )
+    assert plan["weight_decay_tau_ema_grid"] == [
+        0.035175,
+        0.07035,
+        0.1407,
+        0.2814,
+        0.5628,
+    ]
+    assert [row["parameters"] for row in plan["scales"]] == [
+        2_428_160,
+        5_446_144,
+        9_352_320,
+        18_864_000,
+        25_789_440,
+        82_263_552,
+        106_984_192,
+    ]
+    assert all(row["rho_lm_over_d"] == pytest.approx(32.0) for row in plan["scales"])
+    assert all(row["rho_relative_error"] == pytest.approx(0.0) for row in plan["scales"])
+    assert plan["scales"][0]["depth"] == 2
+    assert plan["scales"][0]["width"] == 64
+    assert plan["scales"][0]["hidden_width"] == 1_024
+    assert plan["scales"][-1]["depth"] == 8
+    assert plan["scales"][-1]["width"] == 896
+    assert plan["scales"][-1]["hidden_width"] == 3_584
+    assert plan["scales"][-1]["hidden_width"] / plan["scales"][-1]["width"] == 4
+    assert plan["scales"][-1]["heldout"] is True
+    assert plan["fit_parameter_span"] >= plan["minimum_parameter_span"]
+    assert plan["planned_grid_trials"] == 141
+
+    expanded = json.loads(
+        config_path.with_name(
+            "jiang_mistral_100m_rho32_adamw_tau_ema_expanded.json"
+        ).read_text(encoding="utf-8")
+    )
+    expanded_plan = compile_real_text_scaling_plan(expanded)
+    assert expanded_plan["scales"] == plan["scales"]
+    assert expanded_plan["weight_decay_tau_ema_grid"] == [
+        1.1256,
+        2.2512,
+        4.5024,
+        9.0048,
+    ]
+    assert expanded_plan["tuning_trials"] == 96
 
 
 def test_completep_baseline_preparation_requires_verified_jiang_adamw(
