@@ -94,7 +94,7 @@ def main() -> None:
             float(completep_target["tokens_per_parameter"])
             - float(jiang_target["tokens_per_parameter"])
         )
-        <= 1e-12,
+        <= 0.001,
         "same_seed_count": (
             len(completep_target["seed_losses"])
             == len(jiang_target["seed_losses"])

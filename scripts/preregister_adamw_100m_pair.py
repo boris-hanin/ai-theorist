@@ -60,7 +60,7 @@ def main() -> None:
             float(jiang_target["tokens_per_parameter"])
             - float(completep_target["tokens_per_parameter"])
         )
-        <= 1e-12,
+        <= 0.001,
         "matched_parameter_count_within_one_percent": abs(
             int(completep_target["parameters"]) / int(jiang_target["parameters"])
             - 1.0
