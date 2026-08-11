@@ -28,6 +28,30 @@ JIANG_COMPLETEP_ADAM_THEORY = LearningRateTheory(
 )
 
 
+JIANG_COMPLETEP_ADAMW_THEORY = LearningRateTheory(
+    contract_id="jiang-chizat-completep-adamw-tau-ema-v1",
+    architecture="pre-LN decoder with 1/L MHSA and mean-field FFN residual branches",
+    optimizer="adamw",
+    source_title=(
+        "Jiang CompleteP LR/epsilon groups with Dey et al. AdamW weight-decay transfer"
+    ),
+    source_url="https://arxiv.org/abs/2505.01618",
+    source_version=(
+        "Jiang et al. arXiv:2601.20205v3 Table 2; Dey et al. "
+        "arXiv:2505.01618v4 Table 1, Appendix D.4 and Appendix G.1"
+    ),
+    base_coordinate=(
+        "eta, epsilon0, and tau_EMA=(eta*lambda0*n_steps)^(-1) at "
+        "reference (L0, M0, D0)"
+    ),
+    applicability=(
+        "fixed-schedule AdamW transfer across depth L, residual width D, and "
+        "mean-field FFN width M; Jiang LR/epsilon rules are preserved while "
+        "Dey weight decay is scaled by each hidden matrix's input width"
+    ),
+)
+
+
 # Appendix D.1 reports the constant-scale values obtained by the authors' one
 # coordinate-sweep pass.  They are part of the base parameterization, not
 # width/depth exponents and not values to silently reset to one at larger scale.
@@ -332,6 +356,8 @@ class JiangChizatTransformer(nn.Module):
         eta: float,
         *,
         epsilon0: float,
+        weight_decay0: float = 0.0,
+        optimizer_name: Literal["adam", "adamw"] = "adam",
         omit_attention_width_factor: bool = False,
         omit_ffn_hidden_width_factor: bool = False,
         learning_rate_multipliers: Mapping[str, float] | None = None,
@@ -340,6 +366,17 @@ class JiangChizatTransformer(nn.Module):
             raise ValueError("eta must be finite and positive")
         if not math.isfinite(epsilon0) or epsilon0 <= 0.0:
             raise ValueError("epsilon0 must be finite and positive")
+        if not math.isfinite(weight_decay0) or weight_decay0 < 0.0:
+            raise ValueError("weight_decay0 must be finite and non-negative")
+        if optimizer_name not in {"adam", "adamw"}:
+            raise ValueError("optimizer_name must be adam or adamw")
+        if optimizer_name == "adam" and weight_decay0 != 0.0:
+            raise ValueError("Jiang Adam does not accept decoupled weight decay")
+        theory = (
+            JIANG_COMPLETEP_ADAMW_THEORY
+            if optimizer_name == "adamw"
+            else JIANG_COMPLETEP_ADAM_THEORY
+        )
         depth_ratio = self.shape.depth / self.reference.depth
         hidden_ratio = self.shape.hidden_width / self.reference.hidden_width
         residual_ratio = self.shape.residual_width / self.reference.residual_width
@@ -376,6 +413,7 @@ class JiangChizatTransformer(nn.Module):
             "depth_ratio": depth_ratio,
             "ffn_width_ratio": hidden_ratio,
             "residual_width_ratio": residual_ratio,
+            "base_weight_decay": weight_decay0,
         }
         group_names = (
             "jiang_embeddings",
@@ -399,7 +437,7 @@ class JiangChizatTransformer(nn.Module):
                 if not math.isfinite(multiplier) or multiplier <= 0.0:
                     raise ValueError(f"LR multiplier for {name} must be finite and positive")
                 multipliers[name] = multiplier
-        return [
+        groups = [
             theory_group(
                 name="jiang_embeddings",
                 params=[self.token_embedding.weight, self.position_embedding.weight],
@@ -407,7 +445,7 @@ class JiangChizatTransformer(nn.Module):
                 lr_formula="c_embeddings * eta; c_embeddings tuned at reference",
                 eps=epsilon0 * residual_ratio ** -1.0,
                 eps_formula="epsilon0 * (D/D0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_embeddings"]},
             ),
             theory_group(
@@ -417,7 +455,7 @@ class JiangChizatTransformer(nn.Module):
                 lr_formula="c_norms * eta; c_norms tuned at reference",
                 eps=epsilon0,
                 eps_formula="epsilon0",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_norms"]},
             ),
             theory_group(
@@ -431,7 +469,7 @@ class JiangChizatTransformer(nn.Module):
                 ),
                 eps=epsilon0 * residual_ratio ** -1.0 * depth_ratio ** -1.0,
                 eps_formula="epsilon0 * (D/D0)^(-1) * (L/L0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_attention_qkv"]},
             ),
             theory_group(
@@ -445,7 +483,7 @@ class JiangChizatTransformer(nn.Module):
                 ),
                 eps=epsilon0 * residual_ratio ** -1.0 * depth_ratio ** -1.0,
                 eps_formula="epsilon0 * (D/D0)^(-1) * (L/L0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_attention_output"]},
             ),
             theory_group(
@@ -455,7 +493,7 @@ class JiangChizatTransformer(nn.Module):
                 lr_formula="c_ffn_up * eta * (D/D0)^(-1)",
                 eps=epsilon0 * hidden_ratio ** -1.0 * depth_ratio ** -1.0,
                 eps_formula="epsilon0 * (M/M0)^(-1) * (L/L0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_ffn_up"]},
             ),
             theory_group(
@@ -474,7 +512,7 @@ class JiangChizatTransformer(nn.Module):
                     * depth_ratio ** -1.0
                 ),
                 eps_formula="epsilon0 * (D/D0) * (M/M0)^(-2) * (L/L0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_ffn_down"]},
             ),
             theory_group(
@@ -484,16 +522,37 @@ class JiangChizatTransformer(nn.Module):
                 lr_formula="c_other_biases * eta",
                 eps=epsilon0 * depth_ratio ** -1.0,
                 eps_formula="epsilon0 * (L/L0)^(-1)",
-                theory=JIANG_COMPLETEP_ADAM_THEORY,
+                theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_other_biases"]},
             ),
         ]
+        for group in groups:
+            name = str(group["name"])
+            if name == "jiang_embeddings":
+                group["weight_decay"] = weight_decay0
+                group["weight_decay_formula"] = "lambda0"
+            elif name in {
+                "jiang_attention_qkv",
+                "jiang_attention_output",
+                "jiang_ffn_up",
+            }:
+                group["weight_decay"] = weight_decay0 * residual_ratio
+                group["weight_decay_formula"] = "lambda0 * (D/D0)"
+            elif name == "jiang_ffn_down":
+                group["weight_decay"] = weight_decay0 * hidden_ratio
+                group["weight_decay_formula"] = "lambda0 * (M/M0)"
+            else:
+                group["weight_decay"] = 0.0
+                group["weight_decay_formula"] = "0 for norms and biases"
+        return groups
 
     def optimizer_contract_audit(
         self,
         eta: float,
         *,
         epsilon0: float = 1e-12,
+        weight_decay0: float = 0.0,
+        optimizer_name: Literal["adam", "adamw"] = "adam",
         omit_attention_width_factor: bool = False,
         omit_ffn_hidden_width_factor: bool = False,
         learning_rate_multipliers: Mapping[str, float] | None = None,
@@ -501,11 +560,24 @@ class JiangChizatTransformer(nn.Module):
         groups = self.optimizer_parameter_groups(
             eta,
             epsilon0=epsilon0,
+            weight_decay0=weight_decay0,
+            optimizer_name=optimizer_name,
             omit_attention_width_factor=omit_attention_width_factor,
             omit_ffn_hidden_width_factor=omit_ffn_hidden_width_factor,
             learning_rate_multipliers=learning_rate_multipliers,
         )
-        return audit_optimizer_groups(self, groups, JIANG_COMPLETEP_ADAM_THEORY)
+        theory = (
+            JIANG_COMPLETEP_ADAMW_THEORY
+            if optimizer_name == "adamw"
+            else JIANG_COMPLETEP_ADAM_THEORY
+        )
+        audit = audit_optimizer_groups(self, groups, theory)
+        rows = {str(group["name"]): group for group in groups}
+        for row in audit["groups"]:  # type: ignore[index]
+            group = rows[str(row["name"])]  # type: ignore[index]
+            row["weight_decay"] = float(group["weight_decay"])  # type: ignore[index]
+            row["weight_decay_formula"] = str(group["weight_decay_formula"])  # type: ignore[index]
+        return audit
 
     def make_optimizer(
         self,
@@ -514,14 +586,19 @@ class JiangChizatTransformer(nn.Module):
         epsilon0: float = 1e-12,
         beta1: float = 0.9,
         beta2: float = 0.95,
+        weight_decay0: float = 0.0,
+        optimizer_name: Literal["adam", "adamw"] = "adam",
         omit_attention_width_factor: bool = False,
         omit_ffn_hidden_width_factor: bool = False,
         learning_rate_multipliers: Mapping[str, float] | None = None,
-    ) -> torch.optim.Adam:
-        return torch.optim.Adam(
+    ) -> torch.optim.Optimizer:
+        optimizer_class = torch.optim.AdamW if optimizer_name == "adamw" else torch.optim.Adam
+        return optimizer_class(
             self.optimizer_parameter_groups(
                 eta,
                 epsilon0=epsilon0,
+                weight_decay0=weight_decay0,
+                optimizer_name=optimizer_name,
                 omit_attention_width_factor=omit_attention_width_factor,
                 omit_ffn_hidden_width_factor=omit_ffn_hidden_width_factor,
                 learning_rate_multipliers=learning_rate_multipliers,

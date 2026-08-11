@@ -214,6 +214,7 @@ def main() -> None:
     forecast_shard.add_argument("--shard-index", type=int, required=True)
     forecast_shard.add_argument("--shard-count", type=int, required=True)
     forecast_shard.add_argument("--selected-learning-rate", type=float)
+    forecast_shard.add_argument("--selected-weight-decay-tau-ema", type=float)
     forecast_shard.add_argument("--task-id", action="append")
     forecast_shard.add_argument("--device", default="cuda")
     forecast_shard.add_argument("--output", type=Path, required=True)
@@ -227,6 +228,7 @@ def main() -> None:
     forecast_tasks.add_argument("--phase", choices=("tune", "ladder"), required=True)
     forecast_tasks.add_argument("--shard-count", type=int, required=True)
     forecast_tasks.add_argument("--selected-learning-rate", type=float)
+    forecast_tasks.add_argument("--selected-weight-decay-tau-ema", type=float)
 
     forecast_select = subparsers.add_parser(
         "forecast-select",
@@ -552,6 +554,9 @@ def main() -> None:
                 shard_index=args.shard_index,
                 shard_count=args.shard_count,
                 selected_learning_rate=args.selected_learning_rate,
+                selected_weight_decay_tau_ema=(
+                    args.selected_weight_decay_tau_ema
+                ),
                 task_ids=args.task_id,
                 output_directory=args.output,
                 device=args.device,
@@ -567,6 +572,7 @@ def main() -> None:
             plan,
             phase=args.phase,
             selected_learning_rate=args.selected_learning_rate,
+            selected_weight_decay_tau_ema=args.selected_weight_decay_tau_ema,
             run_negative_control=bool(payload.get("run_negative_control", True)),
         )
         assignments = assign_forecast_fleet_tasks(tasks, args.shard_count)

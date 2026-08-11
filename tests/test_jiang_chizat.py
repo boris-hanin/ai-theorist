@@ -5,6 +5,7 @@ import torch
 from torch.nn import functional as F
 
 from ai_theorist.autoscaler.jiang_chizat import (
+    JIANG_COMPLETEP_ADAMW_THEORY,
     JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
     JiangChizatReference,
     JiangChizatShape,
@@ -126,6 +127,45 @@ def test_reference_tuned_group_multiplier_changes_only_named_group():
     for name, rate in baseline.items():
         if name != "jiang_attention_qkv":
             assert tuned[name] == rate
+
+
+def test_completep_adamw_decay_scales_rectangular_hidden_groups() -> None:
+    shape = JiangChizatShape(
+        depth=4,
+        hidden_width=128,
+        residual_width=32,
+        head_dimension=8,
+    )
+    model = make_model(shape)
+    groups = {
+        str(group["name"]): group
+        for group in model.optimizer_parameter_groups(
+            0.01,
+            epsilon0=1e-12,
+            weight_decay0=0.1,
+            optimizer_name="adamw",
+        )
+    }
+    assert groups["jiang_embeddings"]["weight_decay"] == pytest.approx(0.1)
+    assert groups["jiang_attention_qkv"]["weight_decay"] == pytest.approx(0.2)
+    assert groups["jiang_attention_output"]["weight_decay"] == pytest.approx(0.2)
+    assert groups["jiang_ffn_up"]["weight_decay"] == pytest.approx(0.2)
+    assert groups["jiang_ffn_down"]["weight_decay"] == pytest.approx(0.4)
+    assert groups["jiang_norms"]["weight_decay"] == 0.0
+    assert groups["jiang_other_biases"]["weight_decay"] == 0.0
+    assert {
+        group["theory_contract_id"] for group in groups.values()
+    } == {JIANG_COMPLETEP_ADAMW_THEORY.contract_id}
+
+    audit = model.optimizer_contract_audit(
+        0.01,
+        epsilon0=1e-12,
+        weight_decay0=0.1,
+        optimizer_name="adamw",
+    )
+    assert audit["complete"] is True
+    assert audit["disjoint"] is True
+    assert audit["theory"]["optimizer"] == "adamw"
 
 
 def test_omitted_factor_controls_change_only_the_declared_groups():

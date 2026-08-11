@@ -41,6 +41,7 @@ fi
 run_phase() {
   local phase="$1"
   local selected_learning_rate="${2:-}"
+  local selected_weight_decay_tau_ema="${3:-}"
   local phase_root="$run_root/$phase"
   local pids=()
   local shard
@@ -59,6 +60,11 @@ run_phase() {
     )
     if [[ -n "$selected_learning_rate" ]]; then
       command+=(--selected-learning-rate "$selected_learning_rate")
+    fi
+    if [[ -n "$selected_weight_decay_tau_ema" ]]; then
+      command+=(
+        --selected-weight-decay-tau-ema "$selected_weight_decay_tau_ema"
+      )
     fi
     CUDA_VISIBLE_DEVICES="$shard" "${command[@]}" \
       > "$shard_root/worker.log" 2>&1 &
@@ -88,12 +94,21 @@ done
   --require-interior \
   --output "$run_root/reference-selection.json" > "$run_root/reference-selection.stdout.json"
 selected_learning_rate="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["selected_learning_rate"])' "$run_root/reference-selection.json")"
+selected_weight_decay_tau_ema="$(python3 -c 'import json, sys; value=json.load(open(sys.argv[1])).get("selected_weight_decay_tau_ema"); print("" if value is None else value)' "$run_root/reference-selection.json")"
 
-"$cli" forecast-tasks "$config" \
-  --phase ladder \
-  --shard-count "$worker_count" \
-  --selected-learning-rate "$selected_learning_rate" > "$run_root/ladder-assignments.json"
-run_phase ladder "$selected_learning_rate"
+ladder_task_command=(
+  "$cli" forecast-tasks "$config"
+  --phase ladder
+  --shard-count "$worker_count"
+  --selected-learning-rate "$selected_learning_rate"
+)
+if [[ -n "$selected_weight_decay_tau_ema" ]]; then
+  ladder_task_command+=(
+    --selected-weight-decay-tau-ema "$selected_weight_decay_tau_ema"
+  )
+fi
+"${ladder_task_command[@]}" > "$run_root/ladder-assignments.json"
+run_phase ladder "$selected_learning_rate" "$selected_weight_decay_tau_ema"
 
 aggregate_cache_args=()
 for phase in tune ladder; do

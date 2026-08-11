@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import shutil
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
@@ -36,6 +37,7 @@ class ForecastFleetTask:
     ordinal: int
     scale_name: str
     eta: float
+    weight_decay_tau_ema: Optional[float]
     seed: int
     optimizer_mode: str
     estimated_flops: float
@@ -47,6 +49,7 @@ class ForecastFleetTask:
             "ordinal": self.ordinal,
             "scale_name": self.scale_name,
             "eta": self.eta,
+            "weight_decay_tau_ema": self.weight_decay_tau_ema,
             "seed": self.seed,
             "optimizer_mode": self.optimizer_mode,
             "estimated_flops": self.estimated_flops,
@@ -58,6 +61,7 @@ def build_forecast_fleet_tasks(
     *,
     phase: str,
     selected_learning_rate: Optional[float] = None,
+    selected_weight_decay_tau_ema: Optional[float] = None,
     run_negative_control: bool = True,
 ) -> List[ForecastFleetTask]:
     """Build the physical trial DAG for one dependency-delimited phase."""
@@ -69,21 +73,29 @@ def build_forecast_fleet_tasks(
     reference_index = int(plan["architecture_contract"]["reference_scale_index"])
     reference = scales[reference_index]
     tasks: List[ForecastFleetTask] = []
+    tau_grid = [float(value) for value in plan.get("weight_decay_tau_ema_grid", ())]
 
     def append(
-        scale: Mapping[str, Any], eta: float, seed: int, optimizer_mode: str
+        scale: Mapping[str, Any],
+        eta: float,
+        tau_ema: Optional[float],
+        seed: int,
+        optimizer_mode: str,
     ) -> None:
         ordinal = len(tasks)
         tasks.append(
             ForecastFleetTask(
                 task_id=(
                     f"{phase}-{scale['name']}-{optimizer_mode}-"
-                    f"eta{eta:g}-seed{seed}"
+                    f"eta{eta:g}"
+                    + (f"-tau{tau_ema:g}" if tau_ema is not None else "")
+                    + f"-seed{seed}"
                 ),
                 phase=phase,
                 ordinal=ordinal,
                 scale_name=str(scale["name"]),
                 eta=float(eta),
+                weight_decay_tau_ema=tau_ema,
                 seed=seed,
                 optimizer_mode=optimizer_mode,
                 estimated_flops=float(
@@ -103,13 +115,14 @@ def build_forecast_fleet_tasks(
         contract = dict(plan["extension_contract"])
         if selected != float(contract["selected_learning_rate"]):
             raise ValueError("forecast extension LR disagrees with its frozen contract")
-        append(scales[-1], selected, seeds[0], "theory")
+        append(scales[-1], selected, None, seeds[0], "theory")
         return tasks
 
     if phase == "tune":
         for eta in plan["learning_rates"]:
-            for seed in seeds:
-                append(reference, float(eta), seed, "theory")
+            for tau_ema in tau_grid or [None]:
+                for seed in seeds:
+                    append(reference, float(eta), tau_ema, seed, "theory")
         return tasks
 
     if selected_learning_rate is None:
@@ -117,16 +130,39 @@ def build_forecast_fleet_tasks(
     selected = float(selected_learning_rate)
     if selected not in {float(value) for value in plan["learning_rates"]}:
         raise ValueError("selected_learning_rate is not in the preregistered grid")
+    if tau_grid:
+        if selected_weight_decay_tau_ema is None:
+            raise ValueError(
+                "ladder phase requires selected_weight_decay_tau_ema for a "
+                "jointly tuned plan"
+            )
+        selected_tau = float(selected_weight_decay_tau_ema)
+        if selected_tau not in set(tau_grid):
+            raise ValueError(
+                "selected_weight_decay_tau_ema is not in the preregistered grid"
+            )
+    else:
+        if selected_weight_decay_tau_ema is not None:
+            raise ValueError(
+                "selected_weight_decay_tau_ema requires a preregistered tau grid"
+            )
+        selected_tau = None
+    if plan.get("run_profile") == "comparison":
+        if run_negative_control:
+            raise ValueError("CompleteP comparison refuses a wrong-LR control")
+        for seed in seeds:
+            append(scales[-1], selected, selected_tau, seed, "theory")
+        return tasks
     # The selected reference trials already exist in the tuning phase. Reusing
     # those exact immutable cache entries avoids three duplicate GPU runs.
     for scale_index, scale in enumerate(scales):
         if scale_index == reference_index:
             continue
         for seed in seeds:
-            append(scale, selected, seed, "theory")
+            append(scale, selected, selected_tau, seed, "theory")
     if run_negative_control:
         for seed in seeds:
-            append(scales[-1], selected, seed, "wrong_global")
+            append(scales[-1], selected, selected_tau, seed, "wrong_global")
     return tasks
 
 
@@ -172,6 +208,7 @@ def run_forecast_fleet_shard(
     output_directory: Path,
     device: str = "cuda",
     selected_learning_rate: Optional[float] = None,
+    selected_weight_decay_tau_ema: Optional[float] = None,
     task_ids: Optional[Sequence[str]] = None,
     progress: ProgressCallback = None,
 ) -> Dict[str, Any]:
@@ -190,6 +227,7 @@ def run_forecast_fleet_shard(
         plan,
         phase=phase,
         selected_learning_rate=selected_learning_rate,
+        selected_weight_decay_tau_ema=selected_weight_decay_tau_ema,
         run_negative_control=bool(config.get("run_negative_control", True)),
     )
     tasks = assign_forecast_fleet_tasks(all_tasks, shard_count)[shard_index]
@@ -234,6 +272,7 @@ def run_forecast_fleet_shard(
                 runtime=runtime,
                 context=context,
                 eta=task.eta,
+                weight_decay_tau_ema=task.weight_decay_tau_ema,
                 seed=task.seed,
                 optimizer_mode=task.optimizer_mode,
                 cache_directory=cache_directory,
@@ -249,6 +288,7 @@ def run_forecast_fleet_shard(
                     "shard_index": shard_index,
                     "shard_count": shard_count,
                     "selected_learning_rate": selected_learning_rate,
+                    "selected_weight_decay_tau_ema": selected_weight_decay_tau_ema,
                     "assigned_tasks": [row.to_dict() for row in tasks],
                     "completed_task_ids": [row["run_id"] for row in records],
                     "records": records,
@@ -262,6 +302,7 @@ def run_forecast_fleet_shard(
             "shard_index": shard_index,
             "shard_count": shard_count,
             "selected_learning_rate": selected_learning_rate,
+            "selected_weight_decay_tau_ema": selected_weight_decay_tau_ema,
             "assigned_tasks": [row.to_dict() for row in tasks],
             "completed_task_ids": [row["run_id"] for row in records],
             "records": records,
@@ -298,6 +339,7 @@ def _expected_record(
         dataset_fingerprint=corpus.identity_fingerprint,
         runtime=runtime,
         eta=task.eta,
+        weight_decay_tau_ema=task.weight_decay_tau_ema,
         seed=task.seed,
         optimizer_mode=task.optimizer_mode,
     )
@@ -315,6 +357,8 @@ def _expected_record(
         or record.seed != task.seed
         or record.metadata.get("optimizer_mode") != task.optimizer_mode
         or record.metadata.get("scale", {}).get("name") != task.scale_name
+        or record.metadata.get("weight_decay_tau_ema")
+        != task.weight_decay_tau_ema
     ):
         raise ValueError(f"trial cache metadata mismatch for {task.task_id}")
     return record, matches[0]
@@ -346,37 +390,64 @@ def select_forecast_fleet_learning_rate(
         for task in tasks
     ]
     rows = []
+    tau_grid: List[Optional[float]] = [
+        float(value) for value in plan.get("weight_decay_tau_ema_grid", ())
+    ] or [None]
     for eta in plan["learning_rates"]:
-        losses = [
-            row.final_validation_loss
-            for row in records
-            if row.optimizer.learning_rate == float(eta)
-        ]
-        if len(losses) != len(plan["seeds"]):
-            raise ValueError(f"incomplete tuning records for learning rate {eta:g}")
-        mean, sem = _mean_sem(losses)
-        rows.append(
-            {
-                "learning_rate": float(eta),
-                "mean_validation_loss": mean,
-                "sem_validation_loss": sem,
-                "seed_losses": losses,
-            }
-        )
+        for tau_ema in tau_grid:
+            losses = [
+                row.final_validation_loss
+                for row in records
+                if row.optimizer.learning_rate == float(eta)
+                and row.metadata.get("weight_decay_tau_ema") == tau_ema
+            ]
+            if len(losses) != len(plan["seeds"]):
+                raise ValueError(
+                    f"incomplete tuning records for learning rate {eta:g}"
+                    + (
+                        f" and tau_EMA {tau_ema:g}"
+                        if tau_ema is not None
+                        else ""
+                    )
+                )
+            mean, sem = _mean_sem(losses)
+            rows.append(
+                {
+                    "learning_rate": float(eta),
+                    "weight_decay_tau_ema": tau_ema,
+                    "mean_validation_loss": mean,
+                    "sem_validation_loss": sem,
+                    "seed_losses": losses,
+                }
+            )
     selected_index = min(
         range(len(rows)), key=lambda index: rows[index]["mean_validation_loss"]
     )
+    selected = rows[selected_index]
+    learning_rate_index = list(plan["learning_rates"]).index(
+        selected["learning_rate"]
+    )
+    learning_rate_interior = (
+        0 < learning_rate_index < len(plan["learning_rates"]) - 1
+    )
+    weight_decay_interior = True
+    if selected["weight_decay_tau_ema"] is not None:
+        tau_index = tau_grid.index(selected["weight_decay_tau_ema"])
+        weight_decay_interior = 0 < tau_index < len(tau_grid) - 1
     result = {
         "schema_version": FLEET_SCHEMA_VERSION,
         "plan_fingerprint": plan["fingerprint"],
-        "selected_learning_rate": rows[selected_index]["learning_rate"],
-        "optimum_is_interior": 0 < selected_index < len(rows) - 1,
+        "selected_learning_rate": selected["learning_rate"],
+        "selected_weight_decay_tau_ema": selected["weight_decay_tau_ema"],
+        "learning_rate_optimum_is_interior": learning_rate_interior,
+        "weight_decay_optimum_is_interior": weight_decay_interior,
+        "optimum_is_interior": learning_rate_interior and weight_decay_interior,
         "grid": rows,
     }
     if require_interior and not result["optimum_is_interior"]:
         raise ValueError(
-            "reference learning-rate optimum is on the grid boundary; "
-            "expand the preregistered grid before launching the ladder"
+            "reference eta/tau_EMA optimum is on a grid boundary; expand the "
+            "preregistered grid before launching the ladder"
         )
     return result
 
@@ -397,13 +468,22 @@ def aggregate_forecast_fleet_cache(
         raise ValueError("fleet aggregation requires a single-process runtime config")
     corpus = _load_corpus(config, plan)
     selection = select_forecast_fleet_learning_rate(config, cache_directories)
+    if (
+        plan.get("run_profile") == "comparison"
+        and not selection["optimum_is_interior"]
+    ):
+        raise ValueError(
+            "CompleteP comparison refuses a boundary reference eta/tau_EMA optimum"
+        )
     selected = float(selection["selected_learning_rate"])
+    selected_tau = selection["selected_weight_decay_tau_ema"]
     tasks = [
         *build_forecast_fleet_tasks(plan, phase="tune"),
         *build_forecast_fleet_tasks(
             plan,
             phase="ladder",
             selected_learning_rate=selected,
+            selected_weight_decay_tau_ema=selected_tau,
             run_negative_control=bool(config.get("run_negative_control", True)),
         ),
     ]
@@ -412,6 +492,7 @@ def aggregate_forecast_fleet_cache(
     unified_cache = output_directory / "trials"
     unified_cache.mkdir(parents=True, exist_ok=True)
     copied = []
+    validated_records: List[BatchRunRecord] = []
     for task in tasks:
         record, source = _expected_record(
             config=config,
@@ -426,6 +507,130 @@ def aggregate_forecast_fleet_cache(
         if source.resolve() != destination.resolve():
             shutil.copy2(source, destination)
         copied.append(destination.name)
+        validated_records.append(record)
+    if plan.get("run_profile") == "comparison":
+        target = scales[str(plan["scales"][-1]["name"])]
+        target_records = [
+            record
+            for record in validated_records
+            if record.metadata.get("scale", {}).get("name") == target["name"]
+            and record.metadata.get("optimizer_mode") == "theory"
+            and record.optimizer.learning_rate == selected
+            and record.metadata.get("weight_decay_tau_ema") == selected_tau
+        ]
+        target_records.sort(key=lambda record: record.seed)
+        target_losses = [record.final_validation_loss for record in target_records]
+        target_mean, target_sem = _mean_sem(target_losses)
+        baseline = dict(plan["comparison_contract"])
+        baseline_mean = float(baseline["baseline_mean_validation_loss"])
+        group_audits = [
+            dict(record.metadata.get("optimizer_group_audit", {}))
+            for record in target_records
+        ]
+        gates = {
+            "reference_lr_optimum_is_interior": bool(
+                selection["learning_rate_optimum_is_interior"]
+            ),
+            "reference_weight_decay_optimum_is_interior": bool(
+                selection["weight_decay_optimum_is_interior"]
+            ),
+            "target_seed_count_complete": len(target_records) == len(plan["seeds"]),
+            "target_losses_finite": bool(target_losses)
+            and all(math.isfinite(value) for value in target_losses),
+            "dataset_fingerprint_matches_baseline": (
+                baseline["baseline_dataset_fingerprint"]
+                == plan["dataset_identity"]["fingerprint"]
+            ),
+            "tokenizer_fingerprint_matches_baseline": (
+                baseline["baseline_tokenizer_fingerprint"]
+                == plan["dataset_identity"]["tokenizer_fingerprint"]
+            ),
+            "parameter_count_within_one_percent": (
+                abs(
+                    int(target["parameters"])
+                    / int(baseline["baseline_parameters"])
+                    - 1.0
+                )
+                <= 0.01
+            ),
+            "constant_20_tpp": abs(float(target["tokens_per_parameter"]) - 20.0)
+            <= 0.001,
+            "completep_group_contract_complete_and_disjoint": bool(group_audits)
+            and all(
+                audit.get("complete") is True
+                and audit.get("disjoint") is True
+                and len(audit.get("groups", [])) == 6
+                for audit in group_audits
+            ),
+            "architecture_contains_no_chizat_component": (
+                target["block_type"] == "completep_transformer"
+                and "chizat"
+                not in json.dumps(plan["architecture_contract"], sort_keys=True).lower()
+            ),
+            "optimizer_is_adamw": all(
+                record.optimizer.name == "adamw" for record in target_records
+            ),
+        }
+        passed = all(gates.values())
+        result = {
+            "schema_version": FLEET_SCHEMA_VERSION,
+            "status": "passed" if passed else "failed",
+            "campaign": plan["campaign"],
+            "plan_fingerprint": plan["fingerprint"],
+            "dataset": plan["dataset_identity"],
+            "architecture_contract": plan["architecture_contract"],
+            "optimizer_contract": plan["optimizer_contract"],
+            "schedule": plan["schedule"],
+            "reference_selection": selection,
+            "baseline": baseline,
+            "target": {
+                **target,
+                "selected_learning_rate": selected,
+                "selected_weight_decay_tau_ema": selected_tau,
+                "seeds": [record.seed for record in target_records],
+                "seed_losses": target_losses,
+                "mean_validation_loss": target_mean,
+                "sem_validation_loss": target_sem,
+                "perplexity": math.exp(target_mean),
+            },
+            "comparison": {
+                "validation_loss_delta_completep_minus_baseline": (
+                    target_mean - baseline_mean
+                ),
+                "perplexity_ratio_completep_over_baseline": math.exp(
+                    target_mean - baseline_mean
+                ),
+                "parameter_ratio_completep_over_baseline": (
+                    int(target["parameters"])
+                    / int(baseline["baseline_parameters"])
+                ),
+            },
+            "gates": gates,
+            "records": [record.to_dict() for record in target_records],
+        }
+        atomic_write_json(
+            output_directory / "fleet-aggregate.json",
+            {
+                "schema_version": FLEET_SCHEMA_VERSION,
+                "status": "completed" if passed else "failed",
+                "plan_fingerprint": plan["fingerprint"],
+                "source_cache_directories": [
+                    str(path) for path in cache_directories
+                ],
+                "physical_trial_count": len(set(copied)),
+                "logical_trial_count": int(plan["planned_grid_trials"]),
+                "reference_selection": selection,
+                "result_path": "result.json",
+            },
+        )
+        atomic_write_json(output_directory / "result.json", result)
+        if not passed:
+            failed_gates = [name for name, value in gates.items() if not value]
+            raise ValueError(
+                "CompleteP comparison failed scientific gates: "
+                + ", ".join(failed_gates)
+            )
+        return result
     configured = dict(config)
     configured["cache_directory"] = str(unified_cache)
     result = run_real_text_scaling_campaign(configured, device="cpu")

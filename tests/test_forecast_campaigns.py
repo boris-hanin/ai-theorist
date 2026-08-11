@@ -2,6 +2,8 @@ from hashlib import sha256
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -13,6 +15,7 @@ from ai_theorist.autoscaler import forecast_campaigns, tokenization
 from ai_theorist.autoscaler.forecast_campaigns import (
     _sample_rank_partitioned_batch,
     bind_real_text_scaling_config,
+    completep_parameter_count,
     compile_real_text_scaling_plan,
     jiang_parameter_count,
     nugpt_parameter_count,
@@ -230,6 +233,189 @@ def test_analytic_counts_match_both_theory_models() -> None:
     )
 
 
+def test_completep_comparison_plan_tunes_reference_then_only_target(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    identity = tokenization.token_stream_identity(manifest_path)
+    targets = [
+        completep_parameter_count(
+            vocab_size=16,
+            context_length=2,
+            depth=depth,
+            width=width,
+            mlp_multiplier=2,
+        )
+        for depth, width in ((1, 4), (2, 8))
+    ]
+    config = {
+        "run_profile": "comparison",
+        "architecture": {
+            "block_type": "completep_transformer",
+            "vocab_size": 16,
+            "context_length": 2,
+            "head_dimension": 2,
+            "mlp_multiplier": 2,
+            "reference_depth": 1,
+            "reference_width": 4,
+            "initialization_std": 0.02,
+            "activation": "relu_squared",
+            "position_encoding": "learned_absolute",
+        },
+        "dataset": {
+            "task_type": "tokenized_text",
+            "tokenizer": "forecast_test",
+            "token_stream_manifest_path": str(manifest_path),
+            "maximum_bytes": 1_000_000,
+        },
+        "ladder": {
+            "target_parameters": targets,
+            "depths": [1, 2],
+            "tokens_per_parameter": 0.02,
+            "heldout_scale_count": 1,
+            "reference_scale_index": 0,
+            "maximum_parameter_error_fraction": 0.001,
+            "minimum_parameter_span": 1.0,
+            "maximum_repetition_ratio": 1.0,
+            "target_forecasts": [],
+        },
+        "optimizer": {
+            "name": "adamw",
+            "learning_rates": [0.0001, 0.001, 0.01],
+            "beta1": 0.9,
+            "beta2": 0.95,
+            "epsilon": 1e-16,
+            "weight_decay_tau_ema": 0.1407,
+            "fused": False,
+        },
+        "schedule": "linear_warmup_decay_to_zero",
+        "batch_examples": 1,
+        "validation_examples": 3,
+        "validation_microbatch_examples": 1,
+        "validation_interval_steps": 1,
+        "seeds": [3, 5, 7],
+        "runtime": {
+            "precision": "fp32",
+            "attention_backend": "math",
+            "distributed": "none",
+            "num_processes": 1,
+            "gradient_accumulation_steps": 1,
+            "activation_checkpointing": False,
+            "resume": True,
+        },
+        "comparison_contract": {
+            "baseline_plan_fingerprint": "a" * 64,
+            "baseline_aggregate_sha256": "b" * 64,
+            "baseline_dataset_fingerprint": identity["fingerprint"],
+            "baseline_tokenizer_fingerprint": identity["tokenizer_fingerprint"],
+            "baseline_architecture": "jiang_chizat_transformer",
+            "baseline_parameters": targets[-1],
+            "baseline_mean_validation_loss": 4.0,
+            "baseline_seed_losses": [4.1, 4.0, 3.9],
+        },
+        "run_negative_control": False,
+    }
+    plan = compile_real_text_scaling_plan(config)
+    assert plan["campaign"] == "real_text_100m_completep_comparison"
+    assert plan["planned_grid_trials"] == 12
+    assert plan["architecture_contract"]["parameterization"] == (
+        "completep_alpha_1_adamw"
+    )
+    tune = build_forecast_fleet_tasks(plan, phase="tune")
+    target = build_forecast_fleet_tasks(
+        plan,
+        phase="ladder",
+        selected_learning_rate=0.001,
+        run_negative_control=False,
+    )
+    assert len(tune) == 9
+    assert len(target) == 3
+    assert {task.scale_name for task in target} == {"S2"}
+    assert {task.optimizer_mode for task in target} == {"theory"}
+
+    jointly_tuned = json.loads(json.dumps(config))
+    jointly_tuned["optimizer"].pop("weight_decay_tau_ema")
+    jointly_tuned["optimizer"]["weight_decay_tau_ema_grid"] = [0.05, 0.1, 0.2]
+    joint_plan = compile_real_text_scaling_plan(jointly_tuned)
+    assert joint_plan["planned_grid_trials"] == 30
+    assert joint_plan["weight_decay_tau_ema_grid"] == [0.05, 0.1, 0.2]
+    joint_tune = build_forecast_fleet_tasks(joint_plan, phase="tune")
+    assert len(joint_tune) == 27
+    assert {task.weight_decay_tau_ema for task in joint_tune} == {
+        0.05,
+        0.1,
+        0.2,
+    }
+    with pytest.raises(ValueError, match="selected_weight_decay_tau_ema"):
+        build_forecast_fleet_tasks(
+            joint_plan,
+            phase="ladder",
+            selected_learning_rate=0.001,
+            run_negative_control=False,
+        )
+    joint_target = build_forecast_fleet_tasks(
+        joint_plan,
+        phase="ladder",
+        selected_learning_rate=0.001,
+        selected_weight_decay_tau_ema=0.1,
+        run_negative_control=False,
+    )
+    assert {task.weight_decay_tau_ema for task in joint_target} == {0.1}
+
+
+def test_jiang_adamw_plan_jointly_tunes_eta_and_tau_ema(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["optimizer"].update(
+        name="adamw",
+        weight_decay_tau_ema_grid=[0.05, 0.1, 0.2],
+    )
+    plan = compile_real_text_scaling_plan(config)
+    assert plan["architecture_contract"]["parameterization"] == (
+        "jiang_completep_adamw"
+    )
+    assert plan["architecture_contract"]["theory"]["optimizer"] == "adamw"
+    assert plan["tuning_trials"] == 9
+    tasks = build_forecast_fleet_tasks(plan, phase="tune")
+    assert len(tasks) == 9
+    assert len({task.task_id for task in tasks}) == 9
+
+
+def test_joint_eta_tau_fleet_records_are_distinct_and_select_both_coordinates(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["optimizer"].update(
+        name="adamw",
+        weight_decay_tau_ema_grid=[0.05, 0.1, 0.2],
+    )
+    config["run_negative_control"] = False
+    tune_roots = [tmp_path / "joint-tune-0", tmp_path / "joint-tune-1"]
+    for shard_index, output in enumerate(tune_roots):
+        run_forecast_fleet_shard(
+            config,
+            phase="tune",
+            shard_index=shard_index,
+            shard_count=2,
+            output_directory=output,
+            device="cpu",
+        )
+    tune_caches = [path / "trials" for path in tune_roots]
+    assert len([path for cache in tune_caches for path in cache.glob("*.json")]) == 9
+    selection = select_forecast_fleet_learning_rate(config, tune_caches)
+    assert selection["selected_learning_rate"] in config["optimizer"][
+        "learning_rates"
+    ]
+    assert selection["selected_weight_decay_tau_ema"] in config["optimizer"][
+        "weight_decay_tau_ema_grid"
+    ]
+    assert "learning_rate_optimum_is_interior" in selection
+    assert "weight_decay_optimum_is_interior" in selection
+
+
 def test_extension_profile_binds_one_seed_and_frozen_parent_contract(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -390,6 +576,114 @@ def test_mistral_jiang_preset_is_gate_eligible_before_gpu_allocation(
         plan["target_forecasts"][-1] / plan["scales"][-1]["parameters"]
         <= plan["maximum_extrapolation_factor"]
     )
+
+
+def test_adamw_tau_ema_100m_presets_compile_exact_joint_grids(monkeypatch) -> None:
+    config_root = Path(__file__).parents[1] / "configs" / "autoscaler"
+    identity = {
+        "format": "sharded_uint32_le_v1",
+        "fingerprint": "1b854ee220230e0421acd8312d313a72d396de2234474ec20f63ba1ce4f1d703",
+        "content_fingerprint": "b" * 64,
+        "tokenizer_id": "mistral_7b_v03",
+        "tokenizer_fingerprint": "d52f662783555cbf11f6a0cd8af35016652cda033389db471813c7d30f6958c5",
+        "vocab_size": 32_768,
+        "packing": {"contract": "document_eos_concatenation_v1"},
+        "training_tokens": 3_080_501_458,
+        "validation_tokens": 129_177_154,
+    }
+    monkeypatch.setattr(forecast_campaigns, "token_stream_identity", lambda _path: identity)
+
+    jiang = json.loads(
+        (config_root / "jiang_mistral_100m_adamw_tau_ema.json").read_text()
+    )
+    jiang_plan = compile_real_text_scaling_plan(jiang)
+    assert jiang_plan["architecture_contract"]["parameterization"] == (
+        "jiang_completep_adamw"
+    )
+    assert jiang_plan["optimizer_contract"]["name"] == "adamw"
+    assert jiang_plan["tuning_trials"] == 120
+    assert jiang_plan["scale_trials"] == 21
+    assert jiang_plan["negative_control_trials"] == 0
+    assert jiang_plan["planned_grid_trials"] == 141
+
+    completep = json.loads(
+        (config_root / "completep_mistral_100m_adamw_tau_ema.json").read_text()
+    )
+    completep_plan = compile_real_text_scaling_plan(completep)
+    assert completep_plan["tuning_trials"] == 120
+    assert completep_plan["scale_trials"] == 3
+    assert completep_plan["planned_grid_trials"] == 123
+    assert completep_plan["weight_decay_tau_ema_grid"] == [
+        0.035175,
+        0.07035,
+        0.1407,
+        0.2814,
+        0.5628,
+    ]
+
+
+def test_completep_baseline_preparation_requires_verified_jiang_adamw(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).parents[1]
+    template = root / "configs" / "autoscaler" / (
+        "completep_mistral_100m_adamw_tau_ema.json"
+    )
+    selected_tau = 0.1407
+    target = {
+        "name": "S7",
+        "parameters": 99_709_568,
+        "seed_losses": [3.7, 3.6, 3.65],
+        "mean_validation_loss": 3.65,
+    }
+    result = {
+        "status": "completed",
+        "plan_fingerprint": "a" * 64,
+        "architecture_contract": {"parameterization": "jiang_completep_adamw"},
+        "reference_tuning": {
+            "learning_rate_optimum_is_interior": True,
+            "weight_decay_optimum_is_interior": True,
+            "selected_weight_decay_tau_ema": selected_tau,
+        },
+        "dataset": {
+            "fingerprint": "b" * 64,
+            "tokenizer_fingerprint": "c" * 64,
+        },
+        "scales": [target],
+        "records": [
+            {
+                "optimizer": {"name": "adamw"},
+                "metadata": {
+                    "scale": {"name": "S7"},
+                    "optimizer_mode": "theory",
+                    "weight_decay_tau_ema": selected_tau,
+                    "optimizer_group_audit": {
+                        "theory": {"optimizer": "adamw"}
+                    },
+                },
+            }
+            for _ in range(3)
+        ],
+    }
+    result_path = tmp_path / "jiang-result.json"
+    result_path.write_text(json.dumps(result), encoding="utf-8")
+    output = tmp_path / "prepared.json"
+    subprocess.run(
+        [
+            sys.executable,
+            str(root / "scripts" / "prepare_completep_comparison_from_jiang.py"),
+            str(template),
+            str(result_path),
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+    prepared = json.loads(output.read_text(encoding="utf-8"))
+    baseline = prepared["comparison_contract"]
+    assert baseline["baseline_plan_fingerprint"] == "a" * 64
+    assert baseline["baseline_parameters"] == 99_709_568
+    assert baseline["baseline_mean_validation_loss"] == pytest.approx(3.65)
 
 
 def test_gate_eligible_plan_refuses_an_undersized_corpus(monkeypatch) -> None:

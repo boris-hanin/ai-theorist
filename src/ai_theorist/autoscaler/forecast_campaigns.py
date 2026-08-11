@@ -16,8 +16,16 @@ from torch import nn
 from torch.nn import functional as F
 
 from .batch_scaling import BatchRunRecord, OptimizerHyperparameters
+from .completep import (
+    COMPLETEP_ADAMW_THEORY,
+    CompletePBlock,
+    CompletePReference,
+    CompletePShape,
+    CompletePTransformer,
+)
 from .jiang_chizat import (
     JIANG_COMPLETEP_ADAM_THEORY,
+    JIANG_COMPLETEP_ADAMW_THEORY,
     JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
     JiangChizatBlock,
     JiangChizatReference,
@@ -110,6 +118,28 @@ def jiang_parameter_count(
     )
 
 
+def completep_parameter_count(
+    *,
+    vocab_size: int,
+    context_length: int,
+    depth: int,
+    width: int,
+    mlp_multiplier: int,
+) -> int:
+    # Untied token embedding/readout, learned positions, two affine LayerNorms
+    # per block, and biases on all hidden linear maps.
+    per_block = (
+        (4 + 2 * mlp_multiplier) * width * width
+        + (9 + mlp_multiplier) * width
+    )
+    return int(
+        2 * vocab_size * width
+        + context_length * width
+        + depth * per_block
+        + 2 * width
+    )
+
+
 def nugpt_parameter_count(
     *,
     vocab_size: int,
@@ -137,6 +167,29 @@ def _positive_float(value: Any, name: str) -> float:
     return result
 
 
+def _weight_decay_tau_grid(optimizer: Mapping[str, Any]) -> Tuple[float, ...]:
+    raw_grid = optimizer.get("weight_decay_tau_ema_grid")
+    if raw_grid is None:
+        return ()
+    if "weight_decay_tau_ema" in optimizer:
+        raise ValueError(
+            "optimizer must not declare both weight_decay_tau_ema and "
+            "weight_decay_tau_ema_grid"
+        )
+    if not isinstance(raw_grid, Sequence) or isinstance(raw_grid, (str, bytes)):
+        raise ValueError("optimizer.weight_decay_tau_ema_grid must be an array")
+    values = tuple(
+        _positive_float(value, "optimizer.weight_decay_tau_ema_grid")
+        for value in raw_grid
+    )
+    if len(values) < 3 or tuple(sorted(set(values))) != values:
+        raise ValueError(
+            "optimizer.weight_decay_tau_ema_grid must contain at least three "
+            "unique increasing values"
+        )
+    return values
+
+
 def _nearest_multiple(value: float, multiple: int) -> int:
     return max(multiple, int(round(value / multiple)) * multiple)
 
@@ -148,11 +201,16 @@ def _generate_ladder(
     ladder = config.get("ladder")
     if not isinstance(architecture, Mapping) or not isinstance(ladder, Mapping):
         raise ValueError("architecture and ladder must be objects")
+    run_profile = str(config.get("run_profile", "forecast"))
     block_type = str(architecture.get("block_type"))
-    if block_type not in {"jiang_chizat_transformer", "normalized_transformer"}:
+    if block_type not in {
+        "completep_transformer",
+        "jiang_chizat_transformer",
+        "normalized_transformer",
+    }:
         raise ValueError(
-            "architecture.block_type must be jiang_chizat_transformer or "
-            "normalized_transformer"
+            "architecture.block_type must be completep_transformer, "
+            "jiang_chizat_transformer, or normalized_transformer"
         )
     vocab_size = _positive_int(architecture.get("vocab_size"), "vocab_size", 8)
     if vocab_size != int(identity["vocab_size"]):
@@ -169,9 +227,11 @@ def _generate_ladder(
         _positive_int(value, "target_parameters", 32)
         for value in ladder.get("target_parameters", ())
     )
-    if len(targets) < 6 or tuple(sorted(set(targets))) != targets:
+    minimum_scales = 2 if run_profile == "comparison" else 6
+    if len(targets) < minimum_scales or tuple(sorted(set(targets))) != targets:
         raise ValueError(
-            "ladder.target_parameters must contain at least six unique increasing values"
+            f"ladder.target_parameters must contain at least {minimum_scales} "
+            "unique increasing values"
         )
     depths = tuple(
         _positive_int(value, "ladder.depths") for value in ladder.get("depths", ())
@@ -187,8 +247,11 @@ def _generate_ladder(
     heldout_count = _positive_int(
         int(ladder.get("heldout_scale_count", 1)), "heldout_scale_count"
     )
-    if heldout_count > len(targets) - 5:
-        raise ValueError("at least five non-held-out ladder scales are required")
+    minimum_fit_scales = 1 if run_profile == "comparison" else 5
+    if heldout_count > len(targets) - minimum_fit_scales:
+        raise ValueError(
+            f"at least {minimum_fit_scales} non-held-out ladder scales are required"
+        )
     tokens_per_parameter = _positive_float(
         ladder.get("tokens_per_parameter"), "tokens_per_parameter"
     )
@@ -198,7 +261,56 @@ def _generate_ladder(
 
     shapes: List[Dict[str, Any]] = []
     candidates = range(head_dimension, maximum_width + 1, head_dimension)
-    if block_type == "jiang_chizat_transformer":
+    if block_type == "completep_transformer":
+        mlp_multiplier = _positive_int(
+            architecture.get("mlp_multiplier"), "mlp_multiplier"
+        )
+        reference_width = _positive_int(
+            architecture.get("reference_width"), "reference_width"
+        )
+        reference_depth = _positive_int(
+            architecture.get("reference_depth"), "reference_depth"
+        )
+        if reference_width % head_dimension:
+            raise ValueError("reference_width must be divisible by head_dimension")
+        for target, depth in zip(targets, depths):
+            rows = [
+                {
+                    "target": target,
+                    "depth": depth,
+                    "width": width,
+                    "hidden_width": mlp_multiplier * width,
+                    "parameters": completep_parameter_count(
+                        vocab_size=vocab_size,
+                        context_length=context_length,
+                        depth=depth,
+                        width=width,
+                        mlp_multiplier=mlp_multiplier,
+                    ),
+                    "num_heads": width // head_dimension,
+                    "rho_lm_over_d": None,
+                    "rho_relative_error": None,
+                }
+                for width in candidates
+            ]
+            shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
+        contract = {
+            "parameterization": "completep_alpha_1_adamw",
+            "theory": asdict(COMPLETEP_ADAMW_THEORY),
+            "reference_width": reference_width,
+            "reference_depth": reference_depth,
+            "mlp_multiplier": mlp_multiplier,
+            "tied_embeddings": False,
+            "position_encoding": str(
+                architecture.get("position_encoding", "learned_absolute")
+            ),
+            "activation": str(architecture.get("activation", "relu_squared")),
+            "attention_scale": "QK^T/d_head",
+            "residual_branch_scale": "(L/L0)^(-1)",
+            "unembedding_forward_scale": "(N/N0)^(-1)",
+            "hidden_initialization_std": "sigma0 * (N/N0)^(-1/2)",
+        }
+    elif block_type == "jiang_chizat_transformer":
         reference_depth = _positive_int(
             architecture.get("reference_depth"), "reference_depth"
         )
@@ -250,9 +362,20 @@ def _generate_ladder(
                     }
                 )
             shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
+        optimizer_payload = config.get("optimizer", {})
+        optimizer_name = (
+            str(optimizer_payload.get("name", "adam"))
+            if isinstance(optimizer_payload, Mapping)
+            else "adam"
+        )
+        jiang_theory = (
+            JIANG_COMPLETEP_ADAMW_THEORY
+            if optimizer_name == "adamw"
+            else JIANG_COMPLETEP_ADAM_THEORY
+        )
         contract = {
-            "parameterization": "jiang_completep_adam",
-            "theory": asdict(JIANG_COMPLETEP_ADAM_THEORY),
+            "parameterization": f"jiang_completep_{optimizer_name}",
+            "theory": asdict(jiang_theory),
             "rho_lm_over_d": rho,
             "maximum_rho_relative_error": rho_tolerance,
             "tied_embeddings": True,
@@ -306,10 +429,9 @@ def _generate_ladder(
                 f"no width <= {maximum_width} places S{index + 1} within the "
                 f"declared parameter tolerance"
             )
-        if (
-            block_type == "jiang_chizat_transformer"
-            and float(row["rho_relative_error"]) > rho_tolerance
-        ):
+        if block_type == "jiang_chizat_transformer" and float(
+            row["rho_relative_error"]
+        ) > rho_tolerance:
             raise ValueError(
                 f"S{index + 1} violates the declared L*M/D tolerance"
             )
@@ -413,8 +535,18 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             "validation_microbatch_examples cannot exceed per-process validation examples"
         )
     optimizer = config.get("optimizer")
-    if not isinstance(optimizer, Mapping) or optimizer.get("name") != "adam":
-        raise ValueError("theory scaling ladder currently requires Adam")
+    allowed_optimizers = (
+        {"adamw"}
+        if block_type == "completep_transformer"
+        else {"adam", "adamw"}
+        if block_type == "jiang_chizat_transformer"
+        else {"adam"}
+    )
+    if not isinstance(optimizer, Mapping) or optimizer.get("name") not in allowed_optimizers:
+        raise ValueError(
+            f"{block_type} theory scaling requires one of: "
+            + ", ".join(sorted(name.upper() for name in allowed_optimizers))
+        )
     rates = tuple(
         _positive_float(value, "optimizer.learning_rates")
         for value in optimizer.get("learning_rates", ())
@@ -423,20 +555,42 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "optimizer.learning_rates must contain at least three increasing values"
         )
+    weight_decay_tau_grid = _weight_decay_tau_grid(optimizer)
+    if weight_decay_tau_grid and optimizer.get("name") != "adamw":
+        raise ValueError("tau_EMA weight-decay tuning requires AdamW")
+    if weight_decay_tau_grid and float(optimizer.get("weight_decay", 0.0)) != 0.0:
+        raise ValueError(
+            "weight_decay must be zero or omitted when weight_decay_tau_ema_grid "
+            "is declared"
+        )
+    if "weight_decay_tau_ema" in optimizer:
+        _positive_float(
+            optimizer["weight_decay_tau_ema"],
+            "optimizer.weight_decay_tau_ema",
+        )
+    if optimizer.get("name") == "adam" and float(optimizer.get("weight_decay", 0.0)) != 0.0:
+        raise ValueError("forecast Adam uses zero weight decay; use AdamW for decay")
     optimizer_contract = json.loads(json.dumps(dict(optimizer), sort_keys=True))
     fused_optimizer = optimizer_contract.get("fused", False)
     if not isinstance(fused_optimizer, bool):
         raise ValueError("optimizer.fused must be boolean")
     if fused_optimizer and runtime.precision != "bf16":
-        raise ValueError("the fused Adam forecast path requires bf16")
+        raise ValueError("the fused Adam/AdamW forecast path requires bf16")
     seeds = tuple(int(value) for value in config.get("seeds", (11, 29, 47)))
     if not seeds or len(set(seeds)) != len(seeds):
         raise ValueError("seeds must be non-empty and unique")
     run_profile = str(config.get("run_profile", "forecast"))
-    if run_profile not in {"smoke", "forecast", "extension"}:
-        raise ValueError("run_profile must be smoke, forecast, or extension")
-    if run_profile == "forecast" and len(seeds) < 3:
-        raise ValueError("forecast profile requires at least three seeds")
+    if run_profile not in {"smoke", "forecast", "extension", "comparison"}:
+        raise ValueError(
+            "run_profile must be smoke, forecast, extension, or comparison"
+        )
+    if run_profile in {"forecast", "comparison"} and len(seeds) < 3:
+        raise ValueError(f"{run_profile} profile requires at least three seeds")
+    if run_profile == "comparison":
+        if block_type != "completep_transformer":
+            raise ValueError("comparison profile is reserved for completep_transformer")
+        if bool(config.get("run_negative_control", True)):
+            raise ValueError("comparison profile refuses a wrong-LR control")
     extension_contract: Optional[Dict[str, Any]] = None
     raw_extension_contract = config.get("extension_contract")
     if run_profile == "extension":
@@ -493,18 +647,84 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             )
     elif raw_extension_contract is not None:
         raise ValueError("extension_contract requires run_profile=extension")
+    comparison_contract: Optional[Dict[str, Any]] = None
+    raw_comparison_contract = config.get("comparison_contract")
+    if run_profile == "comparison":
+        if not isinstance(raw_comparison_contract, Mapping):
+            raise ValueError("comparison profile requires comparison_contract")
+        required_comparison_fields = {
+            "baseline_plan_fingerprint",
+            "baseline_aggregate_sha256",
+            "baseline_dataset_fingerprint",
+            "baseline_tokenizer_fingerprint",
+            "baseline_architecture",
+            "baseline_parameters",
+            "baseline_mean_validation_loss",
+            "baseline_seed_losses",
+        }
+        if set(raw_comparison_contract) != required_comparison_fields:
+            raise ValueError(
+                "comparison_contract must contain exactly: "
+                + ", ".join(sorted(required_comparison_fields))
+            )
+        comparison_contract = json.loads(
+            json.dumps(dict(raw_comparison_contract), sort_keys=True)
+        )
+        for name in (
+            "baseline_plan_fingerprint",
+            "baseline_aggregate_sha256",
+            "baseline_dataset_fingerprint",
+            "baseline_tokenizer_fingerprint",
+        ):
+            digest = comparison_contract[name]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"comparison_contract.{name} must be a SHA-256 digest")
+        if comparison_contract["baseline_dataset_fingerprint"] != identity["fingerprint"]:
+            raise ValueError("comparison baseline uses a different token-stream dataset")
+        if (
+            comparison_contract["baseline_tokenizer_fingerprint"]
+            != identity["tokenizer_fingerprint"]
+        ):
+            raise ValueError("comparison baseline uses a different tokenizer")
+        _positive_int(
+            comparison_contract["baseline_parameters"],
+            "comparison_contract.baseline_parameters",
+        )
+        _positive_float(
+            comparison_contract["baseline_mean_validation_loss"],
+            "comparison_contract.baseline_mean_validation_loss",
+        )
+        baseline_seed_losses = tuple(
+            _positive_float(value, "comparison_contract.baseline_seed_losses")
+            for value in comparison_contract["baseline_seed_losses"]
+        )
+        if len(baseline_seed_losses) != len(seeds):
+            raise ValueError(
+                "comparison baseline and CompleteP target must use the same seed count"
+            )
+    elif raw_comparison_contract is not None:
+        raise ValueError("comparison_contract requires run_profile=comparison")
     schedule = LearningRateSchedule.from_payload(config.get("schedule", "cosine_to_10_percent"))
     ladder = config["ladder"]
     target_forecasts = tuple(
         _positive_int(value, "target_forecasts", 32)
         for value in ladder.get("target_forecasts", ())
     )
-    if not target_forecasts or tuple(sorted(set(target_forecasts))) != target_forecasts:
-        raise ValueError("ladder.target_forecasts must be unique and increasing")
-    if target_forecasts[0] <= scales[-1].parameters:
-        raise ValueError("every target forecast must exceed the largest ladder scale")
+    if run_profile == "comparison":
+        if target_forecasts:
+            raise ValueError("comparison profile does not issue scaling-law forecasts")
+    else:
+        if not target_forecasts or tuple(sorted(set(target_forecasts))) != target_forecasts:
+            raise ValueError("ladder.target_forecasts must be unique and increasing")
+        if target_forecasts[0] <= scales[-1].parameters:
+            raise ValueError("every target forecast must exceed the largest ladder scale")
     minimum_span = _positive_float(
-        ladder.get("minimum_parameter_span", 30.0), "minimum_parameter_span"
+        ladder.get("minimum_parameter_span", 1.0 if run_profile == "comparison" else 30.0),
+        "minimum_parameter_span",
     )
     fit_scales = [row for row in scales if not row.heldout]
     observed_span = fit_scales[-1].parameters / fit_scales[0].parameters
@@ -527,7 +747,7 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 "forecast plan is guaranteed to fail its corpus repetition gate"
             )
-        if target_forecasts[-1] / scales[-1].parameters > maximum_extrapolation:
+        if target_forecasts and target_forecasts[-1] / scales[-1].parameters > maximum_extrapolation:
             raise ValueError(
                 "forecast plan is guaranteed to fail its extrapolation gate"
             )
@@ -543,8 +763,29 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             "train_one_theory_scaled_target_seed",
             "evaluate_preregistered_prediction_without_retuning",
         ]
+    elif run_profile == "comparison":
+        tuning_trials = len(rates) * max(1, len(weight_decay_tau_grid)) * len(seeds)
+        scale_trials = len(seeds)
+        negative_control_trials = 0
+        execution_order = [
+            "verify_identical_tokenizer_training_stream_and_validation_split",
+            "recall_completep_table1_and_tau_ema_before_training",
+            "jointly_tune_eta_and_tau_ema_at_declared_L0_N0_reference",
+            "require_interior_reference_optimum_in_both_coordinates",
+            "freeze_eta_tau_ema_and_apply_all_completep_group_rules",
+            "train_three_matched_100m_target_seeds",
+            "compare_loss_to_frozen_jiang_chizat_baseline",
+        ] if weight_decay_tau_grid else [
+            "verify_identical_tokenizer_training_stream_and_validation_split",
+            "recall_completep_table1_before_training",
+            "tune_eta_at_declared_L0_N0_reference",
+            "require_interior_reference_optimum",
+            "freeze_eta_and_apply_all_completep_group_rules",
+            "train_three_matched_100m_target_seeds",
+            "compare_loss_to_frozen_jiang_chizat_baseline",
+        ]
     else:
-        tuning_trials = len(rates) * len(seeds)
+        tuning_trials = len(rates) * max(1, len(weight_decay_tau_grid)) * len(seeds)
         scale_trials = len(scales) * len(seeds)
         negative_control_trials = (
             len(seeds) if bool(config.get("run_negative_control", True)) else 0
@@ -553,8 +794,16 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             "verify_tokenizer_and_token_stream",
             "compile_exact_vocab_aware_ladder",
             "recall_architecture_specific_parameter_group_rules",
-            "tune_reference_scale",
-            "freeze_learning_rate_and_training_path",
+            (
+                "jointly_tune_reference_eta_and_tau_ema"
+                if weight_decay_tau_grid
+                else "tune_reference_scale"
+            ),
+            (
+                "freeze_learning_rate_tau_ema_and_training_path"
+                if weight_decay_tau_grid
+                else "freeze_learning_rate_and_training_path"
+            ),
             "train_nonheldout_scales",
             "evaluate_hidden_upper_rungs",
             "run_wrong_global_learning_rate_control",
@@ -563,7 +812,11 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         ]
     plan_payload = {
         "schema_version": CAMPAIGN_SCHEMA_VERSION,
-        "campaign": "real_text_scaling_ladder",
+        "campaign": (
+            "real_text_100m_completep_comparison"
+            if run_profile == "comparison"
+            else "real_text_scaling_ladder"
+        ),
         "run_profile": run_profile,
         "dataset_identity": identity,
         "architecture_contract": architecture_contract,
@@ -596,6 +849,10 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     }
     if extension_contract is not None:
         plan_payload["extension_contract"] = extension_contract
+    if comparison_contract is not None:
+        plan_payload["comparison_contract"] = comparison_contract
+    if weight_decay_tau_grid:
+        plan_payload["weight_decay_tau_ema_grid"] = list(weight_decay_tau_grid)
     plan_payload["fingerprint"] = sha256(
         json.dumps(plan_payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
@@ -711,6 +968,7 @@ def _build_model_and_groups(
     config: Mapping[str, Any],
     scale: Mapping[str, Any],
     eta: float,
+    weight_decay_tau_ema: Optional[float],
     optimizer_mode: str,
     runtime: PretrainingRuntimeSpec,
     context: DistributedContext,
@@ -719,7 +977,65 @@ def _build_model_and_groups(
     optimizer_payload = dict(config["optimizer"])
     block_type = str(architecture["block_type"])
     capture_diagnostics = runtime.attention_backend == "math"
-    if block_type == "jiang_chizat_transformer":
+    if block_type == "completep_transformer":
+        shape = CompletePShape(
+            depth=int(scale["depth"]),
+            width=int(scale["width"]),
+            head_dimension=int(architecture["head_dimension"]),
+            mlp_multiplier=int(architecture["mlp_multiplier"]),
+        )
+        reference = CompletePReference(
+            depth=int(architecture["reference_depth"]),
+            width=int(architecture["reference_width"]),
+        )
+        if str(architecture.get("position_encoding", "learned_absolute")) != "learned_absolute":
+            raise ValueError("forecast CompleteP currently requires learned_absolute positions")
+        plain_model = CompletePTransformer(
+            shape,
+            vocab_size=int(architecture["vocab_size"]),
+            context_length=int(architecture["context_length"]),
+            reference=reference,
+            initialization_std=float(architecture.get("initialization_std", 0.02)),
+            activation=str(architecture.get("activation", "relu_squared")),  # type: ignore[arg-type]
+            attention_backend=runtime.attention_backend,
+            activation_checkpointing=runtime.activation_checkpointing,
+            capture_attention_diagnostics=capture_diagnostics,
+        ).to(context.device)
+        tau_ema = (
+            weight_decay_tau_ema
+            if weight_decay_tau_ema is not None
+            else optimizer_payload.get("weight_decay_tau_ema")
+        )
+        if tau_ema is not None:
+            tau = _positive_float(tau_ema, "optimizer.weight_decay_tau_ema")
+            weight_decay0 = 1.0 / (tau * eta * int(scale["optimizer_steps"]))
+        else:
+            weight_decay0 = float(optimizer_payload.get("weight_decay", 0.0))
+        groups = plain_model.optimizer_parameter_groups(
+            eta,
+            epsilon0=float(optimizer_payload.get("epsilon", 1e-16)),
+            weight_decay0=weight_decay0,
+        )
+        group_audit = plain_model.optimizer_contract_audit(
+            eta,
+            epsilon0=float(optimizer_payload.get("epsilon", 1e-16)),
+            weight_decay0=weight_decay0,
+        )
+        group_audit = {
+            **group_audit,
+            "base_weight_decay": weight_decay0,
+            "weight_decay_tau_ema": tau_ema,
+            "weight_decay_step_count": int(scale["optimizer_steps"]),
+            "weight_decay_timescale_formula": (
+                "lambda0 = 1 / (tau_EMA * eta_base * n_steps)"
+            ),
+            "weight_decay_schedule_assumption": (
+                "tau_EMA omits schedule integration; transfer requires the same "
+                "schedule family at every scale"
+            ),
+        }
+        block_types: Sequence[type[nn.Module]] = (CompletePBlock,)
+    elif block_type == "jiang_chizat_transformer":
         shape = JiangChizatShape(
             int(scale["depth"]),
             int(scale["hidden_width"]),
@@ -746,16 +1062,44 @@ def _build_model_and_groups(
                 "learning_rate_multipliers", JIANG_DENSE_REPORTED_LR_MULTIPLIERS
             )
         )
+        optimizer_name = str(optimizer_payload.get("name", "adam"))
+        tau_ema = (
+            weight_decay_tau_ema
+            if weight_decay_tau_ema is not None
+            else optimizer_payload.get("weight_decay_tau_ema")
+        )
+        if tau_ema is not None:
+            tau = _positive_float(tau_ema, "optimizer.weight_decay_tau_ema")
+            weight_decay0 = 1.0 / (tau * eta * int(scale["optimizer_steps"]))
+        else:
+            weight_decay0 = float(optimizer_payload.get("weight_decay", 0.0))
         groups = plain_model.optimizer_parameter_groups(
             eta,
             epsilon0=float(optimizer_payload.get("epsilon", 1e-12)),
+            weight_decay0=weight_decay0,
+            optimizer_name=optimizer_name,  # type: ignore[arg-type]
             learning_rate_multipliers=multipliers,
         )
         group_audit = plain_model.optimizer_contract_audit(
             eta,
             epsilon0=float(optimizer_payload.get("epsilon", 1e-12)),
+            weight_decay0=weight_decay0,
+            optimizer_name=optimizer_name,  # type: ignore[arg-type]
             learning_rate_multipliers=multipliers,
         )
+        group_audit = {
+            **group_audit,
+            "base_weight_decay": weight_decay0,
+            "weight_decay_tau_ema": tau_ema,
+            "weight_decay_step_count": int(scale["optimizer_steps"]),
+            "weight_decay_timescale_formula": (
+                "lambda0 = 1 / (tau_EMA * eta_base * n_steps)"
+            ),
+            "weight_decay_schedule_assumption": (
+                "tau_EMA omits schedule integration; transfer requires the same "
+                "schedule family at every scale"
+            ),
+        }
         block_types: Sequence[type[nn.Module]] = (JiangChizatBlock,)
     else:
         architecture_template = ArchitectureTemplate.from_dict(architecture)
@@ -814,6 +1158,10 @@ def _build_model_and_groups(
                 "epsilon": float(group["eps"]),
                 "learning_rate_formula": str(group["lr_formula"]),
                 "epsilon_formula": str(group["eps_formula"]),
+                "weight_decay": float(group.get("weight_decay", 0.0)),
+                "weight_decay_formula": str(
+                    group.get("weight_decay_formula", "0")
+                ),
                 "scale_factors": dict(group["scale_factors"]),
                 "theory_contract_id": str(group["theory_contract_id"]),
             }
@@ -823,8 +1171,13 @@ def _build_model_and_groups(
         raise ValueError("optimizer_mode must be theory or wrong_global")
     fused = bool(optimizer_payload.get("fused", False))
     if fused and not context.device.startswith("cuda"):
-        raise ValueError("fused Adam requires CUDA")
-    optimizer = torch.optim.Adam(
+        raise ValueError("fused Adam/AdamW requires CUDA")
+    optimizer_class = (
+        torch.optim.AdamW
+        if optimizer_payload.get("name") == "adamw"
+        else torch.optim.Adam
+    )
+    optimizer = optimizer_class(
         optimizer_groups,
         lr=eta,
         betas=(
@@ -835,7 +1188,13 @@ def _build_model_and_groups(
         weight_decay=0.0,
         fused=fused,
     )
-    group_audit = {**group_audit, "optimizer_backend": "fused_adam" if fused else "adam"}
+    optimizer_name = str(optimizer_payload.get("name", "adam"))
+    group_audit = {
+        **group_audit,
+        "optimizer_backend": (
+            f"fused_{optimizer_name}" if fused else optimizer_name
+        ),
+    }
     return model, plain_model, optimizer, group_contract, group_audit
 
 
@@ -858,6 +1217,7 @@ def forecast_trial_cache_identity(
     dataset_fingerprint: str,
     runtime: PretrainingRuntimeSpec,
     eta: float,
+    weight_decay_tau_ema: Optional[float] = None,
     seed: int,
     optimizer_mode: str,
 ) -> Tuple[str, str]:
@@ -875,12 +1235,19 @@ def forecast_trial_cache_identity(
         "optimizer_mode": optimizer_mode,
         "schedule": schedule.audit(int(scale["optimizer_steps"])),
     }
+    if weight_decay_tau_ema is not None:
+        identity["weight_decay_tau_ema"] = float(weight_decay_tau_ema)
     identity_fingerprint = sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    tau_label = (
+        f"-tau{weight_decay_tau_ema:g}"
+        if weight_decay_tau_ema is not None
+        else ""
+    )
     run_id = (
-        f"forecast-{scale['name']}-{optimizer_mode}-eta{eta:g}-s{seed}-"
-        f"{identity_fingerprint[:12]}"
+        f"forecast-{scale['name']}-{optimizer_mode}-eta{eta:g}{tau_label}-"
+        f"s{seed}-{identity_fingerprint[:12]}"
     )
     return identity_fingerprint, run_id
 
@@ -894,6 +1261,7 @@ def _run_trial(
     runtime: PretrainingRuntimeSpec,
     context: DistributedContext,
     eta: float,
+    weight_decay_tau_ema: Optional[float] = None,
     seed: int,
     optimizer_mode: str,
     cache_directory: Path,
@@ -906,6 +1274,7 @@ def _run_trial(
         dataset_fingerprint=corpus.identity_fingerprint,
         runtime=runtime,
         eta=eta,
+        weight_decay_tau_ema=weight_decay_tau_ema,
         seed=seed,
         optimizer_mode=optimizer_mode,
     )
@@ -932,6 +1301,7 @@ def _run_trial(
             config=config,
             scale=scale,
             eta=eta,
+            weight_decay_tau_ema=weight_decay_tau_ema,
             optimizer_mode=optimizer_mode,
             runtime=runtime,
             context=context,
@@ -1082,22 +1452,26 @@ def _run_trial(
         diagnostics = plain_model.sphere_diagnostics()
     elif isinstance(plain_model, JiangChizatTransformer):
         diagnostics = plain_model.diagnostics()
+    elif isinstance(plain_model, CompletePTransformer):
+        diagnostics = plain_model.diagnostics()
     record: Optional[BatchRunRecord] = None
     if context.is_primary:
         record = BatchRunRecord(
             run_id=run_id,
             model_family=(
-                "nugpt_real_text_scaling"
+                "completep_real_text_comparison"
+                if isinstance(plain_model, CompletePTransformer)
+                else "nugpt_real_text_scaling"
                 if isinstance(plain_model, NormalizedTransformer)
                 else "jiang_chizat_real_text_scaling"
             ),
             optimizer=OptimizerHyperparameters(
-                name="adam",
+                name=str(config["optimizer"].get("name", "adam")),
                 learning_rate=eta,
                 beta1=float(config["optimizer"].get("beta1", 0.9)),
                 beta2=float(config["optimizer"].get("beta2", 0.95)),
                 epsilon=float(config["optimizer"].get("epsilon", 1e-12)),
-                weight_decay=0.0,
+                weight_decay=float(group_audit.get("base_weight_decay", 0.0)),
             ),
             seed=seed,
             parameter_count=int(scale["parameters"]),
@@ -1128,6 +1502,7 @@ def _run_trial(
                 "tokenizer_fingerprint": corpus.tokenizer_fingerprint,
                 "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
                 "optimizer_mode": optimizer_mode,
+                "weight_decay_tau_ema": weight_decay_tau_ema,
                 "peak_parameter_group_contract": group_contract,
                 "optimizer_group_audit": group_audit,
                 "gradient_clipping": "none_source_faithful",
@@ -1184,6 +1559,11 @@ def run_real_text_scaling_campaign(
     progress: ProgressCallback = None,
 ) -> Dict[str, Any]:
     plan = compile_real_text_scaling_plan(config)
+    if plan["run_profile"] == "comparison":
+        raise ValueError(
+            "CompleteP comparison must use the two-phase forecast fleet so the "
+            "reference LR is frozen before target tasks are constructed"
+        )
     runtime = PretrainingRuntimeSpec.from_dict(config.get("runtime", {}))
     context = prepare_distributed(runtime, device)
     completed = 0
@@ -1205,48 +1585,70 @@ def run_real_text_scaling_campaign(
             int(plan["architecture_contract"]["reference_scale_index"])
         ]
         seeds = [int(value) for value in plan["seeds"]]
+        tau_grid: List[Optional[float]] = [
+            float(value) for value in plan.get("weight_decay_tau_ema_grid", ())
+        ] or [None]
         tuning_records: List[BatchRunRecord] = []
         tuning_rows = []
         for eta in plan["learning_rates"]:
-            matching = []
-            for seed in seeds:
-                _progress(
-                    progress,
-                    "tune-reference",
-                    completed,
-                    total,
-                    f"Reference LR {eta:g} · seed {seed}",
+            for tau_ema in tau_grid:
+                matching = []
+                for seed in seeds:
+                    tau_message = (
+                        f" · tau_EMA {tau_ema:g}" if tau_ema is not None else ""
+                    )
+                    _progress(
+                        progress,
+                        "tune-reference",
+                        completed,
+                        total,
+                        f"Reference LR {eta:g}{tau_message} · seed {seed}",
+                    )
+                    record = _run_trial(
+                        config=config,
+                        plan=plan,
+                        scale=reference_scale,
+                        corpus=corpus,
+                        runtime=runtime,
+                        context=context,
+                        eta=float(eta),
+                        weight_decay_tau_ema=tau_ema,
+                        seed=seed,
+                        optimizer_mode="theory",
+                        cache_directory=cache_directory,
+                    )
+                    tuning_records.append(record)
+                    matching.append(record.final_validation_loss)
+                    completed += 1
+                mean, sem = _mean_sem(matching)
+                tuning_rows.append(
+                    {
+                        "learning_rate": float(eta),
+                        "weight_decay_tau_ema": tau_ema,
+                        "mean_validation_loss": mean,
+                        "sem_validation_loss": sem,
+                        "seed_losses": matching,
+                    }
                 )
-                record = _run_trial(
-                    config=config,
-                    plan=plan,
-                    scale=reference_scale,
-                    corpus=corpus,
-                    runtime=runtime,
-                    context=context,
-                    eta=float(eta),
-                    seed=seed,
-                    optimizer_mode="theory",
-                    cache_directory=cache_directory,
-                )
-                tuning_records.append(record)
-                matching.append(record.final_validation_loss)
-                completed += 1
-            mean, sem = _mean_sem(matching)
-            tuning_rows.append(
-                {
-                    "learning_rate": float(eta),
-                    "mean_validation_loss": mean,
-                    "sem_validation_loss": sem,
-                    "seed_losses": matching,
-                }
-            )
         selected_index = min(
             range(len(tuning_rows)),
             key=lambda index: tuning_rows[index]["mean_validation_loss"],
         )
         selected_eta = float(tuning_rows[selected_index]["learning_rate"])
-        optimum_interior = 0 < selected_index < len(tuning_rows) - 1
+        selected_tau_ema = tuning_rows[selected_index]["weight_decay_tau_ema"]
+        selected_eta_index = list(plan["learning_rates"]).index(selected_eta)
+        learning_rate_optimum_interior = (
+            0 < selected_eta_index < len(plan["learning_rates"]) - 1
+        )
+        weight_decay_optimum_interior = True
+        if selected_tau_ema is not None:
+            selected_tau_index = tau_grid.index(float(selected_tau_ema))
+            weight_decay_optimum_interior = (
+                0 < selected_tau_index < len(tau_grid) - 1
+            )
+        optimum_interior = (
+            learning_rate_optimum_interior and weight_decay_optimum_interior
+        )
 
         scale_records: List[BatchRunRecord] = []
         for scale in scales:
@@ -1267,6 +1669,7 @@ def run_real_text_scaling_campaign(
                         runtime=runtime,
                         context=context,
                         eta=selected_eta,
+                        weight_decay_tau_ema=selected_tau_ema,
                         seed=seed,
                         optimizer_mode="theory",
                         cache_directory=cache_directory,
@@ -1293,6 +1696,7 @@ def run_real_text_scaling_campaign(
                         runtime=runtime,
                         context=context,
                         eta=selected_eta,
+                        weight_decay_tau_ema=selected_tau_ema,
                         seed=seed,
                         optimizer_mode="wrong_global",
                         cache_directory=cache_directory,
@@ -1373,7 +1777,14 @@ def run_real_text_scaling_campaign(
             )
         refusal_reasons: List[str] = []
         if not optimum_interior:
-            refusal_reasons.append("reference learning-rate optimum is on the grid boundary")
+            if not learning_rate_optimum_interior:
+                refusal_reasons.append(
+                    "reference learning-rate optimum is on the grid boundary"
+                )
+            if not weight_decay_optimum_interior:
+                refusal_reasons.append(
+                    "reference tau_EMA optimum is on the grid boundary"
+                )
         if float(plan["fit_parameter_span"]) < float(plan["minimum_parameter_span"]):
             refusal_reasons.append("non-held-out parameter ladder span is too small")
         if max(row["repetition_ratio"] for row in aggregates) > float(
@@ -1443,6 +1854,13 @@ def run_real_text_scaling_campaign(
             "reference_tuning": {
                 "scale": reference_scale["name"],
                 "selected_learning_rate": selected_eta,
+                "selected_weight_decay_tau_ema": selected_tau_ema,
+                "learning_rate_optimum_is_interior": (
+                    learning_rate_optimum_interior
+                ),
+                "weight_decay_optimum_is_interior": (
+                    weight_decay_optimum_interior
+                ),
                 "optimum_is_interior": optimum_interior,
                 "grid": tuning_rows,
             },
