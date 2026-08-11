@@ -9,6 +9,7 @@ fi
 manifest="$1"
 suite_root="$2"
 cli="${AI_THEORIST_AUTOSCALE:-.venv-forecast/bin/ai-theorist-autoscale}"
+python="${AI_THEORIST_PYTHON:-.venv-forecast/bin/python}"
 jiang_root="$suite_root/jiang-chizat-adamw"
 completep_root="$suite_root/completep-adamw"
 current_stage="starting"
@@ -34,6 +35,10 @@ if [[ ! -f "$manifest" ]]; then
 fi
 if [[ ! -x "$cli" ]]; then
   echo "autoscaler executable does not exist: $cli" >&2
+  exit 2
+fi
+if [[ ! -x "$python" ]]; then
+  echo "campaign Python executable does not exist: $python" >&2
   exit 2
 fi
 repo_commit="$(git rev-parse HEAD)"
@@ -86,7 +91,7 @@ echo "$current_stage" > "$suite_root/stage"
 
 current_stage="preregistering-matched-pair"
 echo "$current_stage" > "$suite_root/stage"
-scripts/preregister_adamw_100m_pair.py \
+"$python" scripts/preregister_adamw_100m_pair.py \
   "$jiang_root/bound-config.json" \
   "$completep_root/bound-config.json" \
   --output "$suite_root/preregistration.json" \
@@ -109,7 +114,7 @@ current_stage="tuning-both-campaigns"
 echo "$current_stage" > "$suite_root/stage"
 echo "tuning" > "$jiang_root/controller-stage"
 echo "tuning" > "$completep_root/controller-stage"
-scripts/run_forecast_task_pool.py \
+"$python" scripts/run_forecast_task_pool.py \
   --phase tune \
   --campaign jiang "$jiang_root/bound-config.json" "$jiang_root" \
   --campaign completep "$completep_root/bound-config.json" "$completep_root" \
@@ -138,7 +143,7 @@ current_stage="running-both-ladders"
 echo "$current_stage" > "$suite_root/stage"
 echo "ladder" > "$jiang_root/controller-stage"
 echo "ladder" > "$completep_root/controller-stage"
-scripts/run_forecast_task_pool.py \
+"$python" scripts/run_forecast_task_pool.py \
   --phase ladder \
   --campaign jiang "$jiang_root/bound-config.json" "$jiang_root" \
   --campaign completep "$completep_root/bound-config.json" "$completep_root" \
@@ -167,7 +172,7 @@ echo "complete" > "$completep_root/controller-stage"
 
 current_stage="evaluating-matched-pair"
 echo "$current_stage" > "$suite_root/stage"
-scripts/evaluate_adamw_100m_pair.py \
+"$python" scripts/evaluate_adamw_100m_pair.py \
   "$suite_root/preregistration.json" \
   "$jiang_root/aggregate/result.json" \
   "$completep_root/aggregate/result.json" \
