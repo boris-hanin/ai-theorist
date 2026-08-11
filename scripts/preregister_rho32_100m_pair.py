@@ -98,7 +98,7 @@ def main() -> None:
         ] == [1.1256, 2.2512, 4.5024, 9.0048],
         "zero_arm_is_exact_adamw_zero_decay": (
             zero["optimizer_contract"]["name"] == "adamw"
-            and zero.get("weight_decay_tau_ema_grid") == []
+            and not zero.get("weight_decay_tau_ema_grid")
             and float(zero["optimizer_contract"]["weight_decay"]) == 0.0
         ),
         "all_dataset_fingerprints_match": len(
