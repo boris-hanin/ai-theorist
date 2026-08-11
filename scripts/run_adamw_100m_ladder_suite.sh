@@ -72,33 +72,107 @@ echo "$current_stage" > "$suite_root/stage"
   --output "$jiang_root/bound-config.json" \
   > "$jiang_root/bind-summary.json"
 
-current_stage="running-jiang"
+current_stage="binding-completep"
 echo "$current_stage" > "$suite_root/stage"
-echo "tuning" > "$jiang_root/controller-stage"
-scripts/run_forecast_8gpu_fleet.sh \
-  "$jiang_root/bound-config.json" \
-  "$jiang_root"
-echo "complete" > "$jiang_root/controller-stage"
-
-current_stage="freezing-jiang-baseline"
-echo "$current_stage" > "$suite_root/stage"
-scripts/prepare_completep_comparison_from_jiang.py \
-  configs/autoscaler/completep_mistral_100m_adamw_tau_ema.json \
-  "$jiang_root/aggregate/result.json" \
-  --output "$completep_root/prebound-config.json"
 "$cli" forecast-bind \
-  "$completep_root/prebound-config.json" \
+  configs/autoscaler/completep_mistral_100m_adamw_tau_ema.json \
   "$manifest" \
   --output "$completep_root/bound-config.json" \
   > "$completep_root/bind-summary.json"
 
-current_stage="running-completep"
+"$cli" forecast-plan "$jiang_root/bound-config.json" > "$jiang_root/plan.json"
+"$cli" forecast-plan "$completep_root/bound-config.json" \
+  > "$completep_root/plan.json"
+
+current_stage="preregistering-matched-pair"
 echo "$current_stage" > "$suite_root/stage"
-echo "tuning" > "$completep_root/controller-stage"
-scripts/run_forecast_8gpu_fleet.sh \
+scripts/preregister_adamw_100m_pair.py \
+  "$jiang_root/bound-config.json" \
   "$completep_root/bound-config.json" \
-  "$completep_root"
+  --output "$suite_root/preregistration.json" \
+  > "$suite_root/preregistration.stdout.json"
+
+collect_cache_arguments() {
+  local campaign_root="$1"
+  local phase="$2"
+  local -n destination="$3"
+  while IFS= read -r -d '' directory; do
+    destination+=(--cache-directory "$directory")
+  done < <(find "$campaign_root/$phase/tasks" -type d -name trials -print0)
+  if (( ${#destination[@]} == 0 )); then
+    echo "no $phase trial caches found under $campaign_root" >&2
+    return 1
+  fi
+}
+
+current_stage="tuning-both-campaigns"
+echo "$current_stage" > "$suite_root/stage"
+echo "tuning" > "$jiang_root/controller-stage"
+echo "tuning" > "$completep_root/controller-stage"
+scripts/run_forecast_task_pool.py \
+  --phase tune \
+  --campaign jiang "$jiang_root/bound-config.json" "$jiang_root" \
+  --campaign completep "$completep_root/bound-config.json" "$completep_root" \
+  --cli "$cli" \
+  --gpus 0,1,2,3,4,5,6,7 \
+  --status "$suite_root/tune-pool-status.json"
+
+current_stage="selecting-interior-optima"
+echo "$current_stage" > "$suite_root/stage"
+jiang_tune_cache_args=()
+completep_tune_cache_args=()
+collect_cache_arguments "$jiang_root" tune jiang_tune_cache_args
+collect_cache_arguments "$completep_root" tune completep_tune_cache_args
+"$cli" forecast-select "$jiang_root/bound-config.json" \
+  "${jiang_tune_cache_args[@]}" \
+  --require-interior \
+  --output "$jiang_root/reference-selection.json" \
+  > "$jiang_root/reference-selection.stdout.json"
+"$cli" forecast-select "$completep_root/bound-config.json" \
+  "${completep_tune_cache_args[@]}" \
+  --require-interior \
+  --output "$completep_root/reference-selection.json" \
+  > "$completep_root/reference-selection.stdout.json"
+
+current_stage="running-both-ladders"
+echo "$current_stage" > "$suite_root/stage"
+echo "ladder" > "$jiang_root/controller-stage"
+echo "ladder" > "$completep_root/controller-stage"
+scripts/run_forecast_task_pool.py \
+  --phase ladder \
+  --campaign jiang "$jiang_root/bound-config.json" "$jiang_root" \
+  --campaign completep "$completep_root/bound-config.json" "$completep_root" \
+  --cli "$cli" \
+  --gpus 0,1,2,3,4,5,6,7 \
+  --status "$suite_root/ladder-pool-status.json"
+
+current_stage="aggregating"
+echo "$current_stage" > "$suite_root/stage"
+jiang_ladder_cache_args=()
+completep_ladder_cache_args=()
+collect_cache_arguments "$jiang_root" ladder jiang_ladder_cache_args
+collect_cache_arguments "$completep_root" ladder completep_ladder_cache_args
+"$cli" forecast-aggregate "$jiang_root/bound-config.json" \
+  "${jiang_tune_cache_args[@]}" \
+  "${jiang_ladder_cache_args[@]}" \
+  --output "$jiang_root/aggregate" \
+  > "$jiang_root/aggregate.stdout.json"
+"$cli" forecast-aggregate "$completep_root/bound-config.json" \
+  "${completep_tune_cache_args[@]}" \
+  "${completep_ladder_cache_args[@]}" \
+  --output "$completep_root/aggregate" \
+  > "$completep_root/aggregate.stdout.json"
+echo "complete" > "$jiang_root/controller-stage"
 echo "complete" > "$completep_root/controller-stage"
+
+current_stage="evaluating-matched-pair"
+echo "$current_stage" > "$suite_root/stage"
+scripts/evaluate_adamw_100m_pair.py \
+  "$suite_root/preregistration.json" \
+  "$jiang_root/aggregate/result.json" \
+  "$completep_root/aggregate/result.json" \
+  --output "$suite_root/pair-result.json" \
+  > "$suite_root/pair-result.stdout.json"
 
 current_stage="complete"
 echo "$current_stage" > "$suite_root/stage"

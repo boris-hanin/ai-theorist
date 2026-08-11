@@ -51,7 +51,7 @@
     "distributed": "none",
     "num_processes": 1,
     "gradient_accumulation_steps": 1,
-    "activation_checkpointing": true,
+    "activation_checkpointing": false,
     "checkpoint_interval_steps": 0,
     "checkpoint_interval_seconds": 900,
     "resume": true
