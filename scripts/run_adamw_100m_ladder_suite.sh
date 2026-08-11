@@ -36,6 +36,17 @@ if [[ ! -x "$cli" ]]; then
   echo "autoscaler executable does not exist: $cli" >&2
   exit 2
 fi
+repo_commit="$(git rev-parse HEAD)"
+required_commit="${REQUIRED_REPO_COMMIT:-}"
+if [[ -n "$required_commit" && "$repo_commit" != "$required_commit" ]]; then
+  echo "repository commit $repo_commit does not match required $required_commit" >&2
+  exit 1
+fi
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "tracked repository changes must be clean before launching the suite" >&2
+  exit 1
+fi
+echo "$repo_commit" > "$suite_root/repo-commit"
 if [[ "$(systemctl is-active nvidia-fabricmanager)" != "active" ]]; then
   echo "NVIDIA Fabric Manager is not active" >&2
   exit 1
