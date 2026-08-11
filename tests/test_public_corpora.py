@@ -45,6 +45,33 @@ def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
     )
     assert large.train_bytes == 2_000_000_000
     assert large.acquisition_backend == "parquet"
+    segmented = PublicCorpusSpec.from_dict(
+        {
+            "source": "fineweb_edu",
+            "tokenizer": "mistral_7b_v03",
+            "acquisition_backend": "parquet",
+            "train_bytes": 32_212_254_720,
+            "train_primary_bytes": 12_884_901_888,
+            "train_secondary_offset": 5_200_000,
+        }
+    )
+    assert segmented.train_primary_bytes == 12_884_901_888
+    assert segmented.train_secondary_offset == 5_200_000
+    with pytest.raises(ValueError, match="must be set together"):
+        PublicCorpusSpec.from_dict(
+            {
+                "acquisition_backend": "parquet",
+                "train_primary_bytes": 65_536,
+            }
+        )
+    with pytest.raises(ValueError, match="requires the resumable parquet"):
+        PublicCorpusSpec.from_dict(
+            {
+                "train_bytes": 131_072,
+                "train_primary_bytes": 65_536,
+                "train_secondary_offset": 5_200_000,
+            }
+        )
 
 
 def test_json_request_retries_rate_limits(monkeypatch) -> None:
@@ -185,6 +212,51 @@ def test_parquet_materializer_streams_batches_with_global_row_provenance(
     assert metadata["first_source_row"] == 10
     assert metadata["source_inventory_fingerprint"] == "f" * 64
     assert metadata["source_parquet_files"][0]["sha256"]
+
+
+def test_segmented_training_concatenation_preserves_disjoint_provenance(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text('{"text":"first"}\n', encoding="utf-8")
+    second.write_text('{"text":"second"}\n', encoding="utf-8")
+    segments = [
+        {
+            "path": str(first),
+            "documents": 1,
+            "text_bytes": 5,
+            "file_bytes": first.stat().st_size,
+            "file_sha256": sha256(first.read_bytes()).hexdigest(),
+            "first_source_row": 0,
+            "last_source_row": 9,
+            "source_inventory_fingerprint": "f" * 64,
+            "source_parquet_files": [],
+        },
+        {
+            "path": str(second),
+            "documents": 1,
+            "text_bytes": 6,
+            "file_bytes": second.stat().st_size,
+            "file_sha256": sha256(second.read_bytes()).hexdigest(),
+            "first_source_row": 20,
+            "last_source_row": 29,
+            "source_inventory_fingerprint": "f" * 64,
+            "source_parquet_files": [],
+        },
+    ]
+    output = tmp_path / "train.jsonl"
+    metadata = public_corpora._concatenate_training_segments(segments, output)
+    assert output.read_bytes() == first.read_bytes() + second.read_bytes()
+    assert metadata["documents"] == 2
+    assert metadata["source_segments"][0]["last_source_row"] == 9
+    validation = {"first_source_row": 10, "last_source_row": 19}
+    assert public_corpora._source_ranges_are_disjoint(metadata, validation)
+    with pytest.raises(ValueError, match="source rows overlap"):
+        public_corpora._concatenate_training_segments(
+            [segments[0], {**segments[1], "first_source_row": 5}],
+            tmp_path / "invalid.jsonl",
+        )
 
 
 def test_materializer_freezes_disjoint_rows_and_reuses_verified_cache(

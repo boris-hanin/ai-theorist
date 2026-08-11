@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import shutil
 from time import sleep
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from urllib.error import HTTPError, URLError
@@ -70,6 +71,8 @@ class PublicCorpusSpec:
     token_shard_tokens: int = 16_777_216
     acquisition_backend: str = "viewer_rows"
     source_batch_rows: int = 8_192
+    train_primary_bytes: Optional[int] = None
+    train_secondary_offset: Optional[int] = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PublicCorpusSpec":
@@ -82,6 +85,8 @@ class PublicCorpusSpec:
             "token_shard_tokens",
             "acquisition_backend",
             "source_batch_rows",
+            "train_primary_bytes",
+            "train_secondary_offset",
         }
         extras = sorted(set(payload) - allowed)
         if extras:
@@ -116,13 +121,51 @@ class PublicCorpusSpec:
                 raise ValueError(f"{name} must be an integer")
             if value < minimum or value > maximum:
                 raise ValueError(f"{name} must be in [{minimum}, {maximum}]")
+        segmented = (
+            result.train_primary_bytes is not None,
+            result.train_secondary_offset is not None,
+        )
+        if segmented[0] != segmented[1]:
+            raise ValueError(
+                "train_primary_bytes and train_secondary_offset must be set together"
+            )
+        if segmented[0]:
+            primary_bytes = result.train_primary_bytes
+            secondary_offset = result.train_secondary_offset
+            if (
+                isinstance(primary_bytes, bool)
+                or not isinstance(primary_bytes, int)
+                or not 16_384 <= primary_bytes < result.train_bytes
+            ):
+                raise ValueError(
+                    "train_primary_bytes must be an integer in "
+                    "[16384, train_bytes)"
+                )
+            catalog = PUBLIC_CORPUS_CATALOG[result.source]
+            if (
+                isinstance(secondary_offset, bool)
+                or not isinstance(secondary_offset, int)
+                or not int(catalog["validation_offset"]) < secondary_offset
+                < int(catalog["row_count"])
+            ):
+                raise ValueError(
+                    "train_secondary_offset must be an integer after the validation "
+                    "offset and before the source row count"
+                )
+            if result.acquisition_backend != "parquet":
+                raise ValueError(
+                    "segmented training currently requires the resumable parquet backend"
+                )
         return result
 
     @property
     def fingerprint(self) -> str:
+        spec_payload = {
+            key: value for key, value in asdict(self).items() if value is not None
+        }
         payload = json.dumps(
             {
-                **asdict(self),
+                **spec_payload,
                 "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(
                     self.tokenizer
                 ),
@@ -131,6 +174,35 @@ class PublicCorpusSpec:
             separators=(",", ":"),
         )
         return sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _source_intervals(metadata: Mapping[str, Any]) -> List[Tuple[int, int]]:
+    segments = metadata.get("source_segments")
+    rows = segments if isinstance(segments, list) and segments else [metadata]
+    intervals: List[Tuple[int, int]] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("source segment metadata must contain objects")
+        first = int(row["first_source_row"])
+        last = int(row["last_source_row"])
+        if first < 0 or last < first:
+            raise ValueError("source segment row interval is invalid")
+        intervals.append((first, last))
+    for index, current in enumerate(intervals):
+        for other in intervals[index + 1 :]:
+            if not (current[1] < other[0] or other[1] < current[0]):
+                raise ValueError("source segments overlap")
+    return intervals
+
+
+def _source_ranges_are_disjoint(
+    first: Mapping[str, Any], second: Mapping[str, Any]
+) -> bool:
+    return all(
+        left_last < right_first or right_last < left_first
+        for left_first, left_last in _source_intervals(first)
+        for right_first, right_last in _source_intervals(second)
+    )
 
 
 def public_corpus_catalog() -> List[Dict[str, Any]]:
@@ -715,6 +787,71 @@ def _materialize_split_parquet(
     )
 
 
+def _concatenate_training_segments(
+    segments: List[Dict[str, Any]], output_path: Path
+) -> Dict[str, Any]:
+    if len(segments) < 2:
+        raise ValueError("segmented training requires at least two source segments")
+    intervals = []
+    for row in segments:
+        intervals.extend(_source_intervals(row))
+    for index, current in enumerate(intervals):
+        for other in intervals[index + 1 :]:
+            if not (current[1] < other[0] or other[1] < current[0]):
+                raise ValueError("segmented training source rows overlap")
+
+    partial_path = output_path.with_name(f".{output_path.name}.partial")
+    with partial_path.open("wb") as destination:
+        for row in segments:
+            source_path = Path(str(row["path"])).resolve()
+            with source_path.open("rb") as source:
+                shutil.copyfileobj(source, destination, length=8 * 1024 * 1024)
+        destination.flush()
+        os.fsync(destination.fileno())
+    os.replace(partial_path, output_path)
+
+    source_files: List[Dict[str, Any]] = []
+    known_urls = set()
+    for row in segments:
+        for source_file in row.get("source_parquet_files", []):
+            url = str(source_file.get("url"))
+            if url not in known_urls:
+                source_files.append(dict(source_file))
+                known_urls.add(url)
+    segment_metadata = [
+        {
+            key: value
+            for key, value in row.items()
+            if key
+            in {
+                "documents",
+                "text_bytes",
+                "file_bytes",
+                "file_sha256",
+                "first_source_row",
+                "last_source_row",
+                "source_inventory_fingerprint",
+                "source_parquet_files",
+            }
+        }
+        for row in segments
+    ]
+    return {
+        "path": str(output_path.resolve()),
+        "documents": sum(int(row["documents"]) for row in segments),
+        "text_bytes": sum(int(row["text_bytes"]) for row in segments),
+        "file_bytes": output_path.stat().st_size,
+        "first_source_row": min(int(row["first_source_row"]) for row in segments),
+        "last_source_row": max(int(row["last_source_row"]) for row in segments),
+        "file_sha256": _hash_file(output_path),
+        "source_segments": segment_metadata,
+        "source_parquet_files": source_files,
+        "source_inventory_fingerprint": segments[0].get(
+            "source_inventory_fingerprint"
+        ),
+    }
+
+
 def materialize_public_corpus(
     spec: PublicCorpusSpec,
     output_root: Path,
@@ -781,21 +918,59 @@ def materialize_public_corpus(
         )
     else:
         parquet_cache = directory / "source-parquet"
-        train, _ = _materialize_split_parquet(
-            catalog=catalog,
-            inventory=inventory_before,
-            parquet_cache=parquet_cache,
-            start_offset=int(catalog["train_offset"]),
-            target_bytes=spec.train_bytes,
-            maximum_documents=spec.maximum_documents_per_split,
-            output_path=train_path,
-            split_name="training corpus",
-            progress=progress,
-            completed_bytes=0,
-            total_bytes=total_bytes,
-            source_revision=revision_before,
-            source_batch_rows=spec.source_batch_rows,
-        )
+        if spec.train_primary_bytes is None:
+            train, _ = _materialize_split_parquet(
+                catalog=catalog,
+                inventory=inventory_before,
+                parquet_cache=parquet_cache,
+                start_offset=int(catalog["train_offset"]),
+                target_bytes=spec.train_bytes,
+                maximum_documents=spec.maximum_documents_per_split,
+                output_path=train_path,
+                split_name="training corpus",
+                progress=progress,
+                completed_bytes=0,
+                total_bytes=total_bytes,
+                source_revision=revision_before,
+                source_batch_rows=spec.source_batch_rows,
+            )
+        else:
+            primary_path = directory / "train-primary.jsonl"
+            secondary_path = directory / "train-secondary.jsonl"
+            primary, _ = _materialize_split_parquet(
+                catalog=catalog,
+                inventory=inventory_before,
+                parquet_cache=parquet_cache,
+                start_offset=int(catalog["train_offset"]),
+                target_bytes=int(spec.train_primary_bytes),
+                maximum_documents=spec.maximum_documents_per_split,
+                output_path=primary_path,
+                split_name="primary training corpus",
+                progress=progress,
+                completed_bytes=0,
+                total_bytes=total_bytes,
+                source_revision=revision_before,
+                source_batch_rows=spec.source_batch_rows,
+            )
+            secondary_bytes = spec.train_bytes - int(spec.train_primary_bytes)
+            secondary, _ = _materialize_split_parquet(
+                catalog=catalog,
+                inventory=inventory_before,
+                parquet_cache=parquet_cache,
+                start_offset=int(spec.train_secondary_offset),
+                target_bytes=secondary_bytes,
+                maximum_documents=spec.maximum_documents_per_split,
+                output_path=secondary_path,
+                split_name="secondary training corpus",
+                progress=progress,
+                completed_bytes=int(spec.train_primary_bytes),
+                total_bytes=total_bytes,
+                source_revision=revision_before,
+                source_batch_rows=spec.source_batch_rows,
+            )
+            train = _concatenate_training_segments(
+                [primary, secondary], train_path
+            )
         validation, _ = _materialize_split_parquet(
             catalog=catalog,
             inventory=inventory_before,
@@ -823,10 +998,7 @@ def materialize_public_corpus(
                 "parquet source inventory changed during materialization; rerun "
                 "to freeze one conversion"
             )
-    if not (
-        int(train["last_source_row"]) < int(validation["first_source_row"])
-        or int(validation["last_source_row"]) < int(train["first_source_row"])
-    ):
+    if not _source_ranges_are_disjoint(train, validation):
         raise RuntimeError("training and validation source-row ranges overlap")
     tokenizer_directory = directory / "tokenizer"
     token_stream_manifest_path: Optional[Path] = None
@@ -897,7 +1069,9 @@ def materialize_public_corpus(
         "status": "complete",
         "id": spec.fingerprint,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "spec": asdict(spec),
+        "spec": {
+            key: value for key, value in asdict(spec).items() if value is not None
+        },
         "source": {
             "provider": (
                 "Hugging Face Parquet export"
@@ -986,11 +1160,8 @@ def _load_verified_raw_snapshot(manifest_path: Path) -> Dict[str, Any]:
         if not path.is_file() or _hash_file(path) != metadata.get("file_sha256"):
             raise ValueError(f"source corpus {split} bytes failed verification")
         verified_splits[split] = {**metadata, "path": str(path)}
-    if not (
-        int(verified_splits["train"]["last_source_row"])
-        < int(verified_splits["validation"]["first_source_row"])
-        or int(verified_splits["validation"]["last_source_row"])
-        < int(verified_splits["train"]["first_source_row"])
+    if not _source_ranges_are_disjoint(
+        verified_splits["train"], verified_splits["validation"]
     ):
         raise ValueError("source corpus train and validation rows overlap")
     return {
