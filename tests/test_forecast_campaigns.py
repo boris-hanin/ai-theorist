@@ -18,6 +18,7 @@ from ai_theorist.autoscaler.forecast_campaigns import (
     bind_real_text_scaling_config,
     completep_parameter_count,
     compile_real_text_scaling_plan,
+    forecast_trial_cache_identity,
     jiang_parameter_count,
     nugpt_parameter_count,
     run_real_text_scaling_campaign,
@@ -901,6 +902,39 @@ def test_fixed_budget_presets_freeze_budget_and_parameter_axes(monkeypatch) -> N
     )
     jiang_plan = compile_real_text_scaling_plan(jiang)
     completep_plan = compile_real_text_scaling_plan(completep)
+    jiang_without_refinement = deepcopy(jiang)
+    jiang_without_refinement["optimizer"].pop("learning_rate_refinement")
+    inherited_jiang_plan = compile_real_text_scaling_plan(
+        jiang_without_refinement
+    )
+    assert jiang_plan["learning_rate_refinement"][
+        "inherited_reference_plan_fingerprint"
+    ] == inherited_jiang_plan["fingerprint"]
+    reference = jiang_plan["scales"][
+        jiang_plan["architecture_contract"]["reference_scale_index"]
+    ]
+    runtime = PretrainingRuntimeSpec.from_dict(jiang["runtime"])
+    inherited_identity = forecast_trial_cache_identity(
+        config=jiang_without_refinement,
+        plan=inherited_jiang_plan,
+        scale=reference,
+        dataset_fingerprint=identity["fingerprint"],
+        runtime=runtime,
+        eta=0.03,
+        seed=11,
+        optimizer_mode="theory",
+    )
+    refined_identity = forecast_trial_cache_identity(
+        config=jiang,
+        plan=jiang_plan,
+        scale=reference,
+        dataset_fingerprint=identity["fingerprint"],
+        runtime=runtime,
+        eta=0.03,
+        seed=11,
+        optimizer_mode="theory",
+    )
+    assert refined_identity == inherited_identity
 
     for plan in (jiang_plan, completep_plan):
         assert plan["run_profile"] == "fixed_budget_scan"
@@ -932,9 +966,60 @@ def test_fixed_budget_presets_freeze_budget_and_parameter_axes(monkeypatch) -> N
         "(D/D0)^(-1)"
     )
     assert all(row["rho_lm_over_d"] == 32.0 for row in jiang_plan["scales"])
-    assert jiang_plan["tuning_trials"] == 21
+    assert jiang_plan["learning_rates"] == [
+        0.003,
+        0.01,
+        0.015,
+        0.02,
+        0.03,
+        0.04,
+        0.05,
+        0.06,
+        0.1,
+        0.18,
+        0.3,
+    ]
+    assert jiang_plan["tuning_task_learning_rates"] == [
+        0.003,
+        0.01,
+        0.03,
+        0.06,
+        0.1,
+        0.18,
+        0.3,
+        0.015,
+        0.02,
+        0.04,
+        0.05,
+    ]
+    assert jiang_plan["tuning_trials"] == 25
     assert jiang_plan["scale_trials"] == 21
-    assert jiang_plan["planned_grid_trials"] == 42
+    assert jiang_plan["planned_grid_trials"] == 46
+    jiang_tuning = build_forecast_fleet_tasks(jiang_plan, phase="tune")
+    assert len(jiang_tuning) == 25
+    assert [task.ordinal for task in jiang_tuning] == list(range(25))
+    assert all(task.seed in {11, 29, 47} for task in jiang_tuning[:21])
+    assert [task.eta for task in jiang_tuning[21:]] == [0.015, 0.02, 0.04, 0.05]
+    assert {task.seed for task in jiang_tuning[21:]} == {11}
+    inherited_ladder = build_forecast_fleet_tasks(
+        jiang_plan,
+        phase="ladder",
+        selected_learning_rate=0.03,
+        run_negative_control=False,
+    )
+    assert len(inherited_ladder) == 21
+    refined_ladder = build_forecast_fleet_tasks(
+        jiang_plan,
+        phase="ladder",
+        selected_learning_rate=0.02,
+        run_negative_control=False,
+    )
+    assert len(refined_ladder) == 23
+    assert {
+        (task.scale_name, task.seed)
+        for task in refined_ladder
+        if task.scale_name == reference["name"]
+    } == {(reference["name"], 29), (reference["name"], 47)}
 
     assert completep_plan["optimizer_contract"][
         "include_zero_weight_decay_control"

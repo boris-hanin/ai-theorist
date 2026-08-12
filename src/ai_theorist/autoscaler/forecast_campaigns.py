@@ -866,6 +866,69 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         )
     if run_profile in {"forecast", "comparison", "fixed_budget_scan"} and len(seeds) < 3:
         raise ValueError(f"{run_profile} profile requires at least three seeds")
+    base_rates = rates
+    tuning_task_rates = rates
+    learning_rate_refinement: Optional[Dict[str, Any]] = None
+    raw_learning_rate_refinement = optimizer.get("learning_rate_refinement")
+    if raw_learning_rate_refinement is not None:
+        if run_profile != "fixed_budget_scan":
+            raise ValueError(
+                "optimizer.learning_rate_refinement requires fixed_budget_scan"
+            )
+        if not isinstance(raw_learning_rate_refinement, Mapping):
+            raise ValueError("optimizer.learning_rate_refinement must be an object")
+        required_refinement_fields = {
+            "learning_rates",
+            "seeds",
+            "exploratory_single_seed",
+        }
+        if set(raw_learning_rate_refinement) != required_refinement_fields:
+            raise ValueError(
+                "optimizer.learning_rate_refinement must contain exactly: "
+                + ", ".join(sorted(required_refinement_fields))
+            )
+        refinement_rates = tuple(
+            _positive_float(
+                value,
+                "optimizer.learning_rate_refinement.learning_rates",
+            )
+            for value in raw_learning_rate_refinement["learning_rates"]
+        )
+        if (
+            not refinement_rates
+            or tuple(sorted(set(refinement_rates))) != refinement_rates
+            or set(refinement_rates).intersection(base_rates)
+        ):
+            raise ValueError(
+                "learning-rate refinement values must be non-empty, increasing, "
+                "and disjoint from the base grid"
+            )
+        refinement_seeds = tuple(
+            int(value) for value in raw_learning_rate_refinement["seeds"]
+        )
+        if (
+            len(refinement_seeds) != 1
+            or refinement_seeds[0] not in seeds
+            or raw_learning_rate_refinement["exploratory_single_seed"] is not True
+        ):
+            raise ValueError(
+                "learning-rate refinement must explicitly use one campaign seed "
+                "and declare exploratory_single_seed=true"
+            )
+        if weight_decay_tau_grid or include_zero_weight_decay:
+            raise ValueError(
+                "single-seed LR refinement is only supported for a fixed decay choice"
+            )
+        tuning_task_rates = (*base_rates, *refinement_rates)
+        rates = tuple(sorted(tuning_task_rates))
+        learning_rate_refinement = {
+            "mode": "exploratory_single_seed_lr_refinement",
+            "base_learning_rates": list(base_rates),
+            "refinement_learning_rates": list(refinement_rates),
+            "refinement_seeds": list(refinement_seeds),
+            "tuning_task_learning_rates": list(tuning_task_rates),
+            "unequal_seed_counts_are_explicit": True,
+        }
     if run_profile == "fixed_budget_scan":
         if "optimizer_steps" not in config["ladder"]:
             raise ValueError("fixed_budget_scan requires ladder.optimizer_steps")
@@ -1104,9 +1167,14 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             "compare_loss_to_frozen_jiang_chizat_baseline",
         ]
     elif run_profile == "fixed_budget_scan":
-        tuning_trials = len(rates) * max(1, len(weight_decay_tau_grid)) * len(seeds)
+        tuning_seed_trials = len(base_rates) * len(seeds)
+        if learning_rate_refinement is not None:
+            tuning_seed_trials += len(
+                learning_rate_refinement["refinement_learning_rates"]
+            ) * len(learning_rate_refinement["refinement_seeds"])
+        tuning_trials = tuning_seed_trials * max(1, len(weight_decay_tau_grid))
         if include_zero_weight_decay:
-            tuning_trials += len(rates) * len(seeds)
+            tuning_trials += tuning_seed_trials
         scale_trials = (len(scales) - 1) * len(seeds)
         negative_control_trials = 0
         execution_order = [
@@ -1211,6 +1279,30 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             ),
             "batch_learning_rate_scaling": "none; eta tuned at this exact batch",
         }
+    if learning_rate_refinement is not None:
+        parent_payload = deepcopy(plan_payload)
+        parent_payload["learning_rates"] = list(base_rates)
+        parent_payload["optimizer_contract"].pop("learning_rate_refinement")
+        parent_tuning_trials = (
+            len(base_rates)
+            * max(1, len(weight_decay_tau_grid))
+            * len(seeds)
+        )
+        if include_zero_weight_decay:
+            parent_tuning_trials += len(base_rates) * len(seeds)
+        parent_payload["tuning_trials"] = parent_tuning_trials
+        parent_payload["planned_grid_trials"] = (
+            parent_tuning_trials
+            + int(parent_payload["scale_trials"])
+            + int(parent_payload["negative_control_trials"])
+        )
+        learning_rate_refinement["inherited_reference_plan_fingerprint"] = sha256(
+            json.dumps(
+                parent_payload, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        plan_payload["learning_rate_refinement"] = learning_rate_refinement
+        plan_payload["tuning_task_learning_rates"] = list(tuning_task_rates)
     if extension_contract is not None:
         plan_payload["extension_contract"] = extension_contract
     if comparison_contract is not None:
@@ -1590,9 +1682,27 @@ def forecast_trial_cache_identity(
     """Return the immutable fingerprint and filename stem for one trial."""
 
     schedule = LearningRateSchedule.from_payload(config["schedule"])
+    identity_plan_fingerprint = plan["fingerprint"]
+    refinement = plan.get("learning_rate_refinement")
+    if isinstance(refinement, Mapping):
+        reference_index = int(
+            plan["architecture_contract"]["reference_scale_index"]
+        )
+        reference_name = str(plan["scales"][reference_index]["name"])
+        if (
+            str(scale["name"]) == reference_name
+            and float(eta)
+            in {float(value) for value in refinement["base_learning_rates"]}
+            and int(seed) in {int(value) for value in plan["seeds"]}
+            and optimizer_mode == "theory"
+            and weight_decay_tau_ema is None
+        ):
+            identity_plan_fingerprint = refinement[
+                "inherited_reference_plan_fingerprint"
+            ]
     identity = {
         "schema_version": 1,
-        "plan_fingerprint": plan["fingerprint"],
+        "plan_fingerprint": identity_plan_fingerprint,
         "scale": dict(scale),
         "dataset_fingerprint": dataset_fingerprint,
         "runtime": asdict(runtime),
@@ -2010,6 +2120,17 @@ def _mean_sem(values: Sequence[float]) -> Tuple[float, float]:
     return mean, sem
 
 
+def _tuning_seeds_for_learning_rate(
+    plan: Mapping[str, Any], eta: float
+) -> List[int]:
+    refinement = plan.get("learning_rate_refinement")
+    if isinstance(refinement, Mapping) and float(eta) in {
+        float(value) for value in refinement["refinement_learning_rates"]
+    }:
+        return [int(value) for value in refinement["refinement_seeds"]]
+    return [int(value) for value in plan["seeds"]]
+
+
 def _progress(
     callback: ProgressCallback,
     phase: str,
@@ -2070,10 +2191,11 @@ def run_real_text_scaling_campaign(
             tau_grid = [None]
         tuning_records: List[BatchRunRecord] = []
         tuning_rows = []
-        for eta in plan["learning_rates"]:
+        for eta in plan.get("tuning_task_learning_rates", plan["learning_rates"]):
             for tau_ema in tau_grid:
                 matching = []
-                for seed in seeds:
+                tuning_seeds = _tuning_seeds_for_learning_rate(plan, float(eta))
+                for seed in tuning_seeds:
                     tau_message = (
                         f" · tau_EMA {tau_ema:g}" if tau_ema is not None else ""
                     )
@@ -2107,6 +2229,12 @@ def run_real_text_scaling_campaign(
                         "weight_decay_tau_ema": tau_ema,
                         "mean_validation_loss": mean,
                         "sem_validation_loss": sem,
+                        "seed_count": len(tuning_seeds),
+                        "selection_evidence": (
+                            "exploratory_single_seed"
+                            if len(tuning_seeds) == 1
+                            else "matched_multi_seed_mean"
+                        ),
                         "seed_losses": matching,
                     }
                 )

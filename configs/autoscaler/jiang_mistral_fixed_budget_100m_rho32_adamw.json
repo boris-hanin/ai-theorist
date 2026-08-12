@@ -42,6 +42,11 @@
     "weight_decay": 0.0,
     "fused": true,
     "learning_rates": [0.003, 0.01, 0.03, 0.06, 0.1, 0.18, 0.3],
+    "learning_rate_refinement": {
+      "learning_rates": [0.015, 0.02, 0.04, 0.05],
+      "seeds": [11],
+      "exploratory_single_seed": true
+    },
     "learning_rate_multipliers": {
       "jiang_embeddings": 1.0,
       "jiang_norms": 1.0,

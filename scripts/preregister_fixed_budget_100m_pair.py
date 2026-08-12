@@ -159,13 +159,25 @@ def main() -> None:
             "preliminary matched fixed-batch, fixed-step real-text scaling scans; "
             "not a constant-TPP or certified extrapolative scaling law"
         ),
+        "adaptation_disclosure": {
+            "jiang_lr_refinement_is_post_hoc_to_base_grid": bool(
+                jiang.get("learning_rate_refinement")
+            ),
+            "base_grid_outcomes_were_known": bool(
+                jiang.get("learning_rate_refinement")
+            ),
+            "refinement_outcomes_unseen_when_this_file_was_written": True,
+            "refinement_is_exploratory_not_confirmatory": True,
+        },
         "primary_question": (
             "how well does validation loss scale with non-embedding parameters "
             "when global batch, optimizer steps, presented tokens, validation "
             "windows, and training seeds are fixed?"
         ),
         "selection_rule": (
-            "minimum three-seed reference loss; eta must be interior; a finite "
+            "minimum mean reference loss; preregistered exploratory Jiang LR "
+            "refinement cells may use one explicitly recorded fixed seed, while "
+            "base cells retain three-seed means; eta must be interior; a finite "
             "tau_EMA must be interior, while exact zero decay is a valid endpoint"
         ),
         "hidden_test": "largest rung is withheld from every scaling-law fit",
@@ -181,6 +193,9 @@ def main() -> None:
             "reference": jiang_reference,
             "scales": jiang_scales,
             "learning_rates": jiang["learning_rates"],
+            "learning_rate_refinement": jiang.get(
+                "learning_rate_refinement"
+            ),
             "weight_decay_tau_ema_grid": jiang.get(
                 "weight_decay_tau_ema_grid", []
             ),

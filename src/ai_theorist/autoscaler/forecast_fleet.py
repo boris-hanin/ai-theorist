@@ -12,6 +12,7 @@ from .batch_scaling import BatchRunRecord
 from .forecast_campaigns import (
     _mean_sem,
     _run_trial,
+    _tuning_seeds_for_learning_rate,
     compile_real_text_scaling_plan,
     forecast_tokenized_text_spec,
     forecast_trial_cache_identity,
@@ -163,9 +164,9 @@ def build_forecast_fleet_tasks(
         return tasks
 
     if phase == "tune":
-        for eta in plan["learning_rates"]:
+        for eta in plan.get("tuning_task_learning_rates", plan["learning_rates"]):
             for tau_ema in _tuning_tau_candidates(plan):
-                for seed in seeds:
+                for seed in _tuning_seeds_for_learning_rate(plan, float(eta)):
                     append(reference, float(eta), tau_ema, seed, "theory")
         return tasks
 
@@ -205,6 +206,12 @@ def build_forecast_fleet_tasks(
     # those exact immutable cache entries avoids three duplicate GPU runs.
     for scale_index, scale in enumerate(scales):
         if scale_index == reference_index:
+            completed_reference_seeds = set(
+                _tuning_seeds_for_learning_rate(plan, selected)
+            )
+            for seed in seeds:
+                if seed not in completed_reference_seeds:
+                    append(scale, selected, selected_tau, seed, "theory")
             continue
         for seed in seeds:
             append(scale, selected, selected_tau, seed, "theory")
@@ -462,13 +469,14 @@ def select_forecast_fleet_learning_rate(
     tau_grid = _tuning_tau_candidates(plan)
     for eta in plan["learning_rates"]:
         for tau_ema in tau_grid:
+            expected_seeds = _tuning_seeds_for_learning_rate(plan, float(eta))
             losses = [
                 row.final_validation_loss
                 for row in records
                 if row.optimizer.learning_rate == float(eta)
                 and row.metadata.get("weight_decay_tau_ema") == tau_ema
             ]
-            if len(losses) != len(plan["seeds"]):
+            if len(losses) != len(expected_seeds):
                 raise ValueError(
                     f"incomplete tuning records for learning rate {eta:g}"
                     + (
@@ -484,6 +492,13 @@ def select_forecast_fleet_learning_rate(
                     "weight_decay_tau_ema": tau_ema,
                     "mean_validation_loss": mean,
                     "sem_validation_loss": sem,
+                    "seed_count": len(expected_seeds),
+                    "seeds": expected_seeds,
+                    "selection_evidence": (
+                        "exploratory_single_seed"
+                        if len(expected_seeds) == 1
+                        else "matched_multi_seed_mean"
+                    ),
                     "seed_losses": losses,
                 }
             )
@@ -518,6 +533,14 @@ def select_forecast_fleet_learning_rate(
             )
         ),
         "optimum_is_interior": learning_rate_interior and weight_decay_interior,
+        "selected_seed_count": selected["seed_count"],
+        "selection_has_unequal_seed_counts": len(
+            {row["seed_count"] for row in rows}
+        )
+        > 1,
+        "adaptive_exploratory_lr_refinement": bool(
+            plan.get("learning_rate_refinement")
+        ),
         "grid": rows,
     }
     if require_interior and not result["optimum_is_interior"]:
