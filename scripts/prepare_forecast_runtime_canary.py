@@ -24,11 +24,14 @@ def main() -> None:
     parser.add_argument("--checkpoint-seconds", type=float, default=900)
     parser.add_argument("--distributed", choices=("none", "ddp"), default="none")
     parser.add_argument("--num-processes", type=int, default=1)
+    parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
     args = parser.parse_args()
     if args.steps < 1:
         raise ValueError("steps must be positive")
     if args.checkpoint_steps < 0 or args.checkpoint_seconds < 0:
         raise ValueError("checkpoint cadences must be non-negative")
+    if args.gradient_accumulation_steps < 1:
+        raise ValueError("gradient accumulation steps must be positive")
     if (args.distributed == "none") != (args.num_processes == 1):
         raise ValueError("none requires one process and ddp requires multiple processes")
 
@@ -52,7 +55,7 @@ def main() -> None:
             "attention_backend": "flash",
             "distributed": args.distributed,
             "num_processes": args.num_processes,
-            "gradient_accumulation_steps": 1,
+            "gradient_accumulation_steps": args.gradient_accumulation_steps,
             "checkpoint_interval_steps": args.checkpoint_steps,
             "checkpoint_interval_seconds": args.checkpoint_seconds,
             "resume": True,
@@ -64,15 +67,18 @@ def main() -> None:
     }:
         raise ValueError("learning rate must be in the template grid")
 
-    config["ladder"]["tokens_per_parameter"] = 0.0001
-    provisional = compile_real_text_scaling_plan(config)
-    largest = provisional["scales"][-1]
-    batch_tokens = int(config["batch_examples"]) * int(
-        config["architecture"]["context_length"]
-    )
-    config["ladder"]["tokens_per_parameter"] = (
-        args.steps * batch_tokens / int(largest["parameters"])
-    )
+    if "optimizer_steps" in config["ladder"]:
+        config["ladder"]["optimizer_steps"] = args.steps
+    else:
+        config["ladder"]["tokens_per_parameter"] = 0.0001
+        provisional = compile_real_text_scaling_plan(config)
+        largest = provisional["scales"][-1]
+        batch_tokens = int(config["batch_examples"]) * int(
+            config["architecture"]["context_length"]
+        )
+        config["ladder"]["tokens_per_parameter"] = (
+            args.steps * batch_tokens / int(largest["parameters"])
+        )
     config["validation_interval_steps"] = max(1, args.steps // 4)
     plan = compile_real_text_scaling_plan(config)
     largest = plan["scales"][-1]

@@ -1280,6 +1280,63 @@ def test_two_shard_fleet_reuses_exact_caches_for_canonical_analysis(
         )
 
 
+def test_lr_refinement_selects_every_rate_on_the_shared_seed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["run_profile"] = "fixed_budget_scan"
+    config["seeds"] = [3, 5, 7]
+    config["ladder"].pop("tokens_per_parameter")
+    config["ladder"].update(
+        optimizer_steps=2,
+        fit_parameter_axis="non_embedding_parameters",
+        target_forecasts=[],
+    )
+    config["optimizer"]["learning_rate_refinement"] = {
+        "learning_rates": [0.002],
+        "seeds": [3],
+        "exploratory_single_seed": True,
+    }
+    tune_root = tmp_path / "matched-seed-tune"
+    run_forecast_fleet_shard(
+        config,
+        phase="tune",
+        shard_index=0,
+        shard_count=1,
+        output_directory=tune_root,
+        device="cpu",
+    )
+    for path in (tune_root / "trials").glob("*.json"):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        eta = float(payload["optimizer"]["learning_rate"])
+        seed = int(payload["seed"])
+        if eta == 0.001:
+            loss = 1.0 if seed == 3 else 10.0
+        elif eta == 0.002:
+            loss = 2.0
+        else:
+            loss = 5.0
+        payload["final_validation_loss"] = loss
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    selection = select_forecast_fleet_learning_rate(
+        config, [tune_root / "trials"]
+    )
+    assert selection["selected_learning_rate"] == 0.001
+    assert selection["selection_mode"] == (
+        "matched_single_seed_across_all_learning_rates"
+    )
+    assert selection["selected_seed_count"] == 1
+    selected = next(
+        row
+        for row in selection["grid"]
+        if row["learning_rate"] == 0.001
+    )
+    assert selected["mean_validation_loss"] == pytest.approx(7.0)
+    assert selected["selection_mean_validation_loss"] == pytest.approx(1.0)
+
+
 def test_fleet_refuses_boundary_reference_optimum_before_ladder(
     tmp_path: Path, monkeypatch
 ) -> None:

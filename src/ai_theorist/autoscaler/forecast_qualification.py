@@ -44,7 +44,7 @@ def compare_forecast_topologies(
     *,
     maximum_absolute_loss_delta: float = 1e-3,
 ) -> Dict[str, Any]:
-    """Prove that two-GPU DDP preserves the one-GPU forecast experiment."""
+    """Prove that multi-GPU DDP preserves the one-GPU forecast experiment."""
 
     if not math.isfinite(maximum_absolute_loss_delta) or maximum_absolute_loss_delta <= 0:
         raise ValueError("maximum_absolute_loss_delta must be finite and positive")
@@ -68,6 +68,17 @@ def compare_forecast_topologies(
 
     single_records = _logical_records(single_result.get("records", []))
     ddp_records = _logical_records(ddp_result.get("records", []))
+    ddp_replica_counts = {
+        int(record.get("data_parallel_replicas", 0))
+        for record in ddp_records.values()
+    }
+    expected_ddp_replicas = (
+        next(iter(ddp_replica_counts))
+        if len(ddp_replica_counts) == 1
+        else 0
+    )
+    if expected_ddp_replicas < 2:
+        errors.append("DDP result does not report one consistent multi-GPU topology")
     if set(single_records) != set(ddp_records):
         missing_ddp = sorted(set(single_records) - set(ddp_records))
         missing_single = sorted(set(ddp_records) - set(single_records))
@@ -93,8 +104,10 @@ def compare_forecast_topologies(
                 errors.append(f"{key}: {field} changed with topology")
         if int(single.get("data_parallel_replicas", 0)) != 1:
             errors.append(f"{key}: single result does not report one replica")
-        if int(ddp.get("data_parallel_replicas", 0)) != 2:
-            errors.append(f"{key}: DDP result does not report two replicas")
+        if int(ddp.get("data_parallel_replicas", 0)) != expected_ddp_replicas:
+            errors.append(
+                f"{key}: DDP result does not report the qualified replica count"
+            )
         if single.get("metadata", {}).get("sampling_contract") != (
             "replicated_global_draw_rank_partition_v1"
         ) or ddp.get("metadata", {}).get("sampling_contract") != (
@@ -154,6 +167,7 @@ def compare_forecast_topologies(
         "maximum_absolute_loss_delta": maximum_absolute_loss_delta,
         "maximum_observed_loss_delta": maximum_observed_delta,
         "selected_learning_rate": single_selected,
+        "ddp_replicas": expected_ddp_replicas,
         "logical_trials_compared": len(comparisons),
         "comparisons": comparisons,
         "errors": errors,

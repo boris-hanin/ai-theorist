@@ -12,6 +12,7 @@ from .batch_scaling import BatchRunRecord
 from .forecast_campaigns import (
     _mean_sem,
     _run_trial,
+    _selection_seeds_for_tuning,
     _tuning_seeds_for_learning_rate,
     compile_real_text_scaling_plan,
     forecast_tokenized_text_spec,
@@ -271,10 +272,19 @@ def run_forecast_fleet_shard(
 
     plan = compile_real_text_scaling_plan(config)
     runtime = PretrainingRuntimeSpec.from_dict(config.get("runtime", {}))
-    if runtime.distributed != "none" or runtime.num_processes != 1:
+    distributed_single_task = (
+        runtime.distributed in {"ddp", "fsdp"}
+        and runtime.num_processes > 1
+        and shard_count == 1
+        and task_ids is not None
+        and len(task_ids) == 1
+    )
+    if (
+        runtime.distributed != "none" or runtime.num_processes != 1
+    ) and not distributed_single_task:
         raise ValueError(
-            "fleet shards are independent single-process workers; set "
-            "runtime.distributed=none and num_processes=1"
+            "distributed fleet execution is restricted to one explicitly named "
+            "task in a single shard"
         )
     if not 0 <= shard_index < shard_count:
         raise ValueError("shard_index must be in [0, shard_count)")
@@ -306,7 +316,7 @@ def run_forecast_fleet_shard(
         corpus = _load_corpus(config, plan)
         scales = {str(row["name"]): dict(row) for row in plan["scales"]}
         for completed, task in enumerate(tasks):
-            if progress is not None:
+            if progress is not None and context.is_primary:
                 progress(
                     {
                         "phase": f"fleet-{phase}",
@@ -333,9 +343,10 @@ def run_forecast_fleet_shard(
                 cache_directory=cache_directory,
             )
             records.append(record.to_dict())
-            atomic_write_json(
-                manifest_path,
-                {
+            if context.is_primary:
+                atomic_write_json(
+                    manifest_path,
+                    {
                     "schema_version": FLEET_SCHEMA_VERSION,
                     "status": "running",
                     "phase": phase,
@@ -347,8 +358,8 @@ def run_forecast_fleet_shard(
                     "assigned_tasks": [row.to_dict() for row in tasks],
                     "completed_task_ids": [row["run_id"] for row in records],
                     "records": records,
-                },
-            )
+                    },
+                )
         result = {
             "schema_version": FLEET_SCHEMA_VERSION,
             "status": "completed",
@@ -362,8 +373,9 @@ def run_forecast_fleet_shard(
             "completed_task_ids": [row["run_id"] for row in records],
             "records": records,
         }
-        atomic_write_json(manifest_path, result)
-        if progress is not None:
+        if context.is_primary:
+            atomic_write_json(manifest_path, result)
+        if progress is not None and context.is_primary:
             progress(
                 {
                     "phase": f"fleet-{phase}",
@@ -467,16 +479,17 @@ def select_forecast_fleet_learning_rate(
     ]
     rows = []
     tau_grid = _tuning_tau_candidates(plan)
+    selection_seeds = _selection_seeds_for_tuning(plan)
     for eta in plan["learning_rates"]:
         for tau_ema in tau_grid:
             expected_seeds = _tuning_seeds_for_learning_rate(plan, float(eta))
-            losses = [
-                row.final_validation_loss
+            matching_records = [
+                row
                 for row in records
                 if row.optimizer.learning_rate == float(eta)
                 and row.metadata.get("weight_decay_tau_ema") == tau_ema
             ]
-            if len(losses) != len(expected_seeds):
+            if len(matching_records) != len(expected_seeds):
                 raise ValueError(
                     f"incomplete tuning records for learning rate {eta:g}"
                     + (
@@ -485,7 +498,20 @@ def select_forecast_fleet_learning_rate(
                         else ""
                     )
                 )
+            losses_by_seed = {
+                int(row.seed): row.final_validation_loss
+                for row in matching_records
+            }
+            if set(losses_by_seed) != set(expected_seeds):
+                raise ValueError(
+                    f"tuning seed mismatch for learning rate {eta:g}"
+                )
+            losses = [losses_by_seed[seed] for seed in expected_seeds]
+            selection_losses = [
+                losses_by_seed[seed] for seed in selection_seeds
+            ]
             mean, sem = _mean_sem(losses)
+            selection_mean, selection_sem = _mean_sem(selection_losses)
             rows.append(
                 {
                     "learning_rate": float(eta),
@@ -494,16 +520,22 @@ def select_forecast_fleet_learning_rate(
                     "sem_validation_loss": sem,
                     "seed_count": len(expected_seeds),
                     "seeds": expected_seeds,
+                    "selection_mean_validation_loss": selection_mean,
+                    "selection_sem_validation_loss": selection_sem,
+                    "selection_seed_count": len(selection_seeds),
+                    "selection_seeds": selection_seeds,
+                    "selection_seed_losses": selection_losses,
                     "selection_evidence": (
-                        "exploratory_single_seed"
-                        if len(expected_seeds) == 1
+                        "matched_single_seed_across_all_learning_rates"
+                        if len(selection_seeds) == 1
                         else "matched_multi_seed_mean"
                     ),
                     "seed_losses": losses,
                 }
             )
     selected_index = min(
-        range(len(rows)), key=lambda index: rows[index]["mean_validation_loss"]
+        range(len(rows)),
+        key=lambda index: rows[index]["selection_mean_validation_loss"],
     )
     selected = rows[selected_index]
     learning_rate_index = list(plan["learning_rates"]).index(
@@ -533,7 +565,13 @@ def select_forecast_fleet_learning_rate(
             )
         ),
         "optimum_is_interior": learning_rate_interior and weight_decay_interior,
-        "selected_seed_count": selected["seed_count"],
+        "selected_seed_count": selected["selection_seed_count"],
+        "selected_measurement_seed_count": selected["seed_count"],
+        "selection_mode": (
+            "matched_single_seed_across_all_learning_rates"
+            if len(selection_seeds) == 1
+            else "matched_multi_seed_mean"
+        ),
         "selection_has_unequal_seed_counts": len(
             {row["seed_count"] for row in rows}
         )

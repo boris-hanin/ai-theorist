@@ -2131,6 +2131,15 @@ def _tuning_seeds_for_learning_rate(
     return [int(value) for value in plan["seeds"]]
 
 
+def _selection_seeds_for_tuning(plan: Mapping[str, Any]) -> List[int]:
+    """Return the matched seeds used to compare every tuning cell."""
+
+    refinement = plan.get("learning_rate_refinement")
+    if isinstance(refinement, Mapping):
+        return [int(value) for value in refinement["refinement_seeds"]]
+    return [int(value) for value in plan["seeds"]]
+
+
 def _progress(
     callback: ProgressCallback,
     phase: str,
@@ -2193,7 +2202,7 @@ def run_real_text_scaling_campaign(
         tuning_rows = []
         for eta in plan.get("tuning_task_learning_rates", plan["learning_rates"]):
             for tau_ema in tau_grid:
-                matching = []
+                matching_by_seed: Dict[int, float] = {}
                 tuning_seeds = _tuning_seeds_for_learning_rate(plan, float(eta))
                 for seed in tuning_seeds:
                     tau_message = (
@@ -2220,9 +2229,15 @@ def run_real_text_scaling_campaign(
                         cache_directory=cache_directory,
                     )
                     tuning_records.append(record)
-                    matching.append(record.final_validation_loss)
+                    matching_by_seed[seed] = record.final_validation_loss
                     completed += 1
+                matching = [matching_by_seed[seed] for seed in tuning_seeds]
+                selection_seeds = _selection_seeds_for_tuning(plan)
+                selection_losses = [
+                    matching_by_seed[seed] for seed in selection_seeds
+                ]
                 mean, sem = _mean_sem(matching)
+                selection_mean, selection_sem = _mean_sem(selection_losses)
                 tuning_rows.append(
                     {
                         "learning_rate": float(eta),
@@ -2230,9 +2245,15 @@ def run_real_text_scaling_campaign(
                         "mean_validation_loss": mean,
                         "sem_validation_loss": sem,
                         "seed_count": len(tuning_seeds),
+                        "seeds": tuning_seeds,
+                        "selection_mean_validation_loss": selection_mean,
+                        "selection_sem_validation_loss": selection_sem,
+                        "selection_seed_count": len(selection_seeds),
+                        "selection_seeds": selection_seeds,
+                        "selection_seed_losses": selection_losses,
                         "selection_evidence": (
-                            "exploratory_single_seed"
-                            if len(tuning_seeds) == 1
+                            "matched_single_seed_across_all_learning_rates"
+                            if len(selection_seeds) == 1
                             else "matched_multi_seed_mean"
                         ),
                         "seed_losses": matching,
@@ -2240,7 +2261,9 @@ def run_real_text_scaling_campaign(
                 )
         selected_index = min(
             range(len(tuning_rows)),
-            key=lambda index: tuning_rows[index]["mean_validation_loss"],
+            key=lambda index: tuning_rows[index][
+                "selection_mean_validation_loss"
+            ],
         )
         selected_eta = float(tuning_rows[selected_index]["learning_rate"])
         selected_tau_ema = tuning_rows[selected_index]["weight_decay_tau_ema"]

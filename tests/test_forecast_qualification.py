@@ -51,6 +51,14 @@ def test_topology_comparison_accepts_definition_preserving_ddp() -> None:
     assert result["comparisons"][0]["speedup"] == 12.0 / 7.0
 
 
+def test_topology_comparison_accepts_eight_gpu_ddp() -> None:
+    result = compare_forecast_topologies(
+        _result(1, 9.0, 12.0), _result(8, 9.0001, 2.0)
+    )
+    assert result["status"] == "passed"
+    assert result["ddp_replicas"] == 8
+
+
 def test_topology_comparison_refuses_loss_or_group_drift() -> None:
     single = _result(1, 9.0, 12.0)
     ddp = _result(2, 9.01, 7.0)

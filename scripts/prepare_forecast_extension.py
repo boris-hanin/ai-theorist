@@ -163,15 +163,18 @@ def _verify_prefix_lock(
 def _frozen_prediction(
     parent_result: Mapping[str, Any],
     parent_config: Mapping[str, Any],
-    target_parameters: int,
+    target: Mapping[str, Any],
 ) -> Dict[str, Any]:
     rows = list(parent_result["scales"])
     ladder = parent_config["ladder"]
+    axis = str(parent_result.get("fit_parameter_axis", "parameters"))
+    if axis not in {"parameters", "non_embedding_parameters"}:
+        raise ValueError("parent fit parameter axis is unsupported")
     return fit_scaling_ensemble(
-        [row["parameters"] for row in rows],
+        [row[axis] for row in rows],
         [row["mean_validation_loss"] for row in rows],
         [row["sem_validation_loss"] for row in rows],
-        target_size=float(target_parameters),
+        target_size=float(target[axis]),
         maximum_extrapolation_factor=float(
             ladder.get("maximum_extrapolation_factor", 10.0)
         ),
@@ -224,7 +227,7 @@ def main() -> None:
         extension_manifest=extension_manifest,
     )
     target = plan["scales"][-1]
-    prediction = _frozen_prediction(parent_result, parent_config, target["parameters"])
+    prediction = _frozen_prediction(parent_result, parent_config, target)
     code_commit = subprocess.run(
         ["git", "rev-parse", "HEAD"],
         check=True,
@@ -247,6 +250,9 @@ def main() -> None:
         "seed": int(contract["target_seed"]),
         "target": target,
         "frozen_prediction": prediction,
+        "fit_parameter_axis": parent_result.get(
+            "fit_parameter_axis", "parameters"
+        ),
         "evaluation_contract": {
             "primary_metric": "final_validation_loss",
             "report_relative_error_to_exploratory_prediction": True,
