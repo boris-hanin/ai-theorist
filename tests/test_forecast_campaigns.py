@@ -939,6 +939,7 @@ def test_fixed_budget_presets_freeze_budget_and_parameter_axes(monkeypatch) -> N
     assert completep_plan["optimizer_contract"][
         "include_zero_weight_decay_control"
     ] is True
+    assert completep_plan["architecture_contract"]["attention_scale"] == "QK^T/N"
     assert completep_plan["tuning_trials"] == 126
     assert completep_plan["scale_trials"] == 21
     assert completep_plan["planned_grid_trials"] == 147

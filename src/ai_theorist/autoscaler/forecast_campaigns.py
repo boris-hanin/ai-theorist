@@ -484,7 +484,7 @@ def _generate_ladder(
                 architecture.get("position_encoding", "learned_absolute")
             ),
             "activation": str(architecture.get("activation", "relu_squared")),
-            "attention_scale": "QK^T/d_head",
+            "attention_scale": "QK^T/N",
             "residual_branch_scale": "(L/L0)^(-1)",
             "unembedding_forward_scale": "(N/N0)^(-1)",
             "hidden_initialization_std": "sigma0 * (N/N0)^(-1/2)",

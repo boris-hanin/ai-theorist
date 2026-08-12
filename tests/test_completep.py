@@ -121,3 +121,35 @@ def test_completep_accelerated_sdpa_matches_math() -> None:
     reference_logits = reference(tokens)
     accelerated_logits = accelerated(tokens)
     torch.testing.assert_close(accelerated_logits, reference_logits, rtol=1e-5, atol=1e-6)
+
+
+def test_completep_attention_uses_paper_width_normalization() -> None:
+    model = make_model(
+        attention_backend="math", capture_attention_diagnostics=False
+    ).eval()
+    attention = model.blocks[0].attention
+    hidden = torch.randn(
+        2, 5, attention.width, generator=torch.Generator().manual_seed(41)
+    )
+
+    with torch.no_grad():
+        actual = attention(hidden)
+        q, k, v = attention.qkv(hidden).chunk(3, dim=-1)
+
+        def split_heads(value: torch.Tensor) -> torch.Tensor:
+            return value.view(
+                hidden.shape[0],
+                hidden.shape[1],
+                attention.num_heads,
+                attention.head_dimension,
+            ).transpose(1, 2)
+
+        q, k, v = (split_heads(value) for value in (q, k, v))
+        logits = torch.matmul(q, k.transpose(-2, -1)) / attention.width
+        causal_mask = torch.ones(5, 5, dtype=torch.bool).triu(1)
+        probabilities = logits.masked_fill(causal_mask, float("-inf")).softmax(dim=-1)
+        attended = torch.matmul(probabilities, v)
+        attended = attended.transpose(1, 2).contiguous().view(2, 5, attention.width)
+        expected = attention.output(attended)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)

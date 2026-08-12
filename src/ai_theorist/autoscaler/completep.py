@@ -14,7 +14,7 @@ from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_grou
 
 
 COMPLETEP_ADAMW_THEORY = LearningRateTheory(
-    contract_id="dey-completep-adamw-v4-table1-corrected",
+    contract_id="dey-completep-adamw-v4-paper-qk-width",
     architecture="dense pre-LN decoder Transformer with CompleteP alpha=1",
     optimizer="adamw",
     source_title="Don't be lazy: CompleteP enables compute-efficient deep transformers",
@@ -22,7 +22,7 @@ COMPLETEP_ADAMW_THEORY = LearningRateTheory(
     source_version="arXiv:2505.01618v4, Table 1 and Equations 38-40",
     base_coordinate="eta, epsilon0, lambda0, sigma0 at reference (L0, N0)",
     applicability=(
-        "AdamW transfer across residual width N and depth L with QK^T/d_head, "
+        "AdamW transfer across residual width N and depth L with QK^T/N, "
         "(L/L0)^-1 residual branches, hidden logit scaling, and width-scaled "
         "hidden initialization"
     ),
@@ -114,7 +114,8 @@ class CompletePAttention(nn.Module):
                 else SDPBackend.MATH
             )
             kernel_context = sdpa_kernel([backend])
-        # CompleteP uses the muP attention convention QK^T/d_head.
+        # Dey et al. use QK^T/N in their experiments, where N is the full
+        # residual-stream width rather than the per-head dimension.
         with kernel_context:
             attended = F.scaled_dot_product_attention(
                 q,
@@ -122,11 +123,11 @@ class CompletePAttention(nn.Module):
                 v,
                 dropout_p=0.0,
                 is_causal=True,
-                scale=1.0 / self.head_dimension,
+                scale=1.0 / self.width,
             )
         if self.capture_diagnostics:
             with torch.no_grad():
-                logits = torch.matmul(q, k.transpose(-2, -1)) / self.head_dimension
+                logits = torch.matmul(q, k.transpose(-2, -1)) / self.width
                 mask = torch.ones(time, time, dtype=torch.bool, device=hidden.device).triu(1)
                 logits = logits.masked_fill(mask, float("-inf"))
                 probabilities = logits.softmax(dim=-1)
@@ -406,6 +407,7 @@ class CompletePTransformer(nn.Module):
             "depth_ratio": self.depth_ratio,
             "residual_branch_scale": 1.0 / self.depth_ratio,
             "unembedding_forward_scale": 1.0 / self.width_ratio,
+            "attention_logit_scale": 1.0 / self.shape.width,
             "mean_attention_entropy": (
                 sum(finite_entropies) / len(finite_entropies)
                 if finite_entropies
