@@ -52,6 +52,24 @@ def test_forward_is_causal_and_uses_tied_embeddings():
     assert math.isfinite(diagnostics["mean_attention_logit_rms"])
 
 
+def test_tied_unembedding_retains_completep_width_multiplier() -> None:
+    model = make_model(
+        JiangChizatShape(
+            depth=2,
+            hidden_width=64,
+            residual_width=32,
+            head_dimension=4,
+        )
+    ).eval()
+    tokens = torch.arange(8).remainder(16)[None, :]
+    with torch.no_grad():
+        hidden = model.forward_features(tokens)
+        expected = F.linear(hidden, model.token_embedding.weight) / 2.0
+        logits = model(tokens)
+    torch.testing.assert_close(logits, expected)
+    assert model.diagnostics()["unembedding_forward_scale"] == pytest.approx(0.5)
+
+
 def test_uncaptured_attention_diagnostics_are_explicitly_unavailable():
     model = make_model(capture_attention_diagnostics=False)
     model(torch.randint(0, 16, (2, 8)))
@@ -84,6 +102,7 @@ def test_table2_adam_group_rates_and_epsilons():
     }
     assert groups["jiang_embeddings"]["lr"] == pytest.approx(0.01)
     assert groups["jiang_norms"]["lr"] == pytest.approx(0.01)
+    assert groups["jiang_final_norm"]["lr"] == pytest.approx(0.01)
     assert groups["jiang_attention_qkv"]["lr"] == pytest.approx(0.005 / 16.0)
     assert groups["jiang_attention_output"]["lr"] == pytest.approx(0.005)
     assert groups["jiang_ffn_up"]["lr"] == pytest.approx(0.005)
@@ -91,6 +110,7 @@ def test_table2_adam_group_rates_and_epsilons():
     assert groups["jiang_other_biases"]["lr"] == pytest.approx(0.01)
     assert groups["jiang_embeddings"]["eps"] == pytest.approx(0.5e-12)
     assert groups["jiang_norms"]["eps"] == pytest.approx(1e-12)
+    assert groups["jiang_final_norm"]["eps"] == pytest.approx(0.5e-12)
     assert groups["jiang_attention_qkv"]["eps"] == pytest.approx(0.25e-12)
     assert groups["jiang_attention_output"]["eps"] == pytest.approx(0.25e-12)
     assert groups["jiang_ffn_up"]["eps"] == pytest.approx(1e-12 / 6.0)
@@ -152,6 +172,7 @@ def test_completep_adamw_decay_scales_rectangular_hidden_groups() -> None:
     assert groups["jiang_ffn_up"]["weight_decay"] == pytest.approx(0.2)
     assert groups["jiang_ffn_down"]["weight_decay"] == pytest.approx(0.4)
     assert groups["jiang_norms"]["weight_decay"] == 0.0
+    assert groups["jiang_final_norm"]["weight_decay"] == 0.0
     assert groups["jiang_other_biases"]["weight_decay"] == 0.0
     assert {
         group["theory_contract_id"] for group in groups.values()
@@ -197,12 +218,14 @@ def test_rho32_endpoint_uses_reference_relative_group_rules() -> None:
     assert model.shape.rho == pytest.approx(32.0)
     assert groups["jiang_embeddings"]["lr"] == pytest.approx(eta)
     assert groups["jiang_norms"]["lr"] == pytest.approx(eta)
+    assert groups["jiang_final_norm"]["lr"] == pytest.approx(eta)
     assert groups["jiang_attention_qkv"]["lr"] == pytest.approx(eta / 14 / 16)
     assert groups["jiang_attention_output"]["lr"] == pytest.approx(eta / 14)
     assert groups["jiang_ffn_up"]["lr"] == pytest.approx(eta / 14)
     assert groups["jiang_ffn_down"]["lr"] == pytest.approx(eta / 3.5 / 16)
     assert groups["jiang_other_biases"]["lr"] == pytest.approx(eta)
     assert groups["jiang_attention_qkv"]["eps"] == pytest.approx(1e-12 / 56)
+    assert groups["jiang_final_norm"]["eps"] == pytest.approx(1e-12 / 14)
     assert groups["jiang_ffn_down"]["eps"] == pytest.approx(
         1e-12 * 14 / (3.5**2) / 4
     )
@@ -216,6 +239,17 @@ def test_rho32_endpoint_uses_reference_relative_group_rules() -> None:
     assert audit["trainable_parameter_count"] == sum(
         parameter.numel() for parameter in model.parameters()
     )
+    final_norm_group = next(
+        row for row in audit["groups"] if row["name"] == "jiang_final_norm"
+    )
+    assert final_norm_group["parameter_names"] == [
+        "final_norm.weight",
+        "final_norm.bias",
+    ]
+    block_norm_group = next(
+        row for row in audit["groups"] if row["name"] == "jiang_norms"
+    )
+    assert all(not name.startswith("final_norm.") for name in block_norm_group["parameter_names"])
 
 
 def test_omitted_factor_controls_change_only_the_declared_groups():

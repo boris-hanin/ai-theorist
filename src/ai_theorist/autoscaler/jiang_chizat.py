@@ -14,7 +14,7 @@ from .lr_contract import LearningRateTheory, audit_optimizer_groups, theory_grou
 
 
 JIANG_COMPLETEP_ADAM_THEORY = LearningRateTheory(
-    contract_id="jiang-bordelon-pehlevan-hanin-completep-adam-v4",
+    contract_id="jiang-bordelon-pehlevan-hanin-completep-adam-v5",
     architecture="pre-LN decoder with 1/L MHSA and mean-field FFN residual branches",
     optimizer="adam",
     source_title="Hyperparameter Transfer with Mixture-of-Experts Layers",
@@ -29,7 +29,7 @@ JIANG_COMPLETEP_ADAM_THEORY = LearningRateTheory(
 
 
 JIANG_COMPLETEP_ADAMW_THEORY = LearningRateTheory(
-    contract_id="jiang-chizat-completep-adamw-tau-ema-v1",
+    contract_id="jiang-chizat-completep-adamw-tau-ema-v2",
     architecture="pre-LN decoder with 1/L MHSA and mean-field FFN residual branches",
     optimizer="adamw",
     source_title=(
@@ -60,6 +60,7 @@ JIANG_REPORTED_DOWN_INIT_MULTIPLIER = 1.0 / 4.0
 JIANG_DENSE_REPORTED_LR_MULTIPLIERS: Dict[str, float] = {
     "jiang_embeddings": 1.0,
     "jiang_norms": 1.0,
+    "jiang_final_norm": 1.0,
     "jiang_attention_qkv": 1.0 / 16.0,
     "jiang_attention_output": 1.0,
     "jiang_ffn_up": 1.0,
@@ -306,6 +307,9 @@ class JiangChizatTransformer(nn.Module):
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.activation_checkpointing = activation_checkpointing
+        self.residual_width_ratio = (
+            shape.residual_width / reference.residual_width
+        )
         self.token_embedding = nn.Embedding(vocab_size, shape.residual_width)
         self.position_embedding = nn.Embedding(context_length, shape.residual_width)
         nn.init.normal_(
@@ -349,7 +353,9 @@ class JiangChizatTransformer(nn.Module):
     def forward(self, tokens: Tensor) -> Tensor:
         hidden = self.forward_features(tokens)
         # Tied input/output token embeddings, as in the Jiang experiment setup.
-        return F.linear(hidden, self.token_embedding.weight)
+        # Jiang et al. keep the non-FFN CompleteP prescription unchanged, so the
+        # tied readout retains CompleteP's 1/m_D forward multiplier.
+        return F.linear(hidden, self.token_embedding.weight) / self.residual_width_ratio
 
     def optimizer_parameter_groups(
         self,
@@ -391,7 +397,7 @@ class JiangChizatTransformer(nn.Module):
         ffn_up_parameters: List[nn.Parameter] = []
         ffn_down_parameters: List[nn.Parameter] = []
         other_bias_parameters: List[nn.Parameter] = []
-        norm_parameters: List[nn.Parameter] = list(self.final_norm.parameters())
+        norm_parameters: List[nn.Parameter] = []
         for block in self.blocks:
             attention_qkv_parameters.append(block.attention.qkv.weight)
             attention_output_parameters.append(block.attention.output.weight)
@@ -418,6 +424,7 @@ class JiangChizatTransformer(nn.Module):
         group_names = (
             "jiang_embeddings",
             "jiang_norms",
+            "jiang_final_norm",
             "jiang_attention_qkv",
             "jiang_attention_output",
             "jiang_ffn_up",
@@ -457,6 +464,19 @@ class JiangChizatTransformer(nn.Module):
                 eps_formula="epsilon0",
                 theory=theory,
                 scale_factors={**factors, "base_lr_multiplier": multipliers["jiang_norms"]},
+            ),
+            theory_group(
+                name="jiang_final_norm",
+                params=self.final_norm.parameters(),
+                lr=eta * multipliers["jiang_final_norm"],
+                lr_formula="c_final_norm * eta; endpoint CompleteP group",
+                eps=epsilon0 * residual_ratio ** -1.0,
+                eps_formula="epsilon0 * (D/D0)^(-1)",
+                theory=theory,
+                scale_factors={
+                    **factors,
+                    "base_lr_multiplier": multipliers["jiang_final_norm"],
+                },
             ),
             theory_group(
                 name="jiang_attention_qkv",
@@ -626,6 +646,7 @@ class JiangChizatTransformer(nn.Module):
                 else None
             ),
             "rho_LM_over_D": self.shape.rho,
+            "unembedding_forward_scale": 1.0 / self.residual_width_ratio,
         }
 
     def semantic_parameters(self) -> Iterable[Tuple[str, nn.Parameter]]:

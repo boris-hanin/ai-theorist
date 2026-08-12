@@ -238,6 +238,7 @@ def test_jiang_chizat_real_text_horizon_uses_all_completep_groups(tmp_path) -> N
         "learning_rate_multipliers": {
             "jiang_embeddings": 1.0,
             "jiang_norms": 1.0,
+            "jiang_final_norm": 1.0,
             "jiang_attention_qkv": 0.0625,
             "jiang_attention_output": 0.5,
             "jiang_ffn_up": 1.0,
@@ -264,6 +265,7 @@ def test_jiang_chizat_real_text_horizon_uses_all_completep_groups(tmp_path) -> N
     assert group_names == {
         "jiang_embeddings",
         "jiang_norms",
+        "jiang_final_norm",
         "jiang_attention_qkv",
         "jiang_attention_output",
         "jiang_ffn_up",

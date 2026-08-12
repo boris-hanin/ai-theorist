@@ -878,6 +878,83 @@ def test_jiang_rho32_preset_has_exact_reference_and_l8_endpoint(monkeypatch) -> 
     assert expanded_plan["tuning_trials"] == 96
 
 
+def test_fixed_budget_presets_freeze_budget_and_parameter_axes(monkeypatch) -> None:
+    config_root = Path(__file__).parents[1] / "configs" / "autoscaler"
+    identity = {
+        "format": "sharded_uint32_le_v1",
+        "fingerprint": "1" * 64,
+        "content_fingerprint": "2" * 64,
+        "tokenizer_id": "mistral_7b_v03",
+        "tokenizer_fingerprint": "3" * 64,
+        "vocab_size": 32_768,
+        "packing": {"contract": "document_eos_concatenation_v1"},
+        "training_tokens": 6_200_000_000,
+        "validation_tokens": 100_000_000,
+    }
+    monkeypatch.setattr(forecast_campaigns, "token_stream_identity", lambda _path: identity)
+
+    jiang = json.loads(
+        (config_root / "jiang_mistral_fixed_budget_100m_rho32_adamw.json").read_text()
+    )
+    completep = json.loads(
+        (config_root / "completep_mistral_fixed_budget_100m_adamw.json").read_text()
+    )
+    jiang_plan = compile_real_text_scaling_plan(jiang)
+    completep_plan = compile_real_text_scaling_plan(completep)
+
+    for plan in (jiang_plan, completep_plan):
+        assert plan["run_profile"] == "fixed_budget_scan"
+        assert plan["fit_parameter_axis"] == "non_embedding_parameters"
+        assert plan["measurement_contract"]["validation_seed"] == 424242
+        assert plan["measurement_contract"][
+            "validation_windows_are_identical_across_trials"
+        ] is True
+        assert plan["fixed_budget_contract"] == {
+            "batch_examples": 512,
+            "batch_tokens": 262144,
+            "optimizer_steps": 1144,
+            "presented_tokens": 299892736,
+            "identical_at_every_scale": True,
+            "batch_learning_rate_scaling": "none; eta tuned at this exact batch",
+        }
+        assert {row["optimizer_steps"] for row in plan["scales"]} == {1144}
+        assert {row["presented_tokens"] for row in plan["scales"]} == {299892736}
+        assert all(
+            row["parameters"] > row["non_embedding_parameters"] > 0
+            for row in plan["scales"]
+        )
+        assert plan["architecture_contract"][
+            "layer_norm_numerical_epsilon"
+        ] == pytest.approx(1e-5)
+
+    assert jiang_plan["architecture_contract"]["reference_scale_index"] == 3
+    assert jiang_plan["architecture_contract"]["unembedding_forward_scale"] == (
+        "(D/D0)^(-1)"
+    )
+    assert all(row["rho_lm_over_d"] == 32.0 for row in jiang_plan["scales"])
+    assert jiang_plan["tuning_trials"] == 21
+    assert jiang_plan["scale_trials"] == 21
+    assert jiang_plan["planned_grid_trials"] == 42
+
+    assert completep_plan["optimizer_contract"][
+        "include_zero_weight_decay_control"
+    ] is True
+    assert completep_plan["tuning_trials"] == 126
+    assert completep_plan["scale_trials"] == 21
+    assert completep_plan["planned_grid_trials"] == 147
+    tuning = build_forecast_fleet_tasks(completep_plan, phase="tune")
+    assert sum(task.weight_decay_tau_ema is None for task in tuning) == 21
+    zero_decay_ladder = build_forecast_fleet_tasks(
+        completep_plan,
+        phase="ladder",
+        selected_learning_rate=0.01,
+        selected_weight_decay_tau_ema=None,
+        run_negative_control=False,
+    )
+    assert len(zero_decay_ladder) == 21
+    assert all(task.weight_decay_tau_ema is None for task in zero_decay_ladder)
+
+
 def test_completep_baseline_preparation_requires_verified_jiang_adamw(
     tmp_path: Path,
 ) -> None:
@@ -989,6 +1066,7 @@ def test_smoke_campaign_runs_accelerated_checkpointed_theory_path(
     } == {
         "jiang_embeddings",
         "jiang_norms",
+        "jiang_final_norm",
         "jiang_attention_qkv",
         "jiang_attention_output",
         "jiang_ffn_up",

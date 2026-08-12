@@ -435,6 +435,7 @@ def group_feature_velocity_audit(
     for group_name in (
         "jiang_embeddings",
         "jiang_norms",
+        "jiang_final_norm",
         "jiang_attention_qkv",
         "jiang_attention_output",
         "jiang_ffn_up",
@@ -494,6 +495,7 @@ def summarize_feature_velocity_audits(
     groups = (
         "jiang_embeddings",
         "jiang_norms",
+        "jiang_final_norm",
         "jiang_attention_qkv",
         "jiang_attention_output",
         "jiang_ffn_up",

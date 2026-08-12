@@ -153,6 +153,7 @@ def test_group_only_feature_velocity_audit_routes_every_semantic_group():
     assert set(velocities) == {
         "jiang_embeddings",
         "jiang_norms",
+        "jiang_final_norm",
         "jiang_attention_qkv",
         "jiang_attention_output",
         "jiang_ffn_up",

@@ -30,6 +30,18 @@ ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 FLEET_SCHEMA_VERSION = 1
 
 
+def _tuning_tau_candidates(plan: Mapping[str, Any]) -> List[Optional[float]]:
+    values: List[Optional[float]] = [
+        float(value) for value in plan.get("weight_decay_tau_ema_grid", ())
+    ]
+    optimizer = plan.get("optimizer_contract", {})
+    if isinstance(optimizer, Mapping) and bool(
+        optimizer.get("include_zero_weight_decay_control", False)
+    ):
+        values = [None, *values]
+    return values or [None]
+
+
 @dataclass(frozen=True)
 class ForecastFleetTask:
     task_id: str
@@ -74,6 +86,11 @@ def build_forecast_fleet_tasks(
     reference = scales[reference_index]
     tasks: List[ForecastFleetTask] = []
     tau_grid = [float(value) for value in plan.get("weight_decay_tau_ema_grid", ())]
+    zero_decay_allowed = bool(
+        dict(plan.get("optimizer_contract", {})).get(
+            "include_zero_weight_decay_control", False
+        )
+    )
 
     def append(
         scale: Mapping[str, Any],
@@ -147,7 +164,7 @@ def build_forecast_fleet_tasks(
 
     if phase == "tune":
         for eta in plan["learning_rates"]:
-            for tau_ema in tau_grid or [None]:
+            for tau_ema in _tuning_tau_candidates(plan):
                 for seed in seeds:
                     append(reference, float(eta), tau_ema, seed, "theory")
         return tasks
@@ -158,13 +175,17 @@ def build_forecast_fleet_tasks(
     if selected not in {float(value) for value in plan["learning_rates"]}:
         raise ValueError("selected_learning_rate is not in the preregistered grid")
     if tau_grid:
-        if selected_weight_decay_tau_ema is None:
+        if selected_weight_decay_tau_ema is None and not zero_decay_allowed:
             raise ValueError(
                 "ladder phase requires selected_weight_decay_tau_ema for a "
                 "jointly tuned plan"
             )
-        selected_tau = float(selected_weight_decay_tau_ema)
-        if selected_tau not in set(tau_grid):
+        selected_tau = (
+            None
+            if selected_weight_decay_tau_ema is None
+            else float(selected_weight_decay_tau_ema)
+        )
+        if selected_tau is not None and selected_tau not in set(tau_grid):
             raise ValueError(
                 "selected_weight_decay_tau_ema is not in the preregistered grid"
             )
@@ -438,9 +459,7 @@ def select_forecast_fleet_learning_rate(
         for task in tasks
     ]
     rows = []
-    tau_grid: List[Optional[float]] = [
-        float(value) for value in plan.get("weight_decay_tau_ema_grid", ())
-    ] or [None]
+    tau_grid = _tuning_tau_candidates(plan)
     for eta in plan["learning_rates"]:
         for tau_ema in tau_grid:
             losses = [
@@ -480,8 +499,9 @@ def select_forecast_fleet_learning_rate(
     )
     weight_decay_interior = True
     if selected["weight_decay_tau_ema"] is not None:
-        tau_index = tau_grid.index(selected["weight_decay_tau_ema"])
-        weight_decay_interior = 0 < tau_index < len(tau_grid) - 1
+        finite_tau_grid = [value for value in tau_grid if value is not None]
+        tau_index = finite_tau_grid.index(selected["weight_decay_tau_ema"])
+        weight_decay_interior = 0 < tau_index < len(finite_tau_grid) - 1
     result = {
         "schema_version": FLEET_SCHEMA_VERSION,
         "plan_fingerprint": plan["fingerprint"],
@@ -489,6 +509,14 @@ def select_forecast_fleet_learning_rate(
         "selected_weight_decay_tau_ema": selected["weight_decay_tau_ema"],
         "learning_rate_optimum_is_interior": learning_rate_interior,
         "weight_decay_optimum_is_interior": weight_decay_interior,
+        "selected_zero_weight_decay_endpoint": (
+            selected["weight_decay_tau_ema"] is None
+            and bool(
+                dict(plan.get("optimizer_contract", {})).get(
+                    "include_zero_weight_decay_control", False
+                )
+            )
+        ),
         "optimum_is_interior": learning_rate_interior and weight_decay_interior,
         "grid": rows,
     }
