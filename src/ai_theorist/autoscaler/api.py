@@ -245,6 +245,7 @@ class CampaignStore:
         certified_joint_rules = result.get("certified_joint_rules")
         forecasts = result.get("forecasts")
         hidden_backtests = result.get("hidden_scale_backtests")
+        local_cbs_estimates = result.get("local_estimates")
         dataset = result.get("dataset") if isinstance(result.get("dataset"), dict) else {}
         return {
             "id": job.get("id"),
@@ -266,6 +267,15 @@ class CampaignStore:
                 if isinstance(analyses, list)
                 else 0,
                 "analysis_count": len(analyses) if isinstance(analyses, list) else 0,
+                "qualified_critical_batch_checkpoints": sum(
+                    bool(item.get("estimate", {}).get("qualified"))
+                    for item in local_cbs_estimates
+                )
+                if isinstance(local_cbs_estimates, list)
+                else 0,
+                "critical_batch_checkpoint_count": len(local_cbs_estimates)
+                if isinstance(local_cbs_estimates, list)
+                else 0,
                 "recommendable_rules": sum(bool(item.get("recommendable")) for item in transfers)
                 if isinstance(transfers, list)
                 else len(certified_horizon_rules)

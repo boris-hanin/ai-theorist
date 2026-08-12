@@ -50,6 +50,21 @@ class ContinuationObservation:
             raise ValueError("continuation losses must be finite")
 
 
+@dataclass(frozen=True)
+class LocalBranchObservation:
+    """One matched-token branch from a fixed training checkpoint."""
+
+    batch_tokens: int
+    final_validation_loss: float
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.batch_tokens <= 0:
+            raise ValueError("batch_tokens must be positive")
+        if not math.isfinite(self.final_validation_loss):
+            raise ValueError("final_validation_loss must be finite")
+
+
 def _refused(estimator: str, reasons: Iterable[str], diagnostics: Dict[str, Any]) -> CriticalBatchEstimate:
     return CriticalBatchEstimate(
         estimator,
@@ -242,6 +257,114 @@ def estimate_direct_checkpoint_critical_batch(
     critical = math.sqrt(lower * upper)
     return CriticalBatchEstimate(
         "direct_checkpoint", critical, lower, upper, True, diagnostics
+    )
+
+
+def estimate_local_branched_critical_batch(
+    observations: Sequence[LocalBranchObservation],
+    *,
+    loss_tolerance: float = 0.01,
+    minimum_seeds: int = 2,
+) -> CriticalBatchEstimate:
+    """Apply the Merrill et al. local branched-training CBS definition.
+
+    Every observation must start from the same checkpoint and process the same
+    number and order of tokens.  The lower bracket is the largest batch whose
+    mean final loss stays within ``loss_tolerance`` of the best smaller-batch
+    branch.  The next tested batch supplies the upper bracket.  This estimator
+    intentionally does not use gradient noise as a proxy.
+    """
+
+    if not math.isfinite(loss_tolerance) or loss_tolerance <= 0.0:
+        raise ValueError("loss_tolerance must be finite and positive")
+    if minimum_seeds < 2:
+        raise ValueError("minimum_seeds must be at least two")
+    grouped: Dict[int, list[float]] = {}
+    for row in observations:
+        grouped.setdefault(row.batch_tokens, []).append(row.final_validation_loss)
+    batches = sorted(grouped)
+    means = {batch: float(np.mean(grouped[batch])) for batch in batches}
+    sems = {
+        batch: (
+            float(np.std(grouped[batch], ddof=1) / math.sqrt(len(grouped[batch])))
+            if len(grouped[batch]) > 1
+            else math.inf
+        )
+        for batch in batches
+    }
+    diagnostics: Dict[str, Any] = {
+        "definition": "local matched-token branched training",
+        "loss_tolerance": loss_tolerance,
+        "minimum_seeds": minimum_seeds,
+        "batch_tokens": batches,
+        "mean_final_validation_loss": [means[batch] for batch in batches],
+        "sem_final_validation_loss": [sems[batch] for batch in batches],
+        "seed_counts": [len(grouped[batch]) for batch in batches],
+    }
+    reasons = []
+    if len(batches) < 4:
+        reasons.append("at least four unique branch batches are required")
+    if any(len(grouped[batch]) < minimum_seeds for batch in batches):
+        reasons.append("every branch batch requires the minimum seed count")
+    if reasons:
+        return _refused("local_branched", reasons, diagnostics)
+
+    passing: list[int] = []
+    failing: list[int] = []
+    best_smaller = math.inf
+    failure_seen = False
+    recovered_after_failure = False
+    for batch in batches:
+        loss = means[batch]
+        passes = not passing or loss <= best_smaller + loss_tolerance
+        if passes:
+            passing.append(batch)
+            if failure_seen:
+                recovered_after_failure = True
+        else:
+            failure_seen = True
+            failing.append(batch)
+        best_smaller = min(best_smaller, loss)
+    diagnostics.update(
+        {
+            "passing_batches": passing,
+            "failing_batches": failing,
+            "recovered_after_failure": recovered_after_failure,
+        }
+    )
+    if recovered_after_failure:
+        return _refused(
+            "local_branched",
+            ("loss crosses the tolerance boundary more than once",),
+            diagnostics,
+        )
+    if not failing:
+        lower = float(max(passing))
+        return CriticalBatchEstimate(
+            "local_branched",
+            lower,
+            lower,
+            None,
+            False,
+            diagnostics,
+            ("the critical-batch transition is not upper-bracketed",),
+        )
+    upper = float(min(failing))
+    lower_candidates = [batch for batch in passing if batch < upper]
+    if not lower_candidates:
+        return _refused(
+            "local_branched",
+            ("the smallest tested batch already fails",),
+            diagnostics,
+        )
+    lower = float(max(lower_candidates))
+    return CriticalBatchEstimate(
+        "local_branched",
+        math.sqrt(lower * upper),
+        lower,
+        upper,
+        True,
+        diagnostics,
     )
 
 

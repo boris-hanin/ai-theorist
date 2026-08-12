@@ -11,12 +11,14 @@ from ai_theorist.autoscaler.batch_scaling import (
     transfer_rule_registry,
 )
 from ai_theorist.autoscaler.critical_batch import (
+    LocalBranchObservation,
     CriticalBatchEstimate,
     ContinuationObservation,
     StepsToTargetObservation,
     combine_critical_batch_estimates,
     estimate_direct_checkpoint_critical_batch,
     estimate_gradient_noise_critical_batch,
+    estimate_local_branched_critical_batch,
     estimate_steps_to_target_critical_batch,
 )
 from ai_theorist.autoscaler.seesaw import SchedulePoint, compile_seesaw_schedule
@@ -109,6 +111,19 @@ def test_direct_checkpoint_requires_and_finds_a_bracket() -> None:
     assert estimate.qualified
     assert estimate.lower_batch_tokens == 64
     assert estimate.upper_batch_tokens == 128
+
+
+def test_local_branched_estimator_uses_loss_tolerance_and_brackets() -> None:
+    rows = []
+    losses = {128: 3.00, 256: 3.004, 512: 3.009, 1024: 3.028, 2048: 3.05}
+    for batch, loss in losses.items():
+        for seed, offset in enumerate((-0.001, 0.0, 0.001)):
+            rows.append(LocalBranchObservation(batch, loss + offset, seed))
+    estimate = estimate_local_branched_critical_batch(rows, loss_tolerance=0.01)
+    assert estimate.qualified
+    assert estimate.lower_batch_tokens == 512
+    assert estimate.upper_batch_tokens == 1024
+    assert estimate.critical_batch_tokens == pytest.approx(math.sqrt(512 * 1024))
 
 
 def test_gradient_noise_estimator_and_consensus() -> None:

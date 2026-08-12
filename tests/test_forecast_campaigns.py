@@ -1,4 +1,5 @@
 from hashlib import sha256
+from copy import deepcopy
 import json
 from pathlib import Path
 import shutil
@@ -21,7 +22,11 @@ from ai_theorist.autoscaler.forecast_campaigns import (
     nugpt_parameter_count,
     run_real_text_scaling_campaign,
 )
-from ai_theorist.autoscaler.pretraining import DistributedContext
+from ai_theorist.autoscaler.pretraining import (
+    DistributedContext,
+    PretrainingRuntimeSpec,
+    TokenizedTextCorpus,
+)
 from ai_theorist.autoscaler.forecast_fleet import (
     aggregate_forecast_fleet_cache,
     assign_forecast_fleet_tasks,
@@ -29,6 +34,14 @@ from ai_theorist.autoscaler.forecast_fleet import (
     run_forecast_fleet_shard,
     select_forecast_fleet_learning_rate,
 )
+from ai_theorist.autoscaler.forecast_critical_batch import (
+    ForecastCriticalBatchTask,
+    build_forecast_critical_batch_tasks,
+    compile_conservative_batch_warmup,
+    compile_forecast_critical_batch_plan,
+    run_forecast_critical_batch_task,
+)
+from ai_theorist.autoscaler.critical_batch import CriticalBatchEstimate
 from ai_theorist.autoscaler.jiang_chizat import (
     JiangChizatReference,
     JiangChizatShape,
@@ -231,6 +244,173 @@ def test_analytic_counts_match_both_theory_models() -> None:
             vocab_size=16, depth=2, width=8, mlp_multiplier=2
         )
     )
+
+
+def test_forecast_critical_batch_plan_and_conservative_schedule(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    source = compile_real_text_scaling_plan(config)
+    config["critical_batch"] = {
+        "source_plan_fingerprint": source["fingerprint"],
+        "source_selection_sha256": "a" * 64,
+        "selected_learning_rate": 0.001,
+        "selected_weight_decay_tau_ema": None,
+        "reference_batch_examples": 1,
+        "initial_batch_examples": 1,
+        "microbatch_examples": 1,
+        "batch_examples": [1, 2, 4, 8],
+        "checkpoint_tokens": [32, 64, 96],
+        "continuation_tokens": 1024,
+        "pilot_tokens": 32,
+        "eta_multipliers": [0.0625, 0.125, 0.25, 0.5, 1.0],
+        "seeds": [3, 5, 7],
+        "pilot_seed_count": 2,
+        "loss_tolerance": 0.01,
+        "safety_fraction": 0.8,
+    }
+    plan = compile_forecast_critical_batch_plan(config)
+    assert plan["source_forecast_plan_fingerprint"] == source["fingerprint"]
+    assert len(build_forecast_critical_batch_tasks(plan, phase="pilot")) == 10
+    assert len(build_forecast_critical_batch_tasks(plan, phase="baseline")) == 3
+    assert len(build_forecast_critical_batch_tasks(plan, phase="branch")) == 36
+
+    estimates = [
+        (
+            tokens,
+            CriticalBatchEstimate(
+                "local_branched",
+                critical,
+                lower,
+                upper,
+                True,
+                {},
+            ),
+        )
+        for tokens, critical, lower, upper in (
+            (32, 6.0, 4.0, 8.0),
+            (64, 12.0, 8.0, 16.0),
+            (96, 24.0, 16.0, 32.0),
+        )
+    ]
+    schedule = compile_conservative_batch_warmup(
+        checkpoints=estimates,
+        candidate_batch_examples=[1, 2, 4, 8],
+        context_length=2,
+        initial_batch_examples=1,
+        reference_batch_examples=1,
+        safety_fraction=0.8,
+    )
+    assert schedule["qualified"]
+    assert [stage["batch_examples"] for stage in schedule["stages"]] == [1, 2, 4]
+    assert not schedule["uses_extrapolated_batch"]
+
+
+def test_forecast_critical_batch_pilot_runs_the_faithful_model(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    source = compile_real_text_scaling_plan(config)
+    config["critical_batch"] = {
+        "source_plan_fingerprint": source["fingerprint"],
+        "source_selection_sha256": "b" * 64,
+        "selected_learning_rate": 0.001,
+        "selected_weight_decay_tau_ema": None,
+        "reference_batch_examples": 1,
+        "initial_batch_examples": 1,
+        "microbatch_examples": 1,
+        "batch_examples": [1, 2, 4, 8],
+        "checkpoint_tokens": [32, 64, 96],
+        "continuation_tokens": 1024,
+        "pilot_tokens": 32,
+        "eta_multipliers": [0.0625, 0.125, 0.25, 0.5, 1.0],
+        "seeds": [3, 5, 7],
+        "pilot_seed_count": 2,
+    }
+    result = run_forecast_critical_batch_task(
+        config,
+        task=ForecastCriticalBatchTask("pilot", 3, eta_multiplier=0.25),
+        root=tmp_path / "cbs",
+        device="cpu",
+    )
+    assert result["stop_tokens"] == 32
+    assert result["eta_actual"] == pytest.approx(0.00025)
+    assert result["peak_parameter_group_contract"]
+    assert result["final_validation_loss"] > 0
+    baseline = run_forecast_critical_batch_task(
+        config,
+        task=ForecastCriticalBatchTask("baseline", 3),
+        root=tmp_path / "cbs",
+        device="cpu",
+        selected_eta_multiplier=0.25,
+    )
+    assert len(baseline["checkpoints"]) == 3
+    branch = run_forecast_critical_batch_task(
+        config,
+        task=ForecastCriticalBatchTask(
+            "branch", 3, checkpoint_tokens=32, batch_examples=8
+        ),
+        root=tmp_path / "cbs",
+        device="cpu",
+        selected_eta_multiplier=0.25,
+    )
+    assert branch["start_tokens"] == 32
+    assert branch["stop_tokens"] == 1056
+    assert branch["gradient_accumulation_steps"] == 8
+
+
+def test_forecast_plan_compiles_measured_variable_batch_in_token_time(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    fixed = _jiang_config(tmp_path, manifest_path)
+    fixed["ladder"]["tokens_per_parameter"] = 1.0
+    fixed_plan = compile_real_text_scaling_plan(fixed)
+    dynamic = deepcopy(fixed)
+    dynamic["batch_schedule"] = {
+        "reference_batch_examples": 1,
+        "microbatch_examples": 1,
+        "learning_rate_rule": "adam_sqrt",
+        "uses_extrapolated_batch": False,
+        "source_critical_batch_result_sha256": "c" * 64,
+        "stages": [
+            {"start_tokens": 0, "batch_examples": 1},
+            {"start_tokens": 32, "batch_examples": 2},
+        ],
+    }
+    dynamic_plan = compile_real_text_scaling_plan(dynamic)
+    assert dynamic_plan["fingerprint"] != fixed_plan["fingerprint"]
+    assert dynamic_plan["batch_schedule"]["learning_rate_rule"] == "adam_sqrt"
+    assert dynamic_plan["scales"][-1]["optimizer_steps"] < (
+        dynamic_plan["scales"][-1]["presented_tokens"] // 2
+    )
+    assert dynamic_plan["execution_order"][0] == (
+        "verify_critical_batch_result_and_measured_lower_bounds"
+    )
+    corpus = TokenizedTextCorpus(
+        forecast_campaigns.forecast_tokenized_text_spec(dynamic),
+        context_length=2,
+        vocab_size=16,
+    )
+    runtime = PretrainingRuntimeSpec.from_dict(dynamic["runtime"])
+    (tmp_path / "dynamic-trials").mkdir()
+    record = forecast_campaigns._run_trial(
+        config=dynamic,
+        plan=dynamic_plan,
+        scale=dynamic_plan["scales"][-1],
+        corpus=corpus,
+        runtime=runtime,
+        context=DistributedContext(0, 1, 0, "cpu"),
+        eta=0.001,
+        seed=3,
+        optimizer_mode="theory",
+        cache_directory=tmp_path / "dynamic-trials",
+    )
+    assert len(record.metadata["batch_schedule_trace"]) == 2
+    assert record.validation_checkpoints[-1]["tokens"] == record.total_tokens
+    assert record.accumulation_steps == 2
 
 
 def test_completep_comparison_plan_tunes_reference_then_only_target(

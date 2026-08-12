@@ -194,6 +194,127 @@ def _nearest_multiple(value: float, multiple: int) -> int:
     return max(multiple, int(round(value / multiple)) * multiple)
 
 
+def _compile_batch_schedule_contract(
+    config: Mapping[str, Any], context_length: int
+) -> Optional[Dict[str, Any]]:
+    raw = config.get("batch_schedule")
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("batch_schedule must be an object")
+    reference_batch = _positive_int(
+        raw.get("reference_batch_examples"),
+        "batch_schedule.reference_batch_examples",
+    )
+    microbatch = _positive_int(
+        raw.get("microbatch_examples"), "batch_schedule.microbatch_examples"
+    )
+    stages_raw = raw.get("stages")
+    if not isinstance(stages_raw, Sequence) or isinstance(stages_raw, (str, bytes)):
+        raise ValueError("batch_schedule.stages must be an array")
+    stages = []
+    for index, stage_raw in enumerate(stages_raw):
+        if not isinstance(stage_raw, Mapping):
+            raise ValueError("every batch schedule stage must be an object")
+        start_tokens = int(stage_raw.get("start_tokens", -1))
+        batch_examples = _positive_int(
+            stage_raw.get("batch_examples"),
+            "batch_schedule.stages.batch_examples",
+        )
+        if start_tokens < 0:
+            raise ValueError("batch schedule start tokens must be non-negative")
+        if batch_examples % microbatch:
+            raise ValueError("every scheduled batch must be divisible by microbatch_examples")
+        if index == 0 and start_tokens != 0:
+            raise ValueError("the first batch schedule stage must start at token zero")
+        if stages and start_tokens <= stages[-1]["start_tokens"]:
+            raise ValueError("batch schedule stage boundaries must be strictly increasing")
+        if stages:
+            previous_tokens = int(stages[-1]["batch_examples"]) * context_length
+            if start_tokens % previous_tokens:
+                raise ValueError("stage boundaries must align with the preceding batch")
+        if start_tokens % (batch_examples * context_length):
+            raise ValueError("stage boundaries must align with the new batch")
+        stages.append(
+            {"start_tokens": start_tokens, "batch_examples": batch_examples}
+        )
+    if not stages:
+        raise ValueError("batch_schedule.stages cannot be empty")
+    initial_batch = _positive_int(config.get("batch_examples"), "batch_examples")
+    if stages[0]["batch_examples"] != initial_batch:
+        raise ValueError("batch_examples must equal the first scheduled batch")
+    if any(
+        stages[index]["batch_examples"] < stages[index - 1]["batch_examples"]
+        for index in range(1, len(stages))
+    ):
+        raise ValueError("batch schedule must be monotone non-decreasing")
+    if str(raw.get("learning_rate_rule")) != "adam_sqrt":
+        raise ValueError("batch_schedule.learning_rate_rule must be adam_sqrt")
+    if raw.get("uses_extrapolated_batch") is not False:
+        raise ValueError("production batch schedules must refuse extrapolated batches")
+    source_result = raw.get("source_critical_batch_result_sha256")
+    if (
+        not isinstance(source_result, str)
+        or len(source_result) != 64
+        or any(character not in "0123456789abcdef" for character in source_result)
+    ):
+        raise ValueError(
+            "batch_schedule.source_critical_batch_result_sha256 must be a SHA-256 digest"
+        )
+    return {
+        "reference_batch_examples": reference_batch,
+        "microbatch_examples": microbatch,
+        "learning_rate_rule": "adam_sqrt",
+        "weight_decay_rule": "token_time_sqrt",
+        "uses_extrapolated_batch": False,
+        "source_critical_batch_result_sha256": source_result,
+        "stages": stages,
+    }
+
+
+def _scheduled_token_geometry(
+    requested_tokens: float,
+    *,
+    context_length: int,
+    fixed_batch_examples: int,
+    batch_schedule: Optional[Mapping[str, Any]],
+) -> Tuple[int, int]:
+    if batch_schedule is None:
+        batch_tokens = fixed_batch_examples * context_length
+        presented = max(
+            batch_tokens, int(round(requested_tokens / batch_tokens)) * batch_tokens
+        )
+        return presented, presented // batch_tokens
+    stages = list(batch_schedule["stages"])
+    active_index = max(
+        index
+        for index, stage in enumerate(stages)
+        if int(stage["start_tokens"]) <= requested_tokens
+    )
+    active = stages[active_index]
+    active_start = int(active["start_tokens"])
+    active_batch_tokens = int(active["batch_examples"]) * context_length
+    presented = max(
+        active_start + active_batch_tokens,
+        active_start
+        + int(round((requested_tokens - active_start) / active_batch_tokens))
+        * active_batch_tokens,
+    )
+    steps = 0
+    for index, stage in enumerate(stages[: active_index + 1]):
+        start = int(stage["start_tokens"])
+        stop = (
+            int(stages[index + 1]["start_tokens"])
+            if index < active_index
+            else presented
+        )
+        batch_tokens = int(stage["batch_examples"]) * context_length
+        if (stop - start) % batch_tokens:
+            raise ValueError("compiled batch schedule segment is not update-aligned")
+        steps += (stop - start) // batch_tokens
+    return presented, steps
+
+
 def _generate_ladder(
     config: Mapping[str, Any], identity: Mapping[str, Any]
 ) -> Tuple[List[TheoryScale], Dict[str, Any]]:
@@ -257,6 +378,7 @@ def _generate_ladder(
     )
     batch_examples = _positive_int(config.get("batch_examples"), "batch_examples")
     batch_tokens = batch_examples * context_length
+    batch_schedule = _compile_batch_schedule_contract(config, context_length)
     unique_tokens = int(identity["training_tokens"])
 
     shapes: List[Dict[str, Any]] = []
@@ -436,8 +558,11 @@ def _generate_ladder(
                 f"S{index + 1} violates the declared L*M/D tolerance"
             )
         requested_tokens = tokens_per_parameter * parameters
-        presented_tokens = max(
-            batch_tokens, int(round(requested_tokens / batch_tokens)) * batch_tokens
+        presented_tokens, optimizer_steps = _scheduled_token_geometry(
+            requested_tokens,
+            context_length=context_length,
+            fixed_batch_examples=batch_examples,
+            batch_schedule=batch_schedule,
         )
         scales.append(
             TheoryScale(
@@ -455,7 +580,7 @@ def _generate_ladder(
                 ),
                 num_heads=int(row["num_heads"]),
                 presented_tokens=presented_tokens,
-                optimizer_steps=presented_tokens // batch_tokens,
+                optimizer_steps=optimizer_steps,
                 tokens_per_parameter=presented_tokens / parameters,
                 repetition_ratio=presented_tokens / unique_tokens,
                 iteration_ratio=1.0,
@@ -513,7 +638,16 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         runtime.num_processes * runtime.gradient_accumulation_steps
     )
     batch_examples = _positive_int(config.get("batch_examples"), "batch_examples")
-    if batch_examples % data_parallel_microbatches:
+    batch_schedule = _compile_batch_schedule_contract(
+        config, int(config["architecture"]["context_length"])
+    )
+    if batch_schedule is not None and (
+        runtime.distributed != "none" or runtime.num_processes != 1
+    ):
+        raise ValueError(
+            "variable-batch forecast workers must be independent one-GPU processes"
+        )
+    if batch_schedule is None and batch_examples % data_parallel_microbatches:
         raise ValueError(
             "batch_examples must be divisible by num_processes times "
             "gradient_accumulation_steps"
@@ -570,6 +704,53 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         )
     if optimizer.get("name") == "adam" and float(optimizer.get("weight_decay", 0.0)) != 0.0:
         raise ValueError("forecast Adam uses zero weight decay; use AdamW for decay")
+    frozen_optimizer_contract: Optional[Dict[str, Any]] = None
+    raw_frozen_optimizer = config.get("frozen_optimizer")
+    if raw_frozen_optimizer is not None:
+        if not isinstance(raw_frozen_optimizer, Mapping):
+            raise ValueError("frozen_optimizer must be an object")
+        required_frozen_fields = {
+            "selected_learning_rate",
+            "selected_weight_decay_tau_ema",
+            "source_critical_batch_result_sha256",
+            "source_pilot_selection_sha256",
+            "source_optimum_is_interior",
+            "adaptive_followup",
+        }
+        if set(raw_frozen_optimizer) != required_frozen_fields:
+            raise ValueError(
+                "frozen_optimizer must contain exactly: "
+                + ", ".join(sorted(required_frozen_fields))
+            )
+        frozen_optimizer_contract = json.loads(
+            json.dumps(dict(raw_frozen_optimizer), sort_keys=True)
+        )
+        _positive_float(
+            frozen_optimizer_contract["selected_learning_rate"],
+            "frozen_optimizer.selected_learning_rate",
+        )
+        frozen_tau = frozen_optimizer_contract["selected_weight_decay_tau_ema"]
+        if frozen_tau is not None:
+            _positive_float(
+                frozen_tau, "frozen_optimizer.selected_weight_decay_tau_ema"
+            )
+        for name in (
+            "source_critical_batch_result_sha256",
+            "source_pilot_selection_sha256",
+        ):
+            digest = frozen_optimizer_contract[name]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+            ):
+                raise ValueError(f"frozen_optimizer.{name} must be a SHA-256 digest")
+        if frozen_optimizer_contract["source_optimum_is_interior"] is not True:
+            raise ValueError("frozen optimizer requires an interior source optimum")
+        if frozen_optimizer_contract["adaptive_followup"] is not True:
+            raise ValueError("frozen optimizer must declare the adaptive follow-up")
+        if batch_schedule is None:
+            raise ValueError("frozen critical-batch optimizer requires batch_schedule")
     optimizer_contract = json.loads(json.dumps(dict(optimizer), sort_keys=True))
     fused_optimizer = optimizer_contract.get("fused", False)
     if not isinstance(fused_optimizer, bool):
@@ -593,7 +774,21 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError("comparison profile refuses a wrong-LR control")
     extension_contract: Optional[Dict[str, Any]] = None
     raw_extension_contract = config.get("extension_contract")
-    if run_profile == "extension":
+    if frozen_optimizer_contract is not None:
+        tuning_trials = 0
+        scale_trials = (
+            len(seeds)
+            if run_profile == "comparison"
+            else len(scales) * len(seeds)
+        )
+        negative_control_trials = 0
+        execution_order = [
+            "verify_frozen_horizon_safe_optimizer_and_critical_batch_evidence",
+            "refuse_reference_retuning_after_large_scale_failure",
+            "apply_frozen_eta_tau_and_batch_schedule_to_every_scale",
+            "evaluate_scaling_law_and_hidden_upper_rung",
+        ]
+    elif run_profile == "extension":
         if len(seeds) != 1:
             raise ValueError("extension profile requires exactly one seed")
         if bool(config.get("run_negative_control", True)):
@@ -847,12 +1042,23 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         ),
         "execution_order": execution_order,
     }
+    if batch_schedule is not None:
+        plan_payload["batch_schedule"] = batch_schedule
+        plan_payload["execution_order"] = [
+            "verify_critical_batch_result_and_measured_lower_bounds",
+            "freeze_power_of_two_batch_warmup_in_token_coordinates",
+            "apply_adam_sqrt_batch_factor_to_every_theory_parameter_group",
+            "preserve_tau_ema_weight_decay_per_presented_token",
+            *plan_payload["execution_order"],
+        ]
     if extension_contract is not None:
         plan_payload["extension_contract"] = extension_contract
     if comparison_contract is not None:
         plan_payload["comparison_contract"] = comparison_contract
     if weight_decay_tau_grid:
         plan_payload["weight_decay_tau_ema_grid"] = list(weight_decay_tau_grid)
+    if frozen_optimizer_contract is not None:
+        plan_payload["frozen_optimizer"] = frozen_optimizer_contract
     plan_payload["fingerprint"] = sha256(
         json.dumps(plan_payload, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
@@ -1308,10 +1514,60 @@ def _run_trial(
         )
     )
     peak_rates = [float(group["lr"]) for group in optimizer.param_groups]
+    peak_weight_decays = [
+        float(group.get("weight_decay", 0.0)) for group in optimizer.param_groups
+    ]
     batch_examples = int(config["batch_examples"])
-    local_microbatch_examples = batch_examples // (
-        context.world_size * runtime.gradient_accumulation_steps
-    )
+    context_length = int(config["architecture"]["context_length"])
+    batch_schedule = plan.get("batch_schedule")
+    update_batch_examples: List[int] = []
+    if isinstance(batch_schedule, Mapping):
+        stages = list(batch_schedule["stages"])
+        presented_tokens = int(scale["presented_tokens"])
+        for index, stage in enumerate(stages):
+            start_tokens = int(stage["start_tokens"])
+            if start_tokens >= presented_tokens:
+                break
+            stop_tokens = min(
+                presented_tokens,
+                int(stages[index + 1]["start_tokens"])
+                if index + 1 < len(stages)
+                else presented_tokens,
+            )
+            current_batch = int(stage["batch_examples"])
+            current_batch_tokens = current_batch * context_length
+            if (stop_tokens - start_tokens) % current_batch_tokens:
+                raise RuntimeError("compiled variable-batch segment is not update-aligned")
+            update_batch_examples.extend(
+                [current_batch]
+                * ((stop_tokens - start_tokens) // current_batch_tokens)
+            )
+        if len(update_batch_examples) != int(scale["optimizer_steps"]):
+            raise RuntimeError("compiled variable-batch update count is inconsistent")
+        reference_batch_examples = int(batch_schedule["reference_batch_examples"])
+        microbatch_examples = int(batch_schedule["microbatch_examples"])
+        reference_steps = int(scale["presented_tokens"]) // (
+            reference_batch_examples * context_length
+        )
+        if weight_decay_tau_ema is not None:
+            # _build_model_and_groups used the actual (variable-batch) update
+            # count. Convert lambda0 back to the reference-batch token-time
+            # definition before applying the per-stage sqrt(B/B_ref) factor.
+            correction = int(scale["optimizer_steps"]) / reference_steps
+            peak_weight_decays = [value * correction for value in peak_weight_decays]
+    else:
+        update_batch_examples = [batch_examples] * int(scale["optimizer_steps"])
+        reference_batch_examples = batch_examples
+        microbatch_examples = batch_examples // (
+            context.world_size * runtime.gradient_accumulation_steps
+        )
+    cumulative_tokens = [0]
+    for current_batch in update_batch_examples:
+        cumulative_tokens.append(
+            cumulative_tokens[-1] + current_batch * context_length
+        )
+    if cumulative_tokens[-1] != int(scale["presented_tokens"]):
+        raise RuntimeError("compiled update batches do not reach presented_tokens")
     steps = int(scale["optimizer_steps"])
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     resume_base = cache_directory / f"{run_id}.resume"
@@ -1353,6 +1609,11 @@ def _run_trial(
             resumed["extra"].get("elapsed_seconds", 0.0)
         )
         initial_loss = float(checkpoints[0]["validation_loss"])
+        resumed_tokens = int(
+            resumed["extra"].get("tokens_seen", cumulative_tokens[start_step])
+        )
+        if resumed_tokens != cumulative_tokens[start_step]:
+            raise ValueError("runtime checkpoint token coordinate is inconsistent")
     validation_interval = _positive_int(
         int(config.get("validation_interval_steps", max(1, steps // 8))),
         "validation_interval_steps",
@@ -1361,22 +1622,47 @@ def _run_trial(
     last_checkpoint_at = started
     model.train()
     for step in range(start_step + 1, steps + 1):
-        multiplier = schedule.multiplier(step, steps)
-        for group, peak_rate in zip(optimizer.param_groups, peak_rates):
-            group["lr"] = peak_rate * multiplier
+        current_batch_examples = update_batch_examples[step - 1]
+        current_batch_tokens = current_batch_examples * context_length
+        tokens_before_update = cumulative_tokens[step - 1]
+        batch_lr_multiplier = math.sqrt(
+            current_batch_examples / reference_batch_examples
+        )
+        multiplier = (
+            schedule.multiplier_for_token_update(
+                tokens_before_update=tokens_before_update,
+                batch_tokens=current_batch_tokens,
+                total_tokens=int(scale["presented_tokens"]),
+            )
+            if batch_schedule is not None
+            else schedule.multiplier(step, steps)
+        )
+        for group, peak_rate, peak_weight_decay in zip(
+            optimizer.param_groups, peak_rates, peak_weight_decays
+        ):
+            group["lr"] = peak_rate * batch_lr_multiplier * multiplier
+            group["weight_decay"] = peak_weight_decay * batch_lr_multiplier
+        accumulation_steps = current_batch_examples // (
+            context.world_size * microbatch_examples
+        )
+        if accumulation_steps <= 0 or (
+            current_batch_examples
+            % (context.world_size * microbatch_examples)
+        ):
+            raise RuntimeError("scheduled batch is not divisible by data-parallel microbatches")
         optimizer.zero_grad(set_to_none=True)
-        for accumulation_index in range(runtime.gradient_accumulation_steps):
+        for accumulation_index in range(accumulation_steps):
             inputs, targets = _sample_rank_partitioned_batch(
                 corpus,
                 "train",
-                local_microbatch_examples,
+                microbatch_examples,
                 generator,
                 context,
             )
             synchronization = (
                 model.no_sync()  # type: ignore[attr-defined]
                 if context.world_size > 1
-                and accumulation_index + 1 < runtime.gradient_accumulation_steps
+                and accumulation_index + 1 < accumulation_steps
                 else nullcontext()
             )
             with synchronization, _autocast(runtime, context.device):
@@ -1386,7 +1672,7 @@ def _run_trial(
                         -1, int(config["architecture"]["vocab_size"])
                     ),
                     targets.reshape(-1),
-                ) / runtime.gradient_accumulation_steps
+                ) / accumulation_steps
             if not torch.isfinite(loss):
                 raise RuntimeError("theory-faithful pretraining trial diverged")
             loss.backward()
@@ -1411,11 +1697,7 @@ def _run_trial(
             checkpoints.append(
                 {
                     "step": float(step),
-                    "tokens": float(
-                        step
-                        * batch_examples
-                        * int(config["architecture"]["context_length"])
-                    ),
+                    "tokens": float(cumulative_tokens[step]),
                     "validation_loss": validation_loss,
                 }
             )
@@ -1439,6 +1721,7 @@ def _run_trial(
                 generator=generator,
                 extra={
                     "validation_checkpoints": checkpoints,
+                    "tokens_seen": cumulative_tokens[step],
                     "elapsed_seconds": elapsed_before_resume
                     + time.monotonic()
                     - started,
@@ -1479,13 +1762,15 @@ def _run_trial(
             depth=int(scale["depth"]),
             total_tokens=int(scale["presented_tokens"]),
             batch_tokens=(
-                batch_examples * int(config["architecture"]["context_length"])
+                max(update_batch_examples) * context_length
             ),
             microbatch_tokens=(
-                local_microbatch_examples
-                * int(config["architecture"]["context_length"])
+                microbatch_examples * context_length
             ),
-            accumulation_steps=runtime.gradient_accumulation_steps,
+            accumulation_steps=max(
+                batch // (context.world_size * microbatch_examples)
+                for batch in update_batch_examples
+            ),
             data_parallel_replicas=context.world_size,
             optimizer_steps=steps,
             nonpadding_tokens_seen=int(scale["presented_tokens"]),
@@ -1505,6 +1790,26 @@ def _run_trial(
                 "weight_decay_tau_ema": weight_decay_tau_ema,
                 "peak_parameter_group_contract": group_contract,
                 "optimizer_group_audit": group_audit,
+                "batch_schedule": (
+                    dict(batch_schedule) if isinstance(batch_schedule, Mapping) else None
+                ),
+                "batch_schedule_trace": (
+                    [
+                        {
+                            "start_tokens": int(stage["start_tokens"]),
+                            "batch_examples": int(stage["batch_examples"]),
+                            "batch_tokens": int(stage["batch_examples"]) * context_length,
+                            "learning_rate_multiplier_from_reference": math.sqrt(
+                                int(stage["batch_examples"])
+                                / reference_batch_examples
+                            ),
+                        }
+                        for stage in batch_schedule["stages"]
+                        if int(stage["start_tokens"]) < int(scale["presented_tokens"])
+                    ]
+                    if isinstance(batch_schedule, Mapping)
+                    else []
+                ),
                 "gradient_clipping": "none_source_faithful",
                 "activation_checkpointing": runtime.activation_checkpointing,
                 "sampling_contract": "replicated_global_draw_rank_partition_v1",

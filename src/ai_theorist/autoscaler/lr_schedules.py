@@ -135,6 +135,59 @@ class LearningRateSchedule:
         cosine = 0.5 * (1.0 + math.cos(math.pi * decay_position))
         return self.terminal_fraction + (1.0 - self.terminal_fraction) * cosine
 
+    def multiplier_for_token_update(
+        self,
+        *,
+        tokens_before_update: int,
+        batch_tokens: int,
+        total_tokens: int,
+    ) -> float:
+        """Evaluate the schedule in token time for a variable-batch run.
+
+        A step-indexed schedule silently changes shape when batch size changes.
+        This token-indexed form keeps the warmup, stable, and decay boundaries
+        fixed in presented-token coordinates.  For warmup, the update uses its
+        right endpoint so the first update remains deliberately nonzero.
+        """
+
+        if tokens_before_update < 0:
+            raise ValueError("tokens_before_update must be non-negative")
+        if batch_tokens <= 0 or total_tokens <= 0:
+            raise ValueError("batch_tokens and total_tokens must be positive")
+        if tokens_before_update >= total_tokens:
+            raise ValueError("tokens_before_update must be smaller than total_tokens")
+        if tokens_before_update + batch_tokens > total_tokens:
+            raise ValueError("the token update cannot exceed total_tokens")
+        if self.family == "constant" or total_tokens == batch_tokens:
+            return 1.0
+
+        position = tokens_before_update / max(1, total_tokens - batch_tokens)
+        if self.family == "cosine_to_fraction":
+            cosine = 0.5 * (1.0 + math.cos(math.pi * position))
+            return self.terminal_fraction + (1.0 - self.terminal_fraction) * cosine
+
+        if self.warmup_fraction > 0.0 and position < self.warmup_fraction:
+            return min(
+                1.0,
+                (tokens_before_update + batch_tokens)
+                / (self.warmup_fraction * total_tokens),
+            )
+        if self.family == "linear_warmup_constant":
+            return 1.0
+
+        decay_start = (
+            self.warmup_fraction + self.stable_fraction
+            if self.family == "warmup_stable_decay"
+            else self.warmup_fraction
+        )
+        if position <= decay_start:
+            return 1.0
+        decay_position = (position - decay_start) / max(1e-12, 1.0 - decay_start)
+        if self.family == "linear_warmup_decay":
+            return 1.0 - (1.0 - self.terminal_fraction) * decay_position
+        cosine = 0.5 * (1.0 + math.cos(math.pi * decay_position))
+        return self.terminal_fraction + (1.0 - self.terminal_fraction) * cosine
+
     def audit(self, total_steps: int) -> Dict[str, Any]:
         values = [self.multiplier(step, total_steps) for step in range(1, total_steps + 1)]
         return {

@@ -31,6 +31,14 @@ from .forecast_fleet import (
     run_forecast_fleet_shard,
     select_forecast_fleet_learning_rate,
 )
+from .forecast_critical_batch import (
+    ForecastCriticalBatchTask,
+    aggregate_forecast_critical_batch,
+    build_forecast_critical_batch_tasks,
+    compile_forecast_critical_batch_plan,
+    run_forecast_critical_batch_task,
+    select_forecast_cbs_pilot,
+)
 from .forecast_qualification import compare_forecast_topologies
 from .horizon_campaigns import run_horizon_transfer_campaign
 from .joint_transfer_campaigns import run_joint_transfer_campaign
@@ -263,6 +271,52 @@ def main() -> None:
     forecast_compare.add_argument("ddp_result", type=Path)
     forecast_compare.add_argument("--maximum-loss-delta", type=float, default=1e-3)
     forecast_compare.add_argument("--output", type=Path)
+
+    forecast_cbs_plan = subparsers.add_parser(
+        "forecast-cbs-plan",
+        help="validate a faithful real-text local critical-batch census",
+    )
+    forecast_cbs_plan.add_argument("config", type=Path)
+
+    forecast_cbs_tasks = subparsers.add_parser(
+        "forecast-cbs-tasks",
+        help="list deterministic critical-batch pilot, baseline, or branch tasks",
+    )
+    forecast_cbs_tasks.add_argument("config", type=Path)
+    forecast_cbs_tasks.add_argument(
+        "--phase", choices=("pilot", "baseline", "branch"), required=True
+    )
+
+    forecast_cbs_task = subparsers.add_parser(
+        "forecast-cbs-task",
+        help="run one independently schedulable critical-batch task",
+    )
+    forecast_cbs_task.add_argument("config", type=Path)
+    forecast_cbs_task.add_argument(
+        "--phase", choices=("pilot", "baseline", "branch"), required=True
+    )
+    forecast_cbs_task.add_argument("--seed", type=int, required=True)
+    forecast_cbs_task.add_argument("--eta-multiplier", type=float)
+    forecast_cbs_task.add_argument("--selected-eta-multiplier", type=float)
+    forecast_cbs_task.add_argument("--checkpoint-tokens", type=int)
+    forecast_cbs_task.add_argument("--batch-examples", type=int)
+    forecast_cbs_task.add_argument("--device", default="cuda")
+    forecast_cbs_task.add_argument("--root", type=Path, required=True)
+
+    forecast_cbs_select = subparsers.add_parser(
+        "forecast-cbs-select",
+        help="select the interior horizon-safe LR before branching",
+    )
+    forecast_cbs_select.add_argument("config", type=Path)
+    forecast_cbs_select.add_argument("--root", type=Path, required=True)
+    forecast_cbs_select.add_argument("--output", type=Path)
+
+    forecast_cbs_aggregate = subparsers.add_parser(
+        "forecast-cbs-aggregate",
+        help="estimate local CBS and compile a conservative batch warmup",
+    )
+    forecast_cbs_aggregate.add_argument("config", type=Path)
+    forecast_cbs_aggregate.add_argument("--root", type=Path, required=True)
 
     corpus = subparsers.add_parser(
         "corpus-materialize",
@@ -629,6 +683,60 @@ def main() -> None:
         _write_and_print(comparison, args.output)
         if comparison["status"] != "passed":
             raise SystemExit(1)
+    elif args.command == "forecast-cbs-plan":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-cbs-plan config must be an object")
+        _print(compile_forecast_critical_batch_plan(payload))
+    elif args.command == "forecast-cbs-tasks":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-cbs-tasks config must be an object")
+        cbs_plan = compile_forecast_critical_batch_plan(payload)
+        _print(
+            {
+                "plan_fingerprint": cbs_plan["fingerprint"],
+                "phase": args.phase,
+                "tasks": [
+                    task.to_dict()
+                    for task in build_forecast_critical_batch_tasks(
+                        cbs_plan, phase=args.phase
+                    )
+                ],
+            }
+        )
+    elif args.command == "forecast-cbs-task":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-cbs-task config must be an object")
+        task = ForecastCriticalBatchTask(
+            phase=args.phase,
+            seed=args.seed,
+            eta_multiplier=args.eta_multiplier,
+            checkpoint_tokens=args.checkpoint_tokens,
+            batch_examples=args.batch_examples,
+        )
+        _print(
+            run_forecast_critical_batch_task(
+                payload,
+                task=task,
+                root=args.root,
+                device=args.device,
+                selected_eta_multiplier=args.selected_eta_multiplier,
+            )
+        )
+    elif args.command == "forecast-cbs-select":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-cbs-select config must be an object")
+        _write_and_print(
+            select_forecast_cbs_pilot(payload, args.root), args.output
+        )
+    elif args.command == "forecast-cbs-aggregate":
+        payload = _read_json(args.config)
+        if not isinstance(payload, dict):
+            raise ValueError("forecast-cbs-aggregate config must be an object")
+        _print(aggregate_forecast_critical_batch(payload, args.root))
     elif args.command == "corpus-materialize":
         payload = _read_json(args.config)
         if not isinstance(payload, dict):

@@ -69,6 +69,25 @@ def test_normalized_schedule_shapes_have_exact_endpoints() -> None:
     assert jiang.multiplier(20, 20) == pytest.approx(1.0)
 
 
+def test_token_time_schedule_keeps_boundaries_fixed_as_batch_changes() -> None:
+    schedule = LearningRateSchedule.from_payload("wsd")
+    assert schedule.multiplier_for_token_update(
+        tokens_before_update=400,
+        batch_tokens=10,
+        total_tokens=1000,
+    ) == pytest.approx(1.0)
+    assert schedule.multiplier_for_token_update(
+        tokens_before_update=400,
+        batch_tokens=100,
+        total_tokens=1000,
+    ) == pytest.approx(1.0)
+    assert schedule.multiplier_for_token_update(
+        tokens_before_update=0,
+        batch_tokens=10,
+        total_tokens=1000,
+    ) == pytest.approx(0.5)
+
+
 def test_unindexed_cuda_request_accepts_the_default_indexed_device() -> None:
     assert _device_satisfies_request(torch.device("cuda:0"), torch.device("cuda"))
     assert not _device_satisfies_request(torch.device("cuda:1"), torch.device("cuda:0"))

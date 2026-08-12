@@ -20,6 +20,10 @@ from .forecast_campaigns import (
     compile_real_text_scaling_plan,
     run_real_text_scaling_campaign,
 )
+from .forecast_critical_batch import (
+    compile_forecast_critical_batch_plan,
+    run_forecast_critical_batch_campaign,
+)
 from .joint_transfer_campaigns import (
     compile_joint_transfer_plan,
     run_joint_transfer_campaign,
@@ -41,6 +45,7 @@ CAMPAIGNS = {
     "joint_horizon_batch",
     "standard_pretraining_census",
     "real_text_scaling_ladder",
+    "forecast_critical_batch_census",
 }
 
 
@@ -51,6 +56,8 @@ def compile_campaign_plan(campaign: str, config: Mapping[str, Any]) -> Dict[str,
         return compile_standard_pretraining_plan(config)
     if campaign == "real_text_scaling_ladder":
         return compile_real_text_scaling_plan(config)
+    if campaign == "forecast_critical_batch_census":
+        return compile_forecast_critical_batch_plan(config)
     if campaign == "horizon_transfer":
         required = (
             "architecture",
@@ -223,6 +230,13 @@ def run_campaign_job(
             result = run_real_text_scaling_campaign(
                 configured, device=device, progress=progress
             )
+    elif campaign == "forecast_critical_batch_census":
+        result = run_forecast_critical_batch_campaign(
+            configured,
+            output_directory=output_dir,
+            device=device,
+            progress=progress,
+        )
     else:
         runtime = PretrainingRuntimeSpec.from_dict(configured.get("runtime", {}))
         if runtime.distributed in {"ddp", "fsdp"}:

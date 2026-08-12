@@ -118,6 +118,33 @@ def build_forecast_fleet_tasks(
         append(scales[-1], selected, None, seeds[0], "theory")
         return tasks
 
+    frozen = plan.get("frozen_optimizer")
+    if isinstance(frozen, Mapping):
+        if phase == "tune":
+            return tasks
+        if run_negative_control:
+            raise ValueError("frozen adaptive ladders refuse a wrong-LR control")
+        expected_eta = float(frozen["selected_learning_rate"])
+        expected_tau_raw = frozen.get("selected_weight_decay_tau_ema")
+        expected_tau = (
+            None if expected_tau_raw is None else float(expected_tau_raw)
+        )
+        if selected_learning_rate is None or not math.isclose(
+            float(selected_learning_rate), expected_eta, rel_tol=0.0, abs_tol=0.0
+        ):
+            raise ValueError("ladder LR disagrees with the frozen CBS contract")
+        if selected_weight_decay_tau_ema != expected_tau:
+            raise ValueError("ladder tau_EMA disagrees with the frozen CBS contract")
+        selected_scales = (
+            [scales[-1]]
+            if plan.get("run_profile") == "comparison"
+            else scales
+        )
+        for scale in selected_scales:
+            for seed in seeds:
+                append(scale, expected_eta, expected_tau, seed, "theory")
+        return tasks
+
     if phase == "tune":
         for eta in plan["learning_rates"]:
             for tau_ema in tau_grid or [None]:
@@ -373,6 +400,27 @@ def select_forecast_fleet_learning_rate(
     """Validate every tuning task and select the preregistered mean-loss optimum."""
 
     plan = compile_real_text_scaling_plan(config)
+    frozen = plan.get("frozen_optimizer")
+    if isinstance(frozen, Mapping):
+        return {
+            "schema_version": FLEET_SCHEMA_VERSION,
+            "plan_fingerprint": plan["fingerprint"],
+            "selected_learning_rate": float(frozen["selected_learning_rate"]),
+            "selected_weight_decay_tau_ema": frozen.get(
+                "selected_weight_decay_tau_ema"
+            ),
+            "learning_rate_optimum_is_interior": True,
+            "weight_decay_optimum_is_interior": True,
+            "optimum_is_interior": True,
+            "selection_mode": "frozen_horizon_safe_critical_batch_source",
+            "source_critical_batch_result_sha256": frozen[
+                "source_critical_batch_result_sha256"
+            ],
+            "source_pilot_selection_sha256": frozen[
+                "source_pilot_selection_sha256"
+            ],
+            "grid": [],
+        }
     runtime = PretrainingRuntimeSpec.from_dict(config.get("runtime", {}))
     corpus = _load_corpus(config, plan)
     scales = {str(row["name"]): dict(row) for row in plan["scales"]}
