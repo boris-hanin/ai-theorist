@@ -80,7 +80,7 @@ if [[ ! -f "$continuation_manifest" ]]; then
   else
     "$cli" corpus-materialize "$continuation_corpus_config" \
       --output-root "$continuation_corpus_root" --progress-jsonl \
-      > "$calibration_root/continuation-corpus.jsonl" 2> "$calibration_root/continuation-corpus.log" &
+      > "$calibration_root/continuation-corpus.jsonl" 2> "$calibration_root/continuation-corpus.log" 9>&- &
     continuation_corpus_pid="$!"
     echo "$continuation_corpus_pid" > "$calibration_root/continuation-corpus.pid"
   fi
