@@ -20,6 +20,7 @@ from ai_theorist.autoscaler.pretraining import (
     compile_standard_pretraining_plan,
     preflight_runtime,
     runtime_checkpoint_due,
+    synchronized_runtime_checkpoint_due,
     run_standard_pretraining_batch_census,
     run_standard_pretraining_trial,
 )
@@ -47,6 +48,27 @@ def test_runtime_checkpoint_supports_wall_clock_or_step_cadence() -> None:
         total_steps=100,
         last_checkpoint_at=100,
         now=1000,
+    )
+
+
+def test_distributed_wall_clock_checkpoint_uses_primary_decision(monkeypatch) -> None:
+    runtime = PretrainingRuntimeSpec.from_dict(
+        {"checkpoint_interval_seconds": 60}
+    )
+    context = pretraining.DistributedContext(1, 8, 1, "cpu")
+
+    def broadcast(marker, src):
+        assert src == 0
+        marker.fill_(1)
+
+    monkeypatch.setattr(torch.distributed, "broadcast", broadcast)
+    assert synchronized_runtime_checkpoint_due(
+        runtime,
+        context,
+        step=3,
+        total_steps=100,
+        last_checkpoint_at=100,
+        now=101,
     )
 
 

@@ -255,6 +255,41 @@ def runtime_checkpoint_due(
     )
 
 
+def synchronized_runtime_checkpoint_due(
+    runtime: PretrainingRuntimeSpec,
+    context: "DistributedContext",
+    *,
+    step: int,
+    total_steps: int,
+    last_checkpoint_at: float,
+    now: Optional[float] = None,
+) -> bool:
+    """Make rank zero's wall-clock checkpoint decision authoritative.
+
+    Step-based decisions are naturally identical, but independent wall clocks
+    can cross the checkpoint boundary on different updates. Every rank must
+    enter checkpoint collectives together, so rank zero broadcasts one decision
+    on every update.
+    """
+
+    due = runtime_checkpoint_due(
+        runtime,
+        step=step,
+        total_steps=total_steps,
+        last_checkpoint_at=last_checkpoint_at,
+        now=now,
+    )
+    if context.world_size == 1:
+        return due
+    marker = torch.tensor(
+        1 if due and context.is_primary else 0,
+        dtype=torch.int32,
+        device=context.device,
+    )
+    torch.distributed.broadcast(marker, src=0)
+    return bool(marker.item())
+
+
 class ByteTokenizer:
     """Deterministic UTF-8 tokenizer with four explicit special tokens."""
 
@@ -967,6 +1002,20 @@ def load_runtime_checkpoint(
         or checkpoint.get("rank") != context.rank
     ):
         raise ValueError("runtime checkpoint identity or topology mismatch")
+    if context.world_size > 1:
+        local_step = torch.tensor(
+            int(checkpoint["step"]), dtype=torch.int64, device=context.device
+        )
+        minimum_step = local_step.clone()
+        maximum_step = local_step.clone()
+        torch.distributed.all_reduce(
+            minimum_step, op=torch.distributed.ReduceOp.MIN
+        )
+        torch.distributed.all_reduce(
+            maximum_step, op=torch.distributed.ReduceOp.MAX
+        )
+        if int(minimum_step.item()) != int(maximum_step.item()):
+            raise ValueError("distributed runtime checkpoint steps are inconsistent")
     if runtime.distributed == "fsdp":
         from torch.distributed.fsdp import (
             FullyShardedDataParallel,
@@ -1234,8 +1283,9 @@ def run_standard_pretraining_trial(
             ):
                 crossing_step = step
         checkpoint_now = time.monotonic()
-        if resume_path is not None and runtime_checkpoint_due(
+        if resume_path is not None and synchronized_runtime_checkpoint_due(
             runtime,
+            context,
             step=step,
             total_steps=steps,
             last_checkpoint_at=last_checkpoint_at,

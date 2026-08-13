@@ -48,7 +48,7 @@ from .pretraining import (
     close_distributed,
     load_runtime_checkpoint,
     prepare_distributed,
-    runtime_checkpoint_due,
+    synchronized_runtime_checkpoint_due,
     save_runtime_checkpoint,
     wrap_distributed_model,
 )
@@ -1972,8 +1972,9 @@ def _run_trial(
                 }
             )
         checkpoint_now = time.monotonic()
-        if runtime_checkpoint_due(
+        if synchronized_runtime_checkpoint_due(
             runtime,
+            context,
             step=step,
             total_steps=steps,
             last_checkpoint_at=last_checkpoint_at,
