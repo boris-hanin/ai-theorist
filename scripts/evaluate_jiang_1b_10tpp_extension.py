@@ -77,7 +77,9 @@ def main() -> None:
     payload = {
         "schema_version": 1,
         "status": "completed" if all(gates.values()) else "failed",
-        "scientific_status": "prospective_single_seed_1b_10tpp_prediction_test",
+        "scientific_status": preregistration.get(
+            "scientific_status", "prospective_single_seed_1b_10tpp_prediction_test"
+        ),
         "preregistration_sha256": _sha256(args.preregistration),
         "shard_sha256": _sha256(args.shard),
         "predicted_validation_loss": predicted,

@@ -41,14 +41,47 @@ def main() -> None:
     parser.add_argument("continuation_manifest", type=Path)
     parser.add_argument("continuation_verification", type=Path)
     parser.add_argument("--output-root", type=Path, required=True)
+    parser.add_argument(
+        "--allow-exploratory-uncertified",
+        action="store_true",
+        help=(
+            "Explicitly allow a frozen exploratory forecast that failed only the "
+            "declared forecastability/family-spread gates. The failed gates remain "
+            "recorded and the resulting run is never described as certified."
+        ),
+    )
     args = parser.parse_args()
 
     calibration_config = _load(args.calibration_config)
     calibration_aggregate = _load(args.calibration_aggregate)
     calibration_result = _load(args.calibration_result)
     continuation_verification = _load(args.continuation_verification)
-    if calibration_result.get("status") != "passed":
-        raise ValueError("the 10-TPP calibration did not pass")
+    calibration_gates = dict(calibration_result.get("gates", {}))
+    failed_calibration_gates = sorted(
+        name for name, passed in calibration_gates.items() if passed is not True
+    )
+    allowed_exploratory_failures = {
+        "aggregate_forecastable",
+        "prospective_1b_ensemble_qualified",
+    }
+    exploratory_override_eligible = (
+        calibration_result.get("status") == "failed"
+        and bool(failed_calibration_gates)
+        and set(failed_calibration_gates) <= allowed_exploratory_failures
+        and calibration_gates.get("internal_200m_holdout_passed") is True
+        and calibration_gates.get("retrospective_300m_error_within_10_percent")
+        is True
+        and calibration_gates.get("finite_prospective_prediction_and_interval")
+        is True
+    )
+    calibration_accepted = calibration_result.get("status") == "passed" or (
+        args.allow_exploratory_uncertified and exploratory_override_eligible
+    )
+    if not calibration_accepted:
+        raise ValueError(
+            "the 10-TPP calibration did not pass and is not eligible for the "
+            "explicit exploratory override"
+        )
     if _sha256(args.calibration_aggregate) != calibration_result.get(
         "aggregate_sha256"
     ):
@@ -133,7 +166,14 @@ def main() -> None:
         raise ValueError("calibration result does not contain the sealed 1B forecast")
 
     gates = {
-        "calibration_passed": calibration_result["status"] == "passed",
+        "calibration_accepted_for_run": calibration_accepted,
+        "uncertified_override_is_explicit_and_eligible": (
+            calibration_result["status"] == "passed"
+            or (
+                args.allow_exploratory_uncertified
+                and exploratory_override_eligible
+            )
+        ),
         "parent_plan_matches_calibration_aggregate": calibration_aggregate.get(
             "plan_fingerprint"
         )
@@ -170,9 +210,16 @@ def main() -> None:
         "schema_version": 1,
         "status": "preregistered",
         "scientific_status": (
-            "prospective_single_seed_1b_10tpp_prediction_test; topology remains "
-            "an engineering diagnostic rather than certification"
+            "exploratory_uncertified_single_seed_1b_10tpp_prediction_test; "
+            "the original family-spread refusal remains binding"
+            if calibration_result["status"] != "passed"
+            else "prospective_single_seed_1b_10tpp_prediction_test; topology "
+            "remains an engineering diagnostic rather than certification"
         ),
+        "calibration_status": calibration_result["status"],
+        "calibration_failed_gates": failed_calibration_gates,
+        "exploratory_override_requested": args.allow_exploratory_uncertified,
+        "exploratory_override_eligible": exploratory_override_eligible,
         "config_sha256": _sha256(config_path),
         "plan_fingerprint": plan["fingerprint"],
         "calibration_aggregate_sha256": _sha256(args.calibration_aggregate),
