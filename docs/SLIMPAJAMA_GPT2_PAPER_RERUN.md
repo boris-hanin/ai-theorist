@@ -29,7 +29,7 @@ Both assays bind the same immutable artifacts and update budget:
 - 1,144 optimizer updates, or exactly 299,892,736 presented tokens;
 - AdamW beta1=0.9, beta2=0.95, epsilon0=1e-16, and zero weight decay;
 - 10% linear warmup followed by linear decay to zero;
-- identical fixed validation windows and seeds 11, 29, and 47.
+- identical fixed validation windows and seed 11.
 
 SlimPajama is currently access-controlled by Hugging Face even though its
 release is public. The controller never accepts a token in a JSON config or
@@ -61,14 +61,15 @@ waits for the active 300M horizon run and all GPU processes to exit. It then
 materializes the corpus, binds both plans, runs full parameter-group and CUDA
 canaries, and writes the preregistration before any outcome is observed.
 
-The Jiang reference LR grid and the three fixed CompleteP anchor replicates
-share one dynamic eight-GPU pool. CompleteP is restricted to the published
-base learning rate `2^-8`; it is a calibration anchor, not an adaptive tuning
-study. After an interior Jiang reference optimum is selected, every remaining
-Jiang rung uses the frozen scalar coordinate through the complete per-group
-rules. The largest Jiang rung remains hidden from fitting.
+The 23-point, single-seed Jiang reference LR grid and one fixed CompleteP anchor
+run share one dynamic eight-GPU pool (24 tasks, or three full pool waves).
+CompleteP is restricted to the published base learning rate `2^-8`; it is a
+calibration anchor, not an adaptive tuning study. After an interior Jiang
+reference optimum is selected, every remaining Jiang rung uses the frozen
+scalar coordinate through the complete per-group rules. The largest Jiang rung
+remains hidden from fitting.
 
 Final `result.json` reports the Jiang scaling fit and hidden-rung error, the
-three CompleteP anchor losses and their mean, every gate, and a precise claim
-scope. It must not label Jiang's raw loss a numerical reproduction of
-CompleteP because the architectures intentionally differ.
+CompleteP anchor loss, every gate, and a precise claim scope. It must not label
+Jiang's raw loss a numerical reproduction of CompleteP because the
+architectures intentionally differ.

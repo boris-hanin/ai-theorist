@@ -29,7 +29,7 @@ def main() -> None:
     )
     parser.add_argument("preregistration", type=Path)
     parser.add_argument("jiang_result", type=Path)
-    parser.add_argument("anchor_shards", nargs=3, type=Path)
+    parser.add_argument("anchor_shards", nargs=1, type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -60,8 +60,6 @@ def main() -> None:
     anchor_losses = [row["validation_loss"] for row in anchor_rows]
     expected_anchor_tasks = {
         "tune-S1-theory-eta0.00390625-seed11",
-        "tune-S1-theory-eta0.00390625-seed29",
-        "tune-S1-theory-eta0.00390625-seed47",
     }
     gates = {
         "preregistration_passed": prereg.get("status") == "preregistered"
@@ -82,8 +80,7 @@ def main() -> None:
             row["task_id"] for row in anchor_rows
         }
         == expected_anchor_tasks,
-        "anchor_exact_fixed_seeds": [row["seed"] for row in anchor_rows]
-        == [11, 29, 47],
+        "anchor_exact_fixed_seed": [row["seed"] for row in anchor_rows] == [11],
         "all_losses_finite": all(math.isfinite(value) for value in anchor_losses),
     }
     payload = {
@@ -106,7 +103,9 @@ def main() -> None:
             "learning_rate": 0.00390625,
             "seed_results": anchor_rows,
             "mean_validation_loss": mean(anchor_losses),
-            "sample_standard_deviation": stdev(anchor_losses),
+            "sample_standard_deviation": (
+                stdev(anchor_losses) if len(anchor_losses) > 1 else None
+            ),
             "mean_perplexity": math.exp(mean(anchor_losses)),
             "source_files": anchor_hashes,
         },

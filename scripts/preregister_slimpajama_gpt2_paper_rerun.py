@@ -145,6 +145,9 @@ def main() -> None:
             "learning_rate_multipliers"
         )
         == JIANG_DENSE_REPORTED_LR_MULTIPLIERS,
+        "jiang_one_seed_dense_lr_scan": jiang["seeds"] == [11]
+        and len(jiang["learning_rates"]) == 23
+        and jiang["learning_rates"] == sorted(set(jiang["learning_rates"])),
         "completep_exact_reference_geometry": (
             int(completep_reference["depth"]), int(completep_reference["width"])
         )
@@ -158,7 +161,8 @@ def main() -> None:
         and completep_config["architecture"]["activation"] == "relu_squared"
         and completep_config["architecture"]["initialization_std"] == 0.02,
         "completep_published_lr_is_frozen_anchor": 0.00390625
-        in completep["learning_rates"],
+        in completep["learning_rates"]
+        and completep["seeds"] == [11],
         "jiang_runtime_qualified": jiang_qualification.get("status") == "passed"
         and {row["plan_fingerprint"] for row in jiang_qualification["campaigns"]}
         == {jiang["fingerprint"]},
@@ -229,7 +233,7 @@ def main() -> None:
             "plan_fingerprint": completep["fingerprint"],
             "scale": completep_reference,
             "learning_rate": 0.00390625,
-            "seeds": [11, 29, 47],
+            "seeds": [11],
         },
         "qualification": {
             "jiang_sha256": _sha256(args.jiang_qualification),

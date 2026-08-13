@@ -49,7 +49,7 @@
   "validation_seed": 424242,
   "validation_microbatch_examples": 4,
   "validation_interval_steps": 143,
-  "seeds": [11, 29, 47],
+  "seeds": [11],
   "runtime": {
     "precision": "bf16",
     "attention_backend": "auto",

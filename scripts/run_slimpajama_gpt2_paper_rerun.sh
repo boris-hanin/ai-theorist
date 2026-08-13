@@ -168,8 +168,6 @@ echo "published-lr-anchor" > "$anchor_root/controller-stage"
   --campaign jiang "$jiang_root/bound-config.json" "$jiang_root" \
   --campaign completep-anchor "$anchor_root/bound-config.json" "$anchor_root" \
   --task-id completep-anchor=tune-S1-theory-eta0.00390625-seed11 \
-  --task-id completep-anchor=tune-S1-theory-eta0.00390625-seed29 \
-  --task-id completep-anchor=tune-S1-theory-eta0.00390625-seed47 \
   --cli "$cli" --gpus 0,1,2,3,4,5,6,7 \
   --status "$suite_root/tune-pool-status.json"
 
@@ -207,9 +205,7 @@ echo "$current_stage" > "$suite_root/stage"
 "$python" scripts/evaluate_slimpajama_gpt2_paper_rerun.py \
   "$suite_root/preregistration.json" \
   "$jiang_root/aggregate/result.json" \
-  "$anchor_root/tune/tasks/0006-tune-S1-theory-eta0.00390625-seed11/tune-shard-000.json" \
-  "$anchor_root/tune/tasks/0007-tune-S1-theory-eta0.00390625-seed29/tune-shard-000.json" \
-  "$anchor_root/tune/tasks/0008-tune-S1-theory-eta0.00390625-seed47/tune-shard-000.json" \
+  "$anchor_root/tune/tasks/0002-tune-S1-theory-eta0.00390625-seed11/tune-shard-000.json" \
   --output "$suite_root/result.json" \
   > "$suite_root/result.stdout.json"
 
