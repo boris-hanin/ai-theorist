@@ -5,6 +5,7 @@ worktree=/home/ubuntu/ai-theorist-1b-override
 python=/home/ubuntu/ai-theorist/.venv-forecast/bin/python
 cli="$worktree/scripts/ai_theorist_autoscale_python.sh"
 export AI_THEORIST_PYTHON="$python"
+export PYTHONPATH="$worktree/src"
 calibration=/home/ubuntu/ai-theorist/runs/forecast-production/jiang-mistral-10tpp-calibration-200m-v1
 base_manifest=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-12g-v1/64538066147e9fbe/token-streams/manifest.json
 continuation_root=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-100bt-continuation-v1
