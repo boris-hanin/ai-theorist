@@ -653,6 +653,12 @@ def test_extension_profile_binds_one_seed_and_frozen_parent_contract(
     assert endpoint_plan["target_forecasts"] == []
     assert endpoint_plan["planned_grid_trials"] == 1
 
+    smoke = json.loads(json.dumps(endpoint_only))
+    smoke["run_profile"] = "smoke"
+    smoke.pop("extension_contract")
+    smoke_plan = compile_real_text_scaling_plan(smoke)
+    assert smoke_plan["target_forecasts"] == []
+
     invalid = json.loads(json.dumps(config))
     invalid["seeds"] = [3, 5]
     with pytest.raises(ValueError, match="exactly one seed"):

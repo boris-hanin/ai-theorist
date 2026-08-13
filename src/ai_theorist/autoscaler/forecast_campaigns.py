@@ -1105,9 +1105,10 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 f"{run_profile} profile does not issue extrapolative forecasts"
             )
-    elif run_profile == "extension" and not target_forecasts:
-        # An extension evaluates a forecast frozen by its parent plan; it need
-        # not issue another extrapolation beyond the newly revealed endpoint.
+    elif run_profile in {"extension", "smoke"} and not target_forecasts:
+        # An extension evaluates a forecast frozen by its parent plan, and a
+        # runtime smoke canary evaluates no scientific forecast at all. Neither
+        # needs to issue another extrapolation beyond the compiled endpoint.
         pass
     else:
         if not target_forecasts or tuple(sorted(set(target_forecasts))) != target_forecasts:
