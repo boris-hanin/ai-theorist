@@ -37,6 +37,22 @@ The earlier OLMo contract remains approved for compatibility:
 - PAD: `<|pad|>` at token ID 100,277
 - document separator: `<|endoftext|>` at token ID 100,257
 
+The CompleteP paper-coordinate assay uses the original GPT-2 BPE:
+
+- ID: `gpt2_openai`
+- repository: `openai-community/gpt2`
+- immutable revision: `607a30d783dfa663caf39e06633721c8d4cfcd7e`
+- vocabulary: 50,257 tokens
+- implementation: `tokenizers==0.21.4`
+- BOS, EOS, UNK, and document separator: `<|endoftext|>` at token ID 50,256
+- no PAD token
+
+Its `tokenizer.json`, `tokenizer_config.json`, `vocab.json`, and `merges.txt`
+are individually SHA-256 pinned. Separate canaries distinguish leading-space
+from non-leading-space encoding, in addition to Unicode and special-token
+checks. This contract is the tokenizer named by Dey et al.; it is not an
+approximate GPT-2-compatible tokenizer.
+
 The registry contains the expected SHA-256 digest of every required asset.
 For Mistral these are `tokenizer.json`, `tokenizer_config.json`,
 `special_tokens_map.json`, and `tokenizer.model`; OLMo additionally binds
@@ -163,6 +179,6 @@ source manifest is refused before tokenization.
 Tests cover deterministic resolution, multi-shard generation, deterministic
 window sampling, exact vocabulary enforcement, ambiguous-input refusal, shard
 tampering, tokenizer-asset tampering, public-corpus integration, and verified
-cache reuse. The real Mistral and OLMo-2 assets and canary encodings must also
+cache reuse. The real Mistral, OLMo-2, and GPT-2 assets and canary encodings must also
 be resolved once on every new deployment image before expensive training is
 scheduled.

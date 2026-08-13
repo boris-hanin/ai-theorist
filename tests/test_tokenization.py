@@ -131,6 +131,12 @@ def test_catalog_exposes_immutable_remote_definitions() -> None:
     assert mistral["vocab_size"] == 32_768
     assert mistral["document_separator_token_id"] == 2
     assert len(mistral["definition_fingerprint"]) == 64
+    gpt2 = catalog["gpt2_openai"]
+    assert gpt2["repository"] == "openai-community/gpt2"
+    assert gpt2["revision"] == "607a30d783dfa663caf39e06633721c8d4cfcd7e"
+    assert gpt2["vocab_size"] == 50_257
+    assert gpt2["document_separator_token_id"] == 50_256
+    assert len(gpt2["definition_fingerprint"]) == 64
 
 
 def test_pinned_tokenizer_resolution_and_sharded_stream_are_reproducible(

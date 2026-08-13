@@ -257,9 +257,81 @@ MISTRAL_7B_V03 = PinnedTokenizerDefinition(
 )
 
 
+GPT2_OPENAI = PinnedTokenizerDefinition(
+    id="gpt2_openai",
+    name="OpenAI GPT-2",
+    implementation="huggingface_tokenizers_json_v1",
+    repository="openai-community/gpt2",
+    revision="607a30d783dfa663caf39e06633721c8d4cfcd7e",
+    tokenizer_file="tokenizer.json",
+    package="tokenizers",
+    package_version=PINNED_TOKENIZERS_PACKAGE_VERSION,
+    vocab_size=50_257,
+    special_tokens={
+        "bos": "<|endoftext|>",
+        "eos": "<|endoftext|>",
+        "pad": None,
+        "unknown": "<|endoftext|>",
+    },
+    special_token_ids={
+        "bos": 50_256,
+        "eos": 50_256,
+        "pad": None,
+        "unknown": 50_256,
+    },
+    document_separator_token_id=50_256,
+    assets=(
+        TokenizerAssetDefinition(
+            "tokenizer.json",
+            "8414cab924d8b9b33013f0d221c5862f365ee9be39c5c2bfae8a5a9e970478a6",
+        ),
+        TokenizerAssetDefinition(
+            "tokenizer_config.json",
+            "5e04eb606e3a1583530a42e36c2a6b6615c86f34fe77e44d9ddeb43ff940931f",
+        ),
+        TokenizerAssetDefinition(
+            "vocab.json",
+            "196139668be63f3b5d6574427317ae82f612a97c5d1cdaf36ed2256dbf636783",
+        ),
+        TokenizerAssetDefinition(
+            "merges.txt",
+            "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
+        ),
+    ),
+    canaries=(
+        TokenizerCanaryDefinition(
+            "Autoscaler",
+            4,
+            "ded6c001fab98da24d38564ec256840a64263e6f9e052331ddfd6f404d737e1e",
+        ),
+        TokenizerCanaryDefinition(
+            "νGPT scales across width.\n",
+            8,
+            "ca782b1ba8569df9ba416cd5b6d6019c8017f7446e7c84e08d28f799591c32b6",
+        ),
+        TokenizerCanaryDefinition(
+            "<|endoftext|>",
+            1,
+            "f9c71fc0f80b74e76e0dd67aa1e2236b5e777696ddb7f94543159d388360035e",
+        ),
+        TokenizerCanaryDefinition(
+            "Hello world",
+            2,
+            "087ab89ff421ee54048d41be7e275302e44c8761cd49d4a12b62d88c07e27e0b",
+        ),
+        TokenizerCanaryDefinition(
+            " Hello world",
+            2,
+            "ea536333b986df996376b2378ae6eca23866c2d70d3c419131b3b5c53392c52d",
+        ),
+    ),
+)
+
+
 PINNED_TOKENIZER_REGISTRY: Dict[str, PinnedTokenizerDefinition] = {
     OLMO2_1124.id: OLMO2_1124,
     MISTRAL_7B_V03.id: MISTRAL_7B_V03,
+    GPT2_OPENAI.id: GPT2_OPENAI,
 }
 
 

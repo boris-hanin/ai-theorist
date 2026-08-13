@@ -126,16 +126,19 @@ def completep_parameter_count(
     depth: int,
     width: int,
     mlp_multiplier: int,
+    position_encoding: str = "learned_absolute",
 ) -> int:
-    # Untied token embedding/readout, learned positions, two affine LayerNorms
-    # per block, and biases on all hidden linear maps.
+    if position_encoding not in {"alibi", "learned_absolute"}:
+        raise ValueError("position_encoding must be alibi or learned_absolute")
+    # Untied token embedding/readout, optional learned positions, two affine
+    # LayerNorms per block, and biases on all hidden linear maps.
     per_block = (
         (4 + 2 * mlp_multiplier) * width * width
         + (9 + mlp_multiplier) * width
     )
     return int(
         2 * vocab_size * width
-        + context_length * width
+        + (context_length * width if position_encoding == "learned_absolute" else 0)
         + depth * per_block
         + 2 * width
     )
@@ -165,6 +168,7 @@ def completep_non_embedding_parameter_count(
     depth: int,
     width: int,
     mlp_multiplier: int,
+    position_encoding: str = "learned_absolute",
 ) -> int:
     return completep_parameter_count(
         vocab_size=vocab_size,
@@ -172,7 +176,11 @@ def completep_non_embedding_parameter_count(
         depth=depth,
         width=width,
         mlp_multiplier=mlp_multiplier,
-    ) - (2 * vocab_size + context_length) * width
+        position_encoding=position_encoding,
+    ) - (
+        2 * vocab_size
+        + (context_length if position_encoding == "learned_absolute" else 0)
+    ) * width
 
 
 def nugpt_parameter_count(
@@ -443,6 +451,14 @@ def _generate_ladder(
         reference_depth = _positive_int(
             architecture.get("reference_depth"), "reference_depth"
         )
+        position_encoding = str(
+            architecture.get("position_encoding", "learned_absolute")
+        )
+        if position_encoding not in {"alibi", "learned_absolute"}:
+            raise ValueError(
+                "CompleteP architecture.position_encoding must be alibi or "
+                "learned_absolute"
+            )
         if reference_width % head_dimension:
             raise ValueError("reference_width must be divisible by head_dimension")
         for target, depth in zip(targets, depths):
@@ -458,6 +474,7 @@ def _generate_ladder(
                         depth=depth,
                         width=width,
                         mlp_multiplier=mlp_multiplier,
+                        position_encoding=position_encoding,
                     ),
                     "non_embedding_parameters": completep_non_embedding_parameter_count(
                         vocab_size=vocab_size,
@@ -465,6 +482,7 @@ def _generate_ladder(
                         depth=depth,
                         width=width,
                         mlp_multiplier=mlp_multiplier,
+                        position_encoding=position_encoding,
                     ),
                     "num_heads": width // head_dimension,
                     "rho_lm_over_d": None,
@@ -480,9 +498,7 @@ def _generate_ladder(
             "reference_depth": reference_depth,
             "mlp_multiplier": mlp_multiplier,
             "tied_embeddings": False,
-            "position_encoding": str(
-                architecture.get("position_encoding", "learned_absolute")
-            ),
+            "position_encoding": position_encoding,
             "activation": str(architecture.get("activation", "relu_squared")),
             "attention_scale": "QK^T/N",
             "residual_branch_scale": "(L/L0)^(-1)",
@@ -1446,8 +1462,9 @@ def _build_model_and_groups(
             depth=int(architecture["reference_depth"]),
             width=int(architecture["reference_width"]),
         )
-        if str(architecture.get("position_encoding", "learned_absolute")) != "learned_absolute":
-            raise ValueError("forecast CompleteP currently requires learned_absolute positions")
+        position_encoding = str(
+            architecture.get("position_encoding", "learned_absolute")
+        )
         plain_model = CompletePTransformer(
             shape,
             vocab_size=int(architecture["vocab_size"]),
@@ -1455,6 +1472,7 @@ def _build_model_and_groups(
             reference=reference,
             initialization_std=float(architecture.get("initialization_std", 0.02)),
             activation=str(architecture.get("activation", "relu_squared")),  # type: ignore[arg-type]
+            position_encoding=position_encoding,  # type: ignore[arg-type]
             attention_backend=runtime.attention_backend,
             activation_checkpointing=runtime.activation_checkpointing,
             capture_attention_diagnostics=capture_diagnostics,

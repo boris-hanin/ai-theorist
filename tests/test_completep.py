@@ -9,6 +9,7 @@ from ai_theorist.autoscaler.completep import (
     CompletePShape,
     CompletePTransformer,
 )
+from ai_theorist.autoscaler.forecast_campaigns import completep_parameter_count
 
 
 def make_model(
@@ -153,3 +154,66 @@ def test_completep_attention_uses_paper_width_normalization() -> None:
         expected = attention.output(attended)
 
     torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_completep_paper_alibi_has_no_learned_positions_and_exact_bias() -> None:
+    model = make_model(
+        position_encoding="alibi",
+        attention_backend="math",
+        capture_attention_diagnostics=False,
+    ).eval()
+    assert model.position_embedding is None
+    assert sum(parameter.numel() for parameter in model.parameters()) == (
+        completep_parameter_count(
+            vocab_size=32,
+            context_length=8,
+            depth=2,
+            width=16,
+            mlp_multiplier=4,
+            position_encoding="alibi",
+        )
+    )
+    assert model.diagnostics()["position_encoding"] == "alibi"
+    attention = model.blocks[0].attention
+    hidden = torch.randn(
+        2, 5, attention.width, generator=torch.Generator().manual_seed(43)
+    )
+
+    with torch.no_grad():
+        actual = attention(hidden)
+        q, k, v = attention.qkv(hidden).chunk(3, dim=-1)
+
+        def split_heads(value: torch.Tensor) -> torch.Tensor:
+            return value.view(
+                hidden.shape[0],
+                hidden.shape[1],
+                attention.num_heads,
+                attention.head_dimension,
+            ).transpose(1, 2)
+
+        q, k, v = (split_heads(value) for value in (q, k, v))
+        logits = torch.matmul(q, k.transpose(-2, -1)) / attention.width
+        positions = torch.arange(5, dtype=torch.float32)
+        distance = positions[:, None] - positions[None, :]
+        alibi = -attention.alibi_slopes[:, None, None] * distance[None, :, :]
+        causal = torch.ones(5, 5, dtype=torch.bool).triu(1)
+        logits = logits + alibi.masked_fill(
+            causal[None, None, :, :], float("-inf")
+        )
+        probabilities = logits.softmax(dim=-1)
+        attended = torch.matmul(probabilities, v)
+        attended = attended.transpose(1, 2).contiguous().view(2, 5, attention.width)
+        expected = attention.output(attended)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=1e-6)
+    groups = model.optimizer_parameter_groups(
+        0.01, epsilon0=1e-16, weight_decay0=0.0
+    )
+    assigned = [id(parameter) for group in groups for parameter in group["params"]]
+    assert len(assigned) == len(set(assigned))
+    assert set(assigned) == {id(parameter) for parameter in model.parameters()}
+
+
+def test_completep_alibi_refuses_false_strict_flash_claim() -> None:
+    with pytest.raises(ValueError, match="ALiBi mask"):
+        make_model(position_encoding="alibi", attention_backend="flash")

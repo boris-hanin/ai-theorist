@@ -1,0 +1,10 @@
+{
+  "source": "slimpajama",
+  "tokenizer": "gpt2_openai",
+  "train_bytes": 1610612736,
+  "validation_bytes": 134217728,
+  "maximum_documents_per_split": 2000000,
+  "token_shard_tokens": 16777216,
+  "acquisition_backend": "zstd_shards",
+  "source_batch_rows": 8192
+}

@@ -121,6 +121,16 @@ def main() -> None:
     parser.add_argument("--cli", default=".venv-forecast/bin/ai-theorist-autoscale")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--status", type=Path, required=True)
+    parser.add_argument(
+        "--task-id",
+        action="append",
+        default=[],
+        metavar="CAMPAIGN=TASK_ID",
+        help=(
+            "Restrict one named campaign to explicit tasks; campaigns without "
+            "filters still run their full phase. May be repeated."
+        ),
+    )
     args = parser.parse_args()
 
     gpus = [int(value) for value in args.gpus.split(",")]
@@ -130,7 +140,29 @@ def main() -> None:
         _load_campaign(name, Path(config), Path(root), args.phase)
         for name, config, root in args.campaign
     ]
-    groups = [_tasks(campaign, args.phase) for campaign in campaigns]
+    known_campaigns = {campaign.name for campaign in campaigns}
+    task_filters: dict[str, set[str]] = {}
+    for value in args.task_id:
+        campaign_name, separator, task_id = value.partition("=")
+        if not separator or not campaign_name or not task_id:
+            raise ValueError("--task-id must have the form CAMPAIGN=TASK_ID")
+        if campaign_name not in known_campaigns:
+            raise ValueError(f"--task-id names unknown campaign: {campaign_name}")
+        task_filters.setdefault(campaign_name, set()).add(task_id)
+    groups = []
+    for campaign in campaigns:
+        group = _tasks(campaign, args.phase)
+        requested = task_filters.get(campaign.name)
+        if requested is not None:
+            known_tasks = {item.task.task_id for item in group}
+            unknown = requested - known_tasks
+            if unknown:
+                raise ValueError(
+                    f"unknown task IDs for {campaign.name}: "
+                    + ", ".join(sorted(unknown))
+                )
+            group = [item for item in group if item.task.task_id in requested]
+        groups.append(group)
     if args.phase == "tune":
         queue = _round_robin(groups)
     else:

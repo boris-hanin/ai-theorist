@@ -68,21 +68,49 @@ class CompletePReference:
                 raise ValueError(f"reference {name} must be a positive integer")
 
 
+def _alibi_slopes(num_heads: int) -> Tensor:
+    """Return the per-head slopes from the original ALiBi implementation."""
+
+    if num_heads <= 0:
+        raise ValueError("num_heads must be positive")
+
+    def power_of_two_slopes(count: int) -> List[float]:
+        start = 2.0 ** (-(2.0 ** -(math.log2(count) - 3.0)))
+        return [start ** (index + 1) for index in range(count)]
+
+    if math.log2(num_heads).is_integer():
+        values = power_of_two_slopes(num_heads)
+    else:
+        lower = 2 ** math.floor(math.log2(num_heads))
+        values = power_of_two_slopes(lower)
+        values.extend(power_of_two_slopes(2 * lower)[0::2][: num_heads - lower])
+    return torch.tensor(values, dtype=torch.float32)
+
+
 class CompletePAttention(nn.Module):
     def __init__(
         self,
         shape: CompletePShape,
         *,
         initialization_std: float,
+        position_encoding: Literal["alibi", "learned_absolute"],
         attention_backend: str,
         capture_diagnostics: bool,
     ) -> None:
         super().__init__()
         if attention_backend not in {"auto", "math", "flash"}:
             raise ValueError("attention_backend must be auto, math, or flash")
+        if position_encoding not in {"alibi", "learned_absolute"}:
+            raise ValueError("position_encoding must be alibi or learned_absolute")
+        if position_encoding == "alibi" and attention_backend == "flash":
+            raise ValueError(
+                "strict torch SDPA FlashAttention does not support the additive "
+                "ALiBi mask; use attention_backend=auto or math"
+            )
         self.width = shape.width
         self.num_heads = shape.num_heads
         self.head_dimension = shape.head_dimension
+        self.position_encoding = position_encoding
         self.attention_backend = attention_backend
         self.capture_diagnostics = capture_diagnostics
         self.qkv = nn.Linear(shape.width, 3 * shape.width, bias=True)
@@ -93,6 +121,18 @@ class CompletePAttention(nn.Module):
         nn.init.zeros_(self.output.bias)
         self.register_buffer("last_logit_rms", torch.tensor(float("nan")), persistent=False)
         self.register_buffer("last_entropy", torch.tensor(float("nan")), persistent=False)
+        self.register_buffer(
+            "alibi_slopes", _alibi_slopes(shape.num_heads), persistent=False
+        )
+
+    def _attention_mask(self, time: int, device: torch.device) -> Tensor | None:
+        if self.position_encoding != "alibi":
+            return None
+        positions = torch.arange(time, dtype=torch.float32, device=device)
+        distance = positions[:, None] - positions[None, :]
+        bias = -self.alibi_slopes.to(device=device)[:, None, None] * distance[None, :, :]
+        causal = torch.ones(time, time, dtype=torch.bool, device=device).triu(1)
+        return bias.masked_fill(causal[None, None, :, :], float("-inf"))
 
     def forward(self, hidden: Tensor) -> Tensor:
         batch, time, _ = hidden.shape
@@ -104,6 +144,7 @@ class CompletePAttention(nn.Module):
             ).transpose(1, 2)
 
         q, k, v = (split_heads(value) for value in (q, k, v))
+        attention_mask = self._attention_mask(time, hidden.device)
         kernel_context = nullcontext()
         if self.attention_backend != "auto":
             from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -121,15 +162,21 @@ class CompletePAttention(nn.Module):
                 q,
                 k,
                 v,
+                attn_mask=attention_mask,
                 dropout_p=0.0,
-                is_causal=True,
+                is_causal=attention_mask is None,
                 scale=1.0 / self.width,
             )
         if self.capture_diagnostics:
             with torch.no_grad():
                 logits = torch.matmul(q, k.transpose(-2, -1)) / self.width
-                mask = torch.ones(time, time, dtype=torch.bool, device=hidden.device).triu(1)
-                logits = logits.masked_fill(mask, float("-inf"))
+                if attention_mask is None:
+                    mask = torch.ones(
+                        time, time, dtype=torch.bool, device=hidden.device
+                    ).triu(1)
+                    logits = logits.masked_fill(mask, float("-inf"))
+                else:
+                    logits = logits + attention_mask
                 probabilities = logits.softmax(dim=-1)
                 finite = torch.isfinite(logits)
                 finite_logits = logits.masked_fill(~finite, 0.0).float()
@@ -153,6 +200,7 @@ class CompletePBlock(nn.Module):
         *,
         initialization_std: float,
         activation: Literal["gelu", "relu_squared"],
+        position_encoding: Literal["alibi", "learned_absolute"],
         attention_backend: str,
         capture_attention_diagnostics: bool,
     ) -> None:
@@ -165,6 +213,7 @@ class CompletePBlock(nn.Module):
         self.attention = CompletePAttention(
             shape,
             initialization_std=initialization_std,
+            position_encoding=position_encoding,
             attention_backend=attention_backend,
             capture_diagnostics=capture_attention_diagnostics,
         )
@@ -200,6 +249,7 @@ class CompletePTransformer(nn.Module):
         reference: CompletePReference,
         initialization_std: float = 0.02,
         activation: Literal["gelu", "relu_squared"] = "relu_squared",
+        position_encoding: Literal["alibi", "learned_absolute"] = "learned_absolute",
         attention_backend: str = "math",
         activation_checkpointing: bool = False,
         capture_attention_diagnostics: bool = True,
@@ -209,10 +259,13 @@ class CompletePTransformer(nn.Module):
             raise ValueError("vocab_size >= 8 and context_length >= 2 are required")
         if not math.isfinite(initialization_std) or initialization_std <= 0.0:
             raise ValueError("initialization_std must be finite and positive")
+        if position_encoding not in {"alibi", "learned_absolute"}:
+            raise ValueError("position_encoding must be alibi or learned_absolute")
         self.shape = shape
         self.reference = reference
         self.vocab_size = vocab_size
         self.context_length = context_length
+        self.position_encoding = position_encoding
         self.activation_checkpointing = activation_checkpointing
         self.width_ratio = shape.width / reference.width
         self.depth_ratio = shape.depth / reference.depth
@@ -221,13 +274,18 @@ class CompletePTransformer(nn.Module):
         # Dey et al. prescribe width-independent read-in/readout initialization,
         # width-scaled hidden initialization, and an untied readout in their runs.
         self.token_embedding = nn.Embedding(vocab_size, shape.width)
-        self.position_embedding = nn.Embedding(context_length, shape.width)
+        self.position_embedding = (
+            nn.Embedding(context_length, shape.width)
+            if position_encoding == "learned_absolute"
+            else None
+        )
         self.blocks = nn.ModuleList(
             CompletePBlock(
                 shape,
                 reference,
                 initialization_std=hidden_initialization_std,
                 activation=activation,
+                position_encoding=position_encoding,
                 attention_backend=attention_backend,
                 capture_attention_diagnostics=capture_attention_diagnostics,
             )
@@ -236,7 +294,10 @@ class CompletePTransformer(nn.Module):
         self.final_norm = nn.LayerNorm(shape.width)
         self.unembedding = nn.Linear(shape.width, vocab_size, bias=False)
         nn.init.normal_(self.token_embedding.weight, mean=0.0, std=initialization_std)
-        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=initialization_std)
+        if self.position_embedding is not None:
+            nn.init.normal_(
+                self.position_embedding.weight, mean=0.0, std=initialization_std
+            )
         nn.init.normal_(self.unembedding.weight, mean=0.0, std=initialization_std)
 
     def forward_features(self, tokens: Tensor) -> Tensor:
@@ -244,8 +305,10 @@ class CompletePTransformer(nn.Module):
             raise ValueError("tokens must have shape [batch, time]")
         if tokens.shape[1] > self.context_length:
             raise ValueError("token sequence exceeds configured context length")
-        positions = torch.arange(tokens.shape[1], device=tokens.device)
-        hidden = self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
+        hidden = self.token_embedding(tokens)
+        if self.position_embedding is not None:
+            positions = torch.arange(tokens.shape[1], device=tokens.device)
+            hidden = hidden + self.position_embedding(positions)[None, :, :]
         for block in self.blocks:
             if self.activation_checkpointing and self.training:
                 hidden = activation_checkpoint(block, hidden, use_reentrant=False)
@@ -304,10 +367,13 @@ class CompletePTransformer(nn.Module):
         hidden_rate = eta / self.width_ratio
         hidden_weight_decay = weight_decay0 * self.width_ratio
 
+        embedding_parameters = [self.token_embedding.weight]
+        if self.position_embedding is not None:
+            embedding_parameters.append(self.position_embedding.weight)
         groups = [
             theory_group(
                 name="completep_embeddings",
-                params=(self.token_embedding.weight, self.position_embedding.weight),
+                params=embedding_parameters,
                 lr=eta,
                 lr_formula="eta",
                 eps=endpoint_epsilon,
@@ -408,6 +474,7 @@ class CompletePTransformer(nn.Module):
             "residual_branch_scale": 1.0 / self.depth_ratio,
             "unembedding_forward_scale": 1.0 / self.width_ratio,
             "attention_logit_scale": 1.0 / self.shape.width,
+            "position_encoding": self.position_encoding,
             "mean_attention_entropy": (
                 sum(finite_entropies) / len(finite_entropies)
                 if finite_entropies

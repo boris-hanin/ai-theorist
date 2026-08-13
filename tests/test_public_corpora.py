@@ -27,7 +27,7 @@ from ai_theorist.autoscaler.tokenization import (
 
 def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
     sources = {row["id"] for row in public_corpus_catalog()}
-    assert sources == {"fineweb_edu", "openwebtext"}
+    assert sources == {"fineweb_edu", "openwebtext", "slimpajama"}
     assert PublicCorpusSpec.from_dict({"source": "fineweb_edu"}).source == "fineweb_edu"
     with pytest.raises(ValueError, match="source must be"):
         PublicCorpusSpec.from_dict({"source": "arbitrary/url"})
@@ -45,6 +45,18 @@ def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
     )
     assert large.train_bytes == 2_000_000_000
     assert large.acquisition_backend == "parquet"
+    slimpajama = PublicCorpusSpec.from_dict(
+        {
+            "source": "slimpajama",
+            "tokenizer": "gpt2_openai",
+            "acquisition_backend": "zstd_shards",
+        }
+    )
+    assert slimpajama.source == "slimpajama"
+    with pytest.raises(ValueError, match="direct-shard corpus"):
+        PublicCorpusSpec.from_dict(
+            {"source": "fineweb_edu", "acquisition_backend": "zstd_shards"}
+        )
     segmented = PublicCorpusSpec.from_dict(
         {
             "source": "fineweb_edu",
@@ -212,6 +224,72 @@ def test_parquet_materializer_streams_batches_with_global_row_provenance(
     assert metadata["first_source_row"] == 10
     assert metadata["source_inventory_fingerprint"] == "f" * 64
     assert metadata["source_parquet_files"][0]["sha256"]
+
+
+def test_slimpajama_zstd_materializer_freezes_shards_and_split_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "fixture.jsonl.zst"
+    rows = [
+        {"text": f"SlimPajama document {index} " + "x" * 80, "meta": {}}
+        for index in range(8)
+    ]
+    with pa.output_stream(str(source), compression="zstd") as stream:
+        stream.write(
+            "".join(__import__("json").dumps(row) + "\n" for row in rows).encode()
+        )
+
+    def local_source_file(**kwargs):
+        destination = kwargs["output_path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return {
+            "path": str(destination.resolve()),
+            "repository_path": kwargs["repository_path"],
+            "bytes": destination.stat().st_size,
+            "sha256": sha256(destination.read_bytes()).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        public_corpora, "_download_hugging_face_source_file", local_source_file
+    )
+    catalog = {
+        **public_corpora.PUBLIC_CORPUS_CATALOG["slimpajama"],
+        "direct_shards": {
+            "train": {
+                "chunk": 1,
+                "count": 2,
+                "path_template": "train/chunk1/example_train_{index}.jsonl.zst",
+            }
+        },
+    }
+    output = tmp_path / "train.jsonl"
+    metadata, _ = public_corpora._materialize_split_zstd_shards(
+        catalog=catalog,
+        source_split="train",
+        target_bytes=300,
+        maximum_documents=20,
+        output_path=output,
+        shard_cache=tmp_path / "cache",
+        split_name="training corpus",
+        progress=None,
+        completed_bytes=0,
+        total_bytes=300,
+        source_revision="a" * 40,
+    )
+    materialized = [
+        __import__("json").loads(line) for line in output.read_text().splitlines()
+    ]
+    assert metadata["source_split"] == "train"
+    assert metadata["source_direct_files"][0]["repository_path"].startswith(
+        "train/chunk1/"
+    )
+    assert ("cache/" + "a" * 40 + "/train/") in metadata[
+        "source_direct_files"
+    ][0]["path"]
+    assert len(metadata["source_inventory_fingerprint"]) == 64
+    assert materialized[0]["source_id"] == "train/chunk1/0:0"
+    assert metadata["file_sha256"] == sha256(output.read_bytes()).hexdigest()
 
 
 def test_segmented_training_concatenation_preserves_disjoint_provenance(

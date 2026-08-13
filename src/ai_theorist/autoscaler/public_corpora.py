@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import shutil
 from time import sleep
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -58,6 +58,33 @@ PUBLIC_CORPUS_CATALOG: Dict[str, Dict[str, Any]] = {
         "validation_offset": 4_000_000,
         "row_count": 8_013_769,
     },
+    "slimpajama": {
+        "name": "SlimPajama-627B",
+        "dataset": "cerebras/SlimPajama-627B",
+        "config": "default",
+        "split": "train",
+        "text_field": "text",
+        "id_field": None,
+        "license": "Apache-2.0 dataset release; constituent source licenses apply",
+        "data_card_url": "https://huggingface.co/datasets/cerebras/SlimPajama-627B",
+        "train_offset": 0,
+        "validation_offset": 0,
+        "row_count": 627_000_000,
+        "direct_shards": {
+            "train": {
+                "chunk": 1,
+                "count": 6_000,
+                "path_template": "train/chunk1/example_train_{index}.jsonl.zst",
+            },
+            "validation": {
+                "chunk": 1,
+                "count": 6_000,
+                "path_template": (
+                    "validation/chunk1/example_holdout_{index}.jsonl.zst"
+                ),
+            },
+        },
+    },
 }
 
 
@@ -101,9 +128,19 @@ class PublicCorpusSpec:
                 "tokenizer must be byte_v1 or one of "
                 + ", ".join(sorted(PINNED_TOKENIZER_REGISTRY))
             )
-        if result.acquisition_backend not in {"viewer_rows", "parquet"}:
+        if result.acquisition_backend not in {
+            "viewer_rows",
+            "parquet",
+            "zstd_shards",
+        }:
             raise ValueError(
-                "acquisition_backend must be viewer_rows or parquet"
+                "acquisition_backend must be viewer_rows, parquet, or zstd_shards"
+            )
+        if result.acquisition_backend == "zstd_shards" and not PUBLIC_CORPUS_CATALOG[
+            result.source
+        ].get("direct_shards"):
+            raise ValueError(
+                "zstd_shards acquisition is only available for a direct-shard corpus"
             )
         for name, value, minimum, maximum in (
             ("train_bytes", result.train_bytes, 65_536, 2_199_023_255_552),
@@ -198,6 +235,14 @@ def _source_intervals(metadata: Mapping[str, Any]) -> List[Tuple[int, int]]:
 def _source_ranges_are_disjoint(
     first: Mapping[str, Any], second: Mapping[str, Any]
 ) -> bool:
+    first_split = first.get("source_split")
+    second_split = second.get("source_split")
+    if (
+        isinstance(first_split, str)
+        and isinstance(second_split, str)
+        and first_split != second_split
+    ):
+        return True
     return all(
         left_last < right_first or right_last < left_first
         for left_first, left_last in _source_intervals(first)
@@ -212,6 +257,22 @@ def public_corpus_catalog() -> List[Dict[str, Any]]:
     ]
 
 
+def _hugging_face_headers(accept: str) -> Dict[str, str]:
+    headers = {
+        "Accept": accept,
+        "User-Agent": "ai-theorist-autoscaler/0.1 public-corpus-materializer",
+    }
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token is None:
+        token_path = Path.home() / ".cache" / "huggingface" / "token"
+        if token_path.is_file():
+            candidate = token_path.read_text(encoding="utf-8").strip()
+            token = candidate or None
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _json_request(
     url: str, timeout: float = 60.0, maximum_attempts: int = 10
 ) -> Dict[str, Any]:
@@ -220,10 +281,7 @@ def _json_request(
     for attempt in range(maximum_attempts):
         request = Request(
             url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "ai-theorist-autoscaler/0.1 public-corpus-materializer",
-            },
+            headers=_hugging_face_headers("application/json"),
         )
         try:
             with urlopen(request, timeout=timeout) as response:
@@ -234,6 +292,12 @@ def _json_request(
                 )
             return payload
         except HTTPError as error:
+            if error.code in {401, 403} and "huggingface.co" in url:
+                raise PermissionError(
+                    "Hugging Face denied access to the selected corpus. Accept its "
+                    "dataset terms and provide HF_TOKEN (or log in with "
+                    "huggingface-cli) without placing the token in a config file."
+                ) from error
             if error.code not in retryable_statuses or attempt + 1 >= maximum_attempts:
                 raise
             retry_after = error.headers.get("Retry-After") if error.headers else None
@@ -322,10 +386,7 @@ def _download_parquet_file(
             }
         output_path.unlink()
     start = partial_path.stat().st_size if partial_path.is_file() else 0
-    headers = {
-        "Accept": "application/octet-stream",
-        "User-Agent": "ai-theorist-autoscaler/0.1 parquet-materializer",
-    }
+    headers = _hugging_face_headers("application/octet-stream")
     if start:
         headers["Range"] = f"bytes={start}-"
     request = Request(url, headers=headers)
@@ -787,6 +848,309 @@ def _materialize_split_parquet(
     )
 
 
+def _download_hugging_face_source_file(
+    *,
+    dataset: str,
+    revision: str,
+    repository_path: str,
+    output_path: Path,
+    maximum_attempts: int = 10,
+) -> Dict[str, Any]:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_path = output_path.with_name(f".{output_path.name}.partial")
+    if output_path.is_file():
+        return {
+            "path": str(output_path.resolve()),
+            "repository_path": repository_path,
+            "source_revision": revision,
+            "bytes": output_path.stat().st_size,
+            "sha256": _hash_file(output_path),
+        }
+    url = (
+        f"https://huggingface.co/datasets/{dataset}/resolve/{revision}/"
+        f"{repository_path}"
+    )
+    retryable_statuses = {429, 500, 502, 503, 504}
+    for attempt in range(maximum_attempts):
+        start = partial_path.stat().st_size if partial_path.is_file() else 0
+        headers = _hugging_face_headers("application/octet-stream")
+        if start:
+            headers["Range"] = f"bytes={start}-"
+        try:
+            request = Request(url, headers=headers)
+            with urlopen(request, timeout=300.0) as response:
+                response_status = getattr(response, "status", None)
+                status = int(
+                    response_status
+                    if response_status is not None
+                    else response.getcode()
+                )
+                if start and status != 206:
+                    start = 0
+                mode = "ab" if start else "wb"
+                with partial_path.open(mode) as handle:
+                    while True:
+                        chunk = response.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            break
+        except HTTPError as error:
+            if error.code in {401, 403}:
+                raise PermissionError(
+                    "Hugging Face denied a SlimPajama shard. Accept the dataset "
+                    "terms and provide HF_TOKEN (or log in with huggingface-cli)."
+                ) from error
+            if (
+                error.code not in retryable_statuses
+                or attempt + 1 >= maximum_attempts
+            ):
+                raise
+            retry_after = error.headers.get("Retry-After") if error.headers else None
+            try:
+                requested_delay = (
+                    float(retry_after) if retry_after is not None else 0.0
+                )
+            except ValueError:
+                requested_delay = 0.0
+            sleep(max(requested_delay, min(30.0, float(2**attempt))))
+        except URLError:
+            if attempt + 1 >= maximum_attempts:
+                raise
+            sleep(min(30.0, float(2**attempt)))
+    else:
+        raise RuntimeError("unreachable SlimPajama shard retry state")
+    if not partial_path.is_file() or partial_path.stat().st_size == 0:
+        raise RuntimeError("Hugging Face returned an empty source shard")
+    os.replace(partial_path, output_path)
+    return {
+        "path": str(output_path.resolve()),
+        "repository_path": repository_path,
+        "source_revision": revision,
+        "bytes": output_path.stat().st_size,
+        "sha256": _hash_file(output_path),
+    }
+
+
+def _iter_binary_lines(stream: Any) -> Iterator[bytes]:
+    pending = b""
+    while True:
+        chunk = stream.read(8 * 1024 * 1024)
+        if not chunk:
+            break
+        parts = (pending + chunk).split(b"\n")
+        pending = parts.pop()
+        for line in parts:
+            yield line
+    if pending:
+        yield pending
+
+
+def _materialize_split_zstd_shards(
+    *,
+    catalog: Mapping[str, Any],
+    source_split: str,
+    target_bytes: int,
+    maximum_documents: int,
+    output_path: Path,
+    shard_cache: Path,
+    split_name: str,
+    progress: ProgressCallback,
+    completed_bytes: int,
+    total_bytes: int,
+    source_revision: str,
+) -> Tuple[Dict[str, Any], int]:
+    try:
+        import pyarrow as arrow
+    except ImportError as exc:
+        raise RuntimeError(
+            "SlimPajama zstd-shard acquisition requires pyarrow"
+        ) from exc
+    direct = catalog.get("direct_shards")
+    if not isinstance(direct, Mapping) or not isinstance(
+        direct.get(source_split), Mapping
+    ):
+        raise ValueError("selected corpus has no direct shard contract for this split")
+    split_contract = dict(direct[source_split])
+    shard_count = int(split_contract["count"])
+    path_template = str(split_contract["path_template"])
+    partial_path = output_path.with_name(f".{output_path.name}.partial")
+    checkpoint_path = output_path.with_name(f".{output_path.name}.partial.json")
+    contract = {
+        "schema_version": 1,
+        "dataset": str(catalog["dataset"]),
+        "source_revision": source_revision,
+        "source_split": source_split,
+        "target_bytes": target_bytes,
+        "maximum_documents": maximum_documents,
+        "shard_count": shard_count,
+        "path_template": path_template,
+    }
+    checkpoint: Optional[Dict[str, Any]] = None
+    if checkpoint_path.is_file() and partial_path.is_file():
+        try:
+            candidate = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if all(candidate.get(key) == value for key, value in contract.items()):
+                position = int(candidate["file_position"])
+                if 0 <= position <= partial_path.stat().st_size:
+                    checkpoint = candidate
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            checkpoint = None
+    if checkpoint is None:
+        document_count = 0
+        text_bytes = 0
+        next_shard_index = 0
+        source_files: List[Dict[str, Any]] = []
+        handle = partial_path.open("wb")
+    else:
+        document_count = int(checkpoint["document_count"])
+        text_bytes = int(checkpoint["text_bytes"])
+        next_shard_index = int(checkpoint["next_shard_index"])
+        source_files = list(checkpoint.get("source_files", []))
+        handle = partial_path.open("r+b")
+        handle.truncate(int(checkpoint["file_position"]))
+        handle.seek(0, os.SEEK_END)
+        if progress is not None:
+            progress(
+                {
+                    "phase": "materializing",
+                    "completed": min(
+                        total_bytes, completed_bytes + min(text_bytes, target_bytes)
+                    ),
+                    "total": total_bytes,
+                    "message": (
+                        f"Resuming {split_name}: {document_count:,} documents, "
+                        f"{text_bytes / (1024 * 1024):.1f} MiB"
+                    ),
+                }
+            )
+
+    with handle:
+        for shard_index in range(next_shard_index, shard_count):
+            repository_path = path_template.format(index=shard_index)
+            local_path = (
+                shard_cache
+                / source_revision
+                / source_split
+                / f"{shard_index:06d}.jsonl.zst"
+            )
+            source_file = _download_hugging_face_source_file(
+                dataset=str(catalog["dataset"]),
+                revision=source_revision,
+                repository_path=repository_path,
+                output_path=local_path,
+            )
+            source_file["shard_index"] = shard_index
+            source_files.append(source_file)
+            with arrow.input_stream(str(local_path), compression="detect") as stream:
+                record_index = 0
+                for raw in _iter_binary_lines(stream):
+                    if text_bytes >= target_bytes or document_count >= maximum_documents:
+                        break
+                    if not raw.strip():
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8"))
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        raise ValueError(
+                            f"malformed SlimPajama JSONL in {repository_path}"
+                        ) from exc
+                    text = row.get(str(catalog["text_field"])) if isinstance(row, dict) else None
+                    if not isinstance(text, str) or not text:
+                        record_index += 1
+                        continue
+                    record = {
+                        "text": text,
+                        "source_row": document_count,
+                        "source_id": (
+                            f"{source_split}/chunk{split_contract['chunk']}/"
+                            f"{shard_index}:{record_index}"
+                        ),
+                    }
+                    handle.write(
+                        (
+                            json.dumps(
+                                record, ensure_ascii=False, separators=(",", ":")
+                            )
+                            + "\n"
+                        ).encode("utf-8")
+                    )
+                    text_bytes += len(text.encode("utf-8"))
+                    document_count += 1
+                    record_index += 1
+            next_shard_index = shard_index + 1
+            handle.flush()
+            os.fsync(handle.fileno())
+            atomic_write_json(
+                checkpoint_path,
+                {
+                    **contract,
+                    "next_shard_index": next_shard_index,
+                    "document_count": document_count,
+                    "text_bytes": text_bytes,
+                    "file_position": handle.tell(),
+                    "source_files": source_files,
+                },
+            )
+            if progress is not None:
+                progress(
+                    {
+                        "phase": "materializing",
+                        "completed": min(
+                            total_bytes,
+                            completed_bytes + min(text_bytes, target_bytes),
+                        ),
+                        "total": total_bytes,
+                        "message": (
+                            f"Preparing {split_name}: {document_count:,} documents, "
+                            f"{text_bytes / (1024 * 1024):.1f} MiB, "
+                            f"{next_shard_index:,} source shards"
+                        ),
+                    }
+                )
+            if text_bytes >= target_bytes or document_count >= maximum_documents:
+                break
+        if text_bytes < target_bytes:
+            raise RuntimeError(
+                f"{split_name} reached its shard inventory/document cap before "
+                "the byte target"
+            )
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(partial_path, output_path)
+    checkpoint_path.unlink(missing_ok=True)
+    return (
+        {
+            "path": str(output_path.resolve()),
+            "documents": document_count,
+            "text_bytes": text_bytes,
+            "file_bytes": output_path.stat().st_size,
+            "first_source_row": 0,
+            "last_source_row": document_count - 1,
+            "source_split": source_split,
+            "file_sha256": _hash_file(output_path),
+            "source_direct_files": source_files,
+            "source_inventory_fingerprint": sha256(
+                json.dumps(
+                    [
+                        {
+                            "repository_path": row["repository_path"],
+                            "bytes": row["bytes"],
+                            "sha256": row["sha256"],
+                        }
+                        for row in source_files
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+        text_bytes,
+    )
+
+
 def _concatenate_training_segments(
     segments: List[Dict[str, Any]], output_path: Path
 ) -> Dict[str, Any]:
@@ -891,7 +1255,35 @@ def materialize_public_corpus(
     )
     train_path = directory / "train.jsonl"
     validation_path = directory / "validation.jsonl"
-    if inventory_before is None:
+    if spec.acquisition_backend == "zstd_shards":
+        shard_cache = directory / "source-shards"
+        train, _ = _materialize_split_zstd_shards(
+            catalog=catalog,
+            source_split="train",
+            target_bytes=spec.train_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=train_path,
+            shard_cache=shard_cache,
+            split_name="training corpus",
+            progress=progress,
+            completed_bytes=0,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+        )
+        validation, _ = _materialize_split_zstd_shards(
+            catalog=catalog,
+            source_split="validation",
+            target_bytes=spec.validation_bytes,
+            maximum_documents=spec.maximum_documents_per_split,
+            output_path=validation_path,
+            shard_cache=shard_cache,
+            split_name="held-out corpus",
+            progress=progress,
+            completed_bytes=spec.train_bytes,
+            total_bytes=total_bytes,
+            source_revision=revision_before,
+        )
+    elif inventory_before is None:
         train, _ = _materialize_split(
             catalog=catalog,
             start_offset=int(catalog["train_offset"]),
@@ -989,7 +1381,8 @@ def materialize_public_corpus(
     revision_after = _source_revision(str(catalog["dataset"]))
     if revision_before != revision_after:
         raise RuntimeError(
-            "FineWeb source revision changed during materialization; rerun to freeze one revision"
+            "public corpus source revision changed during materialization; rerun "
+            "to freeze one revision"
         )
     if inventory_before is not None:
         inventory_after = _parquet_inventory(catalog)
@@ -1076,6 +1469,8 @@ def materialize_public_corpus(
             "provider": (
                 "Hugging Face Parquet export"
                 if spec.acquisition_backend == "parquet"
+                else "Hugging Face immutable compressed shards"
+                if spec.acquisition_backend == "zstd_shards"
                 else "Hugging Face Dataset Viewer API"
             ),
             "dataset": catalog["dataset"],
