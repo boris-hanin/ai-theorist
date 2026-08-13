@@ -1105,6 +1105,10 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 f"{run_profile} profile does not issue extrapolative forecasts"
             )
+    elif run_profile == "extension" and not target_forecasts:
+        # An extension evaluates a forecast frozen by its parent plan; it need
+        # not issue another extrapolation beyond the newly revealed endpoint.
+        pass
     else:
         if not target_forecasts or tuple(sorted(set(target_forecasts))) != target_forecasts:
             raise ValueError("ladder.target_forecasts must be unique and increasing")

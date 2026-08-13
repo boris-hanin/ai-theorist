@@ -647,6 +647,12 @@ def test_extension_profile_binds_one_seed_and_frozen_parent_contract(
     with pytest.raises(ValueError, match="skip tuning"):
         build_forecast_fleet_tasks(plan, phase="tune")
 
+    endpoint_only = json.loads(json.dumps(config))
+    endpoint_only["ladder"]["target_forecasts"] = []
+    endpoint_plan = compile_real_text_scaling_plan(endpoint_only)
+    assert endpoint_plan["target_forecasts"] == []
+    assert endpoint_plan["planned_grid_trials"] == 1
+
     invalid = json.loads(json.dumps(config))
     invalid["seeds"] = [3, 5]
     with pytest.raises(ValueError, match="exactly one seed"):
