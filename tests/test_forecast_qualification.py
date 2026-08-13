@@ -13,6 +13,7 @@ def _result(replicas: int, loss: float, wall: float):
         "total_tokens": 32,
         "batch_tokens": 8,
         "accumulation_steps": 1,
+        "microbatch_tokens": 4,
         "data_parallel_replicas": replicas,
         "learning_rate_schedule": "schedule",
         "final_validation_loss": loss,
@@ -57,6 +58,22 @@ def test_topology_comparison_accepts_eight_gpu_ddp() -> None:
     )
     assert result["status"] == "passed"
     assert result["ddp_replicas"] == 8
+
+
+def test_topology_comparison_accepts_replica_adjusted_accumulation() -> None:
+    single = _result(1, 9.0, 12.0)
+    ddp = _result(8, 9.0001, 2.0)
+    for record in single["records"]:
+        record["accumulation_steps"] = 8
+    result = compare_forecast_topologies(single, ddp)
+    assert result["status"] == "passed"
+
+    invalid = deepcopy(ddp)
+    for record in invalid["records"]:
+        record["accumulation_steps"] = 2
+    result = compare_forecast_topologies(single, invalid)
+    assert result["status"] == "failed"
+    assert any("effective batch" in error for error in result["errors"])
 
 
 def test_topology_comparison_refuses_loss_or_group_drift() -> None:

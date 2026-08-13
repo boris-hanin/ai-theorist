@@ -97,7 +97,6 @@ def compare_forecast_topologies(
             "optimizer_steps",
             "total_tokens",
             "batch_tokens",
-            "accumulation_steps",
             "learning_rate_schedule",
         ):
             if single.get(field) != ddp.get(field):
@@ -108,6 +107,24 @@ def compare_forecast_topologies(
             errors.append(
                 f"{key}: DDP result does not report the qualified replica count"
             )
+        single_accumulation = int(single.get("accumulation_steps", 0))
+        ddp_accumulation = int(ddp.get("accumulation_steps", 0))
+        if single_accumulation != ddp_accumulation:
+            same_per_rank_microbatch = (
+                int(single.get("microbatch_tokens", 0)) > 0
+                and single.get("microbatch_tokens") == ddp.get("microbatch_tokens")
+            )
+            equivalent_effective_accumulation = (
+                single_accumulation
+                * int(single.get("data_parallel_replicas", 0))
+                == ddp_accumulation * expected_ddp_replicas
+            )
+            if not (
+                same_per_rank_microbatch and equivalent_effective_accumulation
+            ):
+                errors.append(
+                    f"{key}: accumulation topology changed the effective batch"
+                )
         if single.get("metadata", {}).get("sampling_contract") != (
             "replicated_global_draw_rank_partition_v1"
         ) or ddp.get("metadata", {}).get("sampling_contract") != (

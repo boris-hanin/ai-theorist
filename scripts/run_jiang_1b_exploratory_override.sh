@@ -171,6 +171,13 @@ if [[ ! -f "$extension/topology/comparison.json" ]]; then
     --output "$extension/topology/comparison.json" \
     > "$extension/topology/comparison.stdout.json"
 fi
+"$python" - "$extension/topology/comparison.json" <<'PY'
+import json, sys
+p=json.load(open(sys.argv[1]))
+assert p["status"] == "passed"
+assert p["ddp_replicas"] == 8
+assert p["maximum_observed_loss_delta"] <= p["maximum_absolute_loss_delta"]
+PY
 
 stage=running-exploratory-1b-10tpp-endpoint
 echo "$stage" > "$extension/stage"
