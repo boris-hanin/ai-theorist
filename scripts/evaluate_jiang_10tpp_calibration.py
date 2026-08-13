@@ -139,7 +139,7 @@ def main() -> None:
             "outcome_seen": False,
             "parameters": 1_008_531_456,
             "non_embedding_parameters": PROSPECTIVE_1B_AXIS,
-            "presented_tokens": 10_085_466_112,
+            "presented_tokens": 10_085_203_968,
             "predicted_validation_loss": prediction_1b,
             "raw_prediction_interval_95": raw_interval,
             "calibrated_prediction_interval_95": calibrated_interval,

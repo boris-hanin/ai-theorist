@@ -189,8 +189,8 @@ if [[ ! -f "$continuation_manifest" ]]; then
 fi
 "$python" scripts/verify_token_stream_continuation.py \
   "$manifest" "$continuation_manifest" \
-  --required-prefix-tokens 2000420864 \
-  --minimum-training-tokens 10085466112 \
+  --required-prefix-tokens 2000158720 \
+  --minimum-training-tokens 10085203968 \
   --output "$calibration_root/continuation-verification.json" \
   > "$calibration_root/continuation-verification.stdout.json"
 "$python" scripts/prepare_jiang_1b_10tpp_extension.py \
