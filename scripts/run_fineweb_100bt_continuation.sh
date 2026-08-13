@@ -44,11 +44,14 @@ echo "$extra_pid" > "$root/materialize-extra.pid"
 secondary_pid=$!
 echo "$secondary_pid" > "$root/tokenize-secondary.pid"
 wait "$extra_pid"
-wait "$secondary_pid"
 
 stage=tokenizing-deduplicated-sample100bt
 echo "$stage" > "$root/stage"
-"$python" "$builder" tokenize "${common[@]}" --segment extra > "$root/tokenize-extra.log" 2>&1
+"$python" "$builder" tokenize "${common[@]}" --segment extra > "$root/tokenize-extra.log" 2>&1 &
+extra_token_pid=$!
+echo "$extra_token_pid" > "$root/tokenize-extra.pid"
+wait "$secondary_pid"
+wait "$extra_token_pid"
 
 stage=assembling-and-verifying-exact-prefix
 echo "$stage" > "$root/stage"
