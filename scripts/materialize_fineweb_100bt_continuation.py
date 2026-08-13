@@ -349,10 +349,34 @@ def _tokenize_one(
 ) -> dict[str, Any]:
     output = output_root / f"{name}-tokens"
     output.mkdir(parents=True, exist_ok=True)
+    # The resumable sample-10BT artifact intentionally retains its `.partial`
+    # suffix.  The shared tokenizer treats only paths ending in `.jsonl` as
+    # record streams; passing the artifact directly would therefore read the
+    # entire multi-gigabyte JSONL file as one plain-text document.  Bind the
+    # exact same inode at a canonical JSONL path so format dispatch is explicit
+    # without copying or transforming any corpus bytes.
+    tokenization_source = source_path
+    if source_path.suffix.lower() != ".jsonl":
+        bound_sources = output_root / "bound-sources"
+        bound_sources.mkdir(parents=True, exist_ok=True)
+        canonical = bound_sources / f"{name}.jsonl"
+        if canonical.exists():
+            source_stat = source_path.stat()
+            canonical_stat = canonical.stat()
+            if (
+                source_stat.st_dev != canonical_stat.st_dev
+                or source_stat.st_ino != canonical_stat.st_ino
+            ):
+                raise ValueError(
+                    f"bound JSONL source {canonical} is not the exact source inode"
+                )
+        else:
+            os.link(source_path, canonical)
+        tokenization_source = canonical
     result_path = output / "result.json"
     if result_path.is_file():
         result = _load(result_path)
-        if result.get("source_sha256") == _hash_file(source_path):
+        if result.get("source_sha256") == _hash_file(tokenization_source):
             valid = True
             for shard in result.get("shards", []):
                 path = output / str(shard["path"])
@@ -366,10 +390,10 @@ def _tokenize_one(
     def progress(event: dict[str, Any]) -> None:
         _emit({"segment": name, **event})
 
-    source_sha = _hash_file(source_path)
+    source_sha = _hash_file(tokenization_source)
     result = tokenization._materialize_token_split(
         split=name,
-        source_path=source_path,
+        source_path=tokenization_source,
         output_directory=output,
         text_field="text",
         tokenizer=resolved,

@@ -25,6 +25,11 @@ common=(
   --secondary-checkpoint "$failed/.train-secondary.jsonl.partial.json"
 )
 export PYTHONPATH="$worktree/src"
+# Each record is encoded independently, so the tokenizer's internal Rayon pool
+# only adds memory pressure here.  Keep corpus construction bounded and leave
+# CPU parallelism to the concurrently running materialization/tokenization jobs.
+export TOKENIZERS_PARALLELISM=false
+export RAYON_NUM_THREADS=8
 
 stage=initializing-and-verifying-old-prefix
 echo "$stage" > "$root/stage"
