@@ -52,10 +52,41 @@ def _load(path: Path) -> Mapping[str, Any]:
     return value
 
 
-def _qualify_config(path: Path, device: str) -> dict[str, Any]:
+def _qualify_config(
+    path: Path,
+    device: str,
+    single_process_ddp_equivalent: bool = False,
+) -> dict[str, Any]:
     config = _load(path)
     plan = compile_real_text_scaling_plan(config)
-    runtime = PretrainingRuntimeSpec.from_dict(config.get("runtime", {}))
+    runtime_payload = dict(config.get("runtime", {}))
+    qualification_override = None
+    if single_process_ddp_equivalent:
+        distributed = str(runtime_payload.get("distributed", "none"))
+        processes = int(runtime_payload.get("num_processes", 1))
+        accumulation = int(runtime_payload.get("gradient_accumulation_steps", 1))
+        if distributed != "ddp" or processes < 2:
+            raise ValueError(
+                "--single-process-ddp-equivalent requires a multi-process DDP config"
+            )
+        runtime_payload.update(
+            {
+                "distributed": "none",
+                "num_processes": 1,
+                "gradient_accumulation_steps": processes * accumulation,
+            }
+        )
+        qualification_override = {
+            "production_distributed": distributed,
+            "production_num_processes": processes,
+            "production_gradient_accumulation_steps": accumulation,
+            "qualification_distributed": "none",
+            "qualification_num_processes": 1,
+            "qualification_gradient_accumulation_steps": processes
+            * accumulation,
+            "microbatch_examples_preserved": True,
+        }
+    runtime = PretrainingRuntimeSpec.from_dict(runtime_payload)
     context = prepare_distributed(runtime, device)
     rows = []
     endpoint = plan["scales"][-1]
@@ -140,6 +171,7 @@ def _qualify_config(path: Path, device: str) -> dict[str, Any]:
         "plan_fingerprint": plan["fingerprint"],
         "architecture": plan["architecture_contract"]["parameterization"],
         "scales": rows,
+        "single_process_ddp_equivalent": qualification_override,
     }
 
 
@@ -152,6 +184,14 @@ def main() -> None:
     )
     parser.add_argument("configs", nargs="+", type=Path)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--single-process-ddp-equivalent",
+        action="store_true",
+        help=(
+            "Audit a DDP plan on one rank while multiplying gradient accumulation "
+            "by the production world size, preserving the per-rank microbatch."
+        ),
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -166,7 +206,12 @@ def main() -> None:
         "gpu_name": torch.cuda.get_device_name(0),
         "adam_epsilon_placement": "torch AdamW: sqrt(v_hat) + epsilon",
         "campaigns": [
-            _qualify_config(path, args.device) for path in args.configs
+            _qualify_config(
+                path,
+                args.device,
+                single_process_ddp_equivalent=args.single_process_ddp_equivalent,
+            )
+            for path in args.configs
         ],
     }
     atomic_write_json(args.output, payload)

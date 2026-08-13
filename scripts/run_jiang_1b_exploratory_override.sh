@@ -131,6 +131,7 @@ stage=qualifying-1b-memory-and-optimizer-groups
 echo "$stage" > "$extension/stage"
 CUDA_VISIBLE_DEVICES=0 "$python" scripts/qualify_fixed_budget_runtime.py \
   "$extension/config.json" --output "$extension/runtime-qualification.json" \
+  --single-process-ddp-equivalent \
   > "$extension/runtime-qualification.stdout.json"
 
 stage=qualifying-single-vs-eight-gpu-topology
@@ -142,7 +143,7 @@ if [[ ! -f "$extension/topology/comparison.json" ]]; then
     "$extension/topology/single-config.json" --steps 3 --seed 11 \
     --learning-rate "$selected_eta" --fused true --checkpoint-steps 0 \
     --checkpoint-seconds 900 --distributed none --num-processes 1 \
-    --gradient-accumulation-steps 32 > "$extension/topology/single-preparation.json"
+    --gradient-accumulation-steps 256 > "$extension/topology/single-preparation.json"
   "$python" scripts/prepare_forecast_runtime_canary.py \
     "$extension/config.json" "$continuation_manifest" \
     "$extension/topology/ddp-config.json" --steps 3 --seed 11 \
