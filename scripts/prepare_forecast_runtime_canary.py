@@ -25,6 +25,7 @@ def main() -> None:
     parser.add_argument("--distributed", choices=("none", "ddp"), default="none")
     parser.add_argument("--num-processes", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--batch-examples", type=int)
     args = parser.parse_args()
     if args.steps < 1:
         raise ValueError("steps must be positive")
@@ -32,6 +33,8 @@ def main() -> None:
         raise ValueError("checkpoint cadences must be non-negative")
     if args.gradient_accumulation_steps < 1:
         raise ValueError("gradient accumulation steps must be positive")
+    if args.batch_examples is not None and args.batch_examples < 1:
+        raise ValueError("batch examples must be positive")
     if (args.distributed == "none") != (args.num_processes == 1):
         raise ValueError("none requires one process and ddp requires multiple processes")
 
@@ -45,6 +48,8 @@ def main() -> None:
     config["seeds"] = [args.seed]
     config["bootstrap_samples"] = 0
     config["run_negative_control"] = False
+    if args.batch_examples is not None:
+        config["batch_examples"] = args.batch_examples
     # Runtime canaries deliberately exercise a large model against a tiny
     # pinned stream. They are never scaling-law evidence, so repetition is
     # allowed and recorded rather than pretending this is a forecast run.
@@ -100,6 +105,7 @@ def main() -> None:
                 "fused": config["optimizer"]["fused"],
                 "distributed": args.distributed,
                 "num_processes": args.num_processes,
+                "batch_examples": int(config["batch_examples"]),
             },
             sort_keys=True,
         )

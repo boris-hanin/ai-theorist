@@ -143,13 +143,15 @@ if [[ ! -f "$extension/topology/comparison.json" ]]; then
     "$extension/topology/single-config.json" --steps 3 --seed 11 \
     --learning-rate "$selected_eta" --fused true --checkpoint-steps 0 \
     --checkpoint-seconds 900 --distributed none --num-processes 1 \
-    --gradient-accumulation-steps 256 > "$extension/topology/single-preparation.json"
+    --batch-examples 16 --gradient-accumulation-steps 8 \
+    > "$extension/topology/single-preparation.json"
   "$python" scripts/prepare_forecast_runtime_canary.py \
     "$extension/config.json" "$continuation_manifest" \
     "$extension/topology/ddp-config.json" --steps 3 --seed 11 \
     --learning-rate "$selected_eta" --fused true --checkpoint-steps 0 \
     --checkpoint-seconds 900 --distributed ddp --num-processes 8 \
-    --gradient-accumulation-steps 32 > "$extension/topology/ddp-preparation.json"
+    --batch-examples 16 --gradient-accumulation-steps 1 \
+    > "$extension/topology/ddp-preparation.json"
   "$cli" forecast-plan "$extension/topology/single-config.json" > "$extension/topology/single-plan.json"
   "$cli" forecast-plan "$extension/topology/ddp-config.json" > "$extension/topology/ddp-plan.json"
   CUDA_VISIBLE_DEVICES=0 "$cli" forecast-shard "$extension/topology/single-config.json" \
