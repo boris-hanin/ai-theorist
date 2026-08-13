@@ -67,20 +67,17 @@ while [[ -n "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits
   sleep 30
 done
 
-current_stage="waiting-for-huggingface-slimpajama-access"
+current_stage="verifying-preserved-slimpajama6b-access"
 echo "$current_stage" > "$suite_root/stage"
-while [[ -z "${HF_TOKEN:-}" && -z "${HUGGING_FACE_HUB_TOKEN:-}" && ! -s "$HOME/.cache/huggingface/token" ]]; do
-  sleep 60
-done
 until "$python" -c \
-  'from ai_theorist.autoscaler.public_corpora import _source_revision; print(_source_revision("cerebras/SlimPajama-627B"))' \
+  'from ai_theorist.autoscaler.public_corpora import _source_revision; print(_source_revision("DKYoon/SlimPajama-6B", "b5f90f419b7489cdba26fdbc8c022fcb5562f968")); print(_source_revision("DKYoon/SlimPajama-6B", "c4f51dc260275e8e01aa0fbf46c64832dbee5369"))' \
   > "$suite_root/source-revision-probe.txt" \
   2> "$suite_root/source-access-probe.log"; do
   echo "$current_stage" > "$suite_root/stage"
   sleep 60
 done
 
-current_stage="materializing-immutable-slimpajama-gpt2"
+current_stage="materializing-immutable-slimpajama6b-gpt2"
 echo "$current_stage" > "$suite_root/stage"
 "$cli" corpus-materialize "$corpus_config" \
   --output-root "$corpus_root" --progress-jsonl \

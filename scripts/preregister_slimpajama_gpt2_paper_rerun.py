@@ -23,6 +23,8 @@ PAPER_SOURCE_TAR_SHA256 = (
     "dbf47c765f119357c998df1ff569be8950e98cf607f847936f0bb37cb5206fab"
 )
 GPT2_REVISION = "607a30d783dfa663caf39e06633721c8d4cfcd7e"
+SLIMPAJAMA6B_SOURCE_REVISION = "b5f90f419b7489cdba26fdbc8c022fcb5562f968"
+SLIMPAJAMA6B_PARQUET_REVISION = "c4f51dc260275e8e01aa0fbf46c64832dbee5369"
 GPT2_ASSET_SHA256 = {
     "merges.txt": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5",
     "tokenizer.json": "8414cab924d8b9b33013f0d221c5862f365ee9be39c5c2bfae8a5a9e970478a6",
@@ -82,16 +84,30 @@ def main() -> None:
 
     gates = {
         "corpus_complete": corpus.get("status") == "complete",
-        "source_is_slimpajama": corpus.get("source", {}).get("dataset")
-        == "cerebras/SlimPajama-627B",
-        "source_is_immutable_full_revision": len(
-            str(corpus.get("source", {}).get("revision", ""))
+        "source_is_preserved_slimpajama6b_sample": corpus.get("source", {}).get(
+            "dataset"
         )
-        == 40,
-        "source_backend_is_direct_zstd_shards": corpus.get("source", {}).get(
+        == "DKYoon/SlimPajama-6B",
+        "source_revision_is_exact": corpus.get("source", {}).get("revision")
+        == SLIMPAJAMA6B_SOURCE_REVISION,
+        "parquet_revision_is_exact": corpus.get("source", {}).get(
+            "parquet_revision"
+        )
+        == SLIMPAJAMA6B_PARQUET_REVISION,
+        "source_backend_is_immutable_parquet": corpus.get("source", {}).get(
             "acquisition_backend"
         )
-        == "zstd_shards",
+        == "parquet",
+        "separate_parquet_inventories_are_recorded": set(
+            corpus.get("source", {}).get("parquet_inventory_fingerprints", {})
+        )
+        == {"train", "validation"}
+        and all(
+            isinstance(value, str) and len(value) == 64
+            for value in corpus.get("source", {})
+            .get("parquet_inventory_fingerprints", {})
+            .values()
+        ),
         "dedicated_train_and_validation_splits": corpus["splits"]["train"].get(
             "source_split"
         )
@@ -183,6 +199,7 @@ def main() -> None:
             "arxiv_source_tar_sha256": PAPER_SOURCE_TAR_SHA256,
             "reported_training_coordinates": {
                 "dataset": "SlimPajama",
+                "accessible_snapshot": "DKYoon/SlimPajama-6B",
                 "tokenizer": "GPT-2",
                 "context_length": 2_048,
                 "batch_examples": 128,
@@ -195,17 +212,20 @@ def main() -> None:
         "claim_scope": {
             "jiang": (
                 "Jiang-Chizat rho=32 fixed-token scaling scan in the CompleteP "
-                "paper's data, tokenizer, context, batch, schedule, and AdamW core "
-                "coordinates; architecture-specific Jiang rules remain unchanged"
+                "paper's SlimPajama corpus family, tokenizer, context, batch, "
+                "schedule, and AdamW core coordinates; architecture-specific "
+                "Jiang rules remain unchanged"
             ),
             "completep_anchor": (
                 "literal CompleteP N=256,L=2 paper-coordinate calibration at the "
-                "published eta=2^-8 across three fixed seeds"
+                "published eta=2^-8 at fixed seed 11"
             ),
             "not_claimed": (
-                "Jiang raw loss is not expected to reproduce CompleteP raw loss "
-                "because Jiang retains tied embeddings, learned positions, GELU, "
-                "QK/d_head, and its mean-field FFN architecture"
+                "This is not a byte-identical reconstruction of Cerebras' removed "
+                "627B repository or its unpublished example order. Jiang raw loss "
+                "also is not expected to reproduce CompleteP raw loss because Jiang "
+                "retains tied embeddings, learned positions, GELU, QK/d_head, and "
+                "its mean-field FFN architecture"
             ),
         },
         "corpus": {
@@ -214,6 +234,10 @@ def main() -> None:
             "manifest_fingerprint": corpus["manifest_fingerprint"],
             "dataset_fingerprint": stream["fingerprint"],
             "source_revision": corpus["source"]["revision"],
+            "parquet_revision": corpus["source"]["parquet_revision"],
+            "parquet_inventory_fingerprints": corpus["source"][
+                "parquet_inventory_fingerprints"
+            ],
             "tokenizer_fingerprint": tokenizer["fingerprint"],
             "training_tokens": stream["splits"]["train"]["tokens"],
             "validation_tokens": stream["splits"]["validation"]["tokens"],

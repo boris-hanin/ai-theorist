@@ -10,7 +10,7 @@ import shutil
 from time import sleep
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from .pretraining import TokenizedTextCorpus, TokenizedTextSpec
@@ -85,6 +85,20 @@ PUBLIC_CORPUS_CATALOG: Dict[str, Dict[str, Any]] = {
             },
         },
     },
+    "slimpajama_6b": {
+        "name": "SlimPajama-6B preserved sample",
+        "dataset": "DKYoon/SlimPajama-6B",
+        "config": "default",
+        "split": "train",
+        "parquet_splits": {"train": "train", "validation": "validation"},
+        "text_field": "text",
+        "id_field": "__index_level_0__",
+        "license": "Constituent SlimPajama source licenses apply",
+        "data_card_url": "https://huggingface.co/datasets/DKYoon/SlimPajama-6B",
+        "train_offset": 0,
+        "validation_offset": 0,
+        "row_count": 5_489_000,
+    },
 }
 
 
@@ -100,6 +114,8 @@ class PublicCorpusSpec:
     source_batch_rows: int = 8_192
     train_primary_bytes: Optional[int] = None
     train_secondary_offset: Optional[int] = None
+    source_revision: Optional[str] = None
+    parquet_revision: Optional[str] = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PublicCorpusSpec":
@@ -114,6 +130,8 @@ class PublicCorpusSpec:
             "source_batch_rows",
             "train_primary_bytes",
             "train_secondary_offset",
+            "source_revision",
+            "parquet_revision",
         }
         extras = sorted(set(payload) - allowed)
         if extras:
@@ -142,6 +160,17 @@ class PublicCorpusSpec:
             raise ValueError(
                 "zstd_shards acquisition is only available for a direct-shard corpus"
             )
+        for name, revision in (
+            ("source_revision", result.source_revision),
+            ("parquet_revision", result.parquet_revision),
+        ):
+            if revision is not None and (
+                len(revision) != 40
+                or any(character not in "0123456789abcdef" for character in revision)
+            ):
+                raise ValueError(f"{name} must be a full lowercase SHA-1")
+        if result.parquet_revision is not None and result.acquisition_backend != "parquet":
+            raise ValueError("parquet_revision requires acquisition_backend=parquet")
         for name, value, minimum, maximum in (
             ("train_bytes", result.train_bytes, 65_536, 2_199_023_255_552),
             ("validation_bytes", result.validation_bytes, 16_384, 274_877_906_944),
@@ -313,8 +342,11 @@ def _json_request(
     raise RuntimeError("unreachable public dataset retry state")
 
 
-def _source_revision(dataset: str) -> str:
-    payload = _json_request(f"https://huggingface.co/api/datasets/{dataset}/revision/main")
+def _source_revision(dataset: str, requested_revision: str = "main") -> str:
+    encoded_revision = quote(requested_revision, safe="")
+    payload = _json_request(
+        f"https://huggingface.co/api/datasets/{dataset}/revision/{encoded_revision}"
+    )
     revision = payload.get("sha")
     if not isinstance(revision, str) or len(revision) < 12:
         raise RuntimeError("Hugging Face did not return a source revision")
@@ -332,7 +364,12 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _parquet_inventory(catalog: Mapping[str, Any]) -> Dict[str, Any]:
+def _parquet_inventory(
+    catalog: Mapping[str, Any],
+    *,
+    source_split: Optional[str] = None,
+    parquet_revision: Optional[str] = None,
+) -> Dict[str, Any]:
     query = urlencode({"dataset": catalog["dataset"]})
     payload = _json_request(
         "https://datasets-server.huggingface.co/parquet?" + query,
@@ -341,12 +378,16 @@ def _parquet_inventory(catalog: Mapping[str, Any]) -> Dict[str, Any]:
     rows = payload.get("parquet_files")
     if not isinstance(rows, list):
         raise RuntimeError("dataset server did not return a parquet inventory")
+    selected_split = source_split or str(catalog["split"])
+    resolved_parquet_revision = parquet_revision or _source_revision(
+        str(catalog["dataset"]), "refs/convert/parquet"
+    )
     files = []
     for row in rows:
         if (
             not isinstance(row, dict)
             or row.get("config") != catalog["config"]
-            or row.get("split") != catalog["split"]
+            or row.get("split") != selected_split
         ):
             continue
         url = row.get("url")
@@ -354,6 +395,20 @@ def _parquet_inventory(catalog: Mapping[str, Any]) -> Dict[str, Any]:
         size = row.get("size")
         if not isinstance(url, str) or not url.startswith("https://"):
             raise RuntimeError("parquet inventory contains an invalid URL")
+        resolve_marker = "/resolve/"
+        if resolve_marker not in url:
+            raise RuntimeError("parquet inventory URL has no repository revision")
+        repository_prefix, revision_and_path = url.split(resolve_marker, 1)
+        _mutable_revision, separator, repository_path = revision_and_path.partition("/")
+        if not separator or not repository_path:
+            raise RuntimeError("parquet inventory URL has no repository path")
+        url = (
+            repository_prefix
+            + resolve_marker
+            + resolved_parquet_revision
+            + "/"
+            + repository_path
+        )
         if not isinstance(filename, str) or not filename:
             filename = Path(url.split("?", 1)[0]).name
         if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
@@ -361,10 +416,19 @@ def _parquet_inventory(catalog: Mapping[str, Any]) -> Dict[str, Any]:
         files.append({"url": url, "filename": filename, "bytes": size})
     if not files:
         raise RuntimeError("no parquet files matched the selected dataset config/split")
+    inventory_contract = {
+        "dataset": str(catalog["dataset"]),
+        "config": str(catalog["config"]),
+        "split": selected_split,
+        "parquet_revision": resolved_parquet_revision,
+        "files": files,
+    }
     fingerprint = sha256(
-        json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            inventory_contract, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
     ).hexdigest()
-    return {"files": files, "fingerprint": fingerprint}
+    return {**inventory_contract, "fingerprint": fingerprint}
 
 
 def _download_parquet_file(
@@ -674,6 +738,8 @@ def _materialize_split_parquet(
     contract = {
         "schema_version": 1,
         "source_revision": source_revision,
+        "source_split": inventory.get("split", catalog["split"]),
+        "parquet_revision": inventory.get("parquet_revision"),
         "inventory_fingerprint": inventory["fingerprint"],
         "start_offset": start_offset,
         "target_bytes": target_bytes,
@@ -840,6 +906,8 @@ def _materialize_split_parquet(
             "file_bytes": output_path.stat().st_size,
             "first_source_row": first_row,
             "last_source_row": last_row,
+            "source_split": inventory.get("split", catalog["split"]),
+            "parquet_revision": inventory.get("parquet_revision"),
             "file_sha256": _hash_file(output_path),
             "source_parquet_files": source_files,
             "source_inventory_fingerprint": inventory["fingerprint"],
@@ -1194,6 +1262,8 @@ def _concatenate_training_segments(
                 "file_sha256",
                 "first_source_row",
                 "last_source_row",
+                "source_split",
+                "parquet_revision",
                 "source_inventory_fingerprint",
                 "source_parquet_files",
             }
@@ -1207,6 +1277,8 @@ def _concatenate_training_segments(
         "file_bytes": output_path.stat().st_size,
         "first_source_row": min(int(row["first_source_row"]) for row in segments),
         "last_source_row": max(int(row["last_source_row"]) for row in segments),
+        "source_split": segments[0].get("source_split"),
+        "parquet_revision": segments[0].get("parquet_revision"),
         "file_sha256": _hash_file(output_path),
         "source_segments": segment_metadata,
         "source_parquet_files": source_files,
@@ -1247,12 +1319,48 @@ def materialize_public_corpus(
                 "message": f"Resolving {catalog['name']} source revision",
             }
         )
-    revision_before = _source_revision(str(catalog["dataset"]))
-    inventory_before = (
-        _parquet_inventory(catalog)
-        if spec.acquisition_backend == "parquet"
-        else None
+    requested_source_revision = spec.source_revision or "main"
+    revision_before = _source_revision(
+        str(catalog["dataset"]), requested_source_revision
     )
+    if spec.source_revision is not None and revision_before != spec.source_revision:
+        raise RuntimeError("resolved source revision disagrees with the pinned commit")
+    train_inventory_before: Optional[Dict[str, Any]] = None
+    validation_inventory_before: Optional[Dict[str, Any]] = None
+    parquet_revision_before: Optional[str] = None
+    if spec.acquisition_backend == "parquet":
+        requested_parquet_revision = spec.parquet_revision or "refs/convert/parquet"
+        parquet_revision_before = _source_revision(
+            str(catalog["dataset"]), requested_parquet_revision
+        )
+        if (
+            spec.parquet_revision is not None
+            and parquet_revision_before != spec.parquet_revision
+        ):
+            raise RuntimeError(
+                "resolved parquet revision disagrees with the pinned commit"
+            )
+        parquet_splits = catalog.get("parquet_splits", {})
+        if not isinstance(parquet_splits, Mapping):
+            raise ValueError("catalog parquet_splits must be an object")
+        train_source_split = str(parquet_splits.get("train", catalog["split"]))
+        validation_source_split = str(
+            parquet_splits.get("validation", catalog["split"])
+        )
+        train_inventory_before = _parquet_inventory(
+            catalog,
+            source_split=train_source_split,
+            parquet_revision=parquet_revision_before,
+        )
+        validation_inventory_before = (
+            train_inventory_before
+            if validation_source_split == train_source_split
+            else _parquet_inventory(
+                catalog,
+                source_split=validation_source_split,
+                parquet_revision=parquet_revision_before,
+            )
+        )
     train_path = directory / "train.jsonl"
     validation_path = directory / "validation.jsonl"
     if spec.acquisition_backend == "zstd_shards":
@@ -1283,7 +1391,7 @@ def materialize_public_corpus(
             total_bytes=total_bytes,
             source_revision=revision_before,
         )
-    elif inventory_before is None:
+    elif train_inventory_before is None:
         train, _ = _materialize_split(
             catalog=catalog,
             start_offset=int(catalog["train_offset"]),
@@ -1313,7 +1421,7 @@ def materialize_public_corpus(
         if spec.train_primary_bytes is None:
             train, _ = _materialize_split_parquet(
                 catalog=catalog,
-                inventory=inventory_before,
+                inventory=train_inventory_before,
                 parquet_cache=parquet_cache,
                 start_offset=int(catalog["train_offset"]),
                 target_bytes=spec.train_bytes,
@@ -1331,7 +1439,7 @@ def materialize_public_corpus(
             secondary_path = directory / "train-secondary.jsonl"
             primary, _ = _materialize_split_parquet(
                 catalog=catalog,
-                inventory=inventory_before,
+                inventory=train_inventory_before,
                 parquet_cache=parquet_cache,
                 start_offset=int(catalog["train_offset"]),
                 target_bytes=int(spec.train_primary_bytes),
@@ -1347,7 +1455,7 @@ def materialize_public_corpus(
             secondary_bytes = spec.train_bytes - int(spec.train_primary_bytes)
             secondary, _ = _materialize_split_parquet(
                 catalog=catalog,
-                inventory=inventory_before,
+                inventory=train_inventory_before,
                 parquet_cache=parquet_cache,
                 start_offset=int(spec.train_secondary_offset),
                 target_bytes=secondary_bytes,
@@ -1365,7 +1473,7 @@ def materialize_public_corpus(
             )
         validation, _ = _materialize_split_parquet(
             catalog=catalog,
-            inventory=inventory_before,
+            inventory=validation_inventory_before,
             parquet_cache=parquet_cache,
             start_offset=int(catalog["validation_offset"]),
             target_bytes=spec.validation_bytes,
@@ -1378,15 +1486,37 @@ def materialize_public_corpus(
             source_revision=revision_before,
             source_batch_rows=spec.source_batch_rows,
         )
-    revision_after = _source_revision(str(catalog["dataset"]))
+    revision_after = _source_revision(
+        str(catalog["dataset"]), requested_source_revision
+    )
     if revision_before != revision_after:
         raise RuntimeError(
             "public corpus source revision changed during materialization; rerun "
             "to freeze one revision"
         )
-    if inventory_before is not None:
-        inventory_after = _parquet_inventory(catalog)
-        if inventory_before["fingerprint"] != inventory_after["fingerprint"]:
+    if train_inventory_before is not None:
+        assert validation_inventory_before is not None
+        assert parquet_revision_before is not None
+        train_inventory_after = _parquet_inventory(
+            catalog,
+            source_split=str(train_inventory_before["split"]),
+            parquet_revision=parquet_revision_before,
+        )
+        validation_inventory_after = (
+            train_inventory_after
+            if validation_inventory_before["split"] == train_inventory_before["split"]
+            else _parquet_inventory(
+                catalog,
+                source_split=str(validation_inventory_before["split"]),
+                parquet_revision=parquet_revision_before,
+            )
+        )
+        if (
+            train_inventory_before["fingerprint"]
+            != train_inventory_after["fingerprint"]
+            or validation_inventory_before["fingerprint"]
+            != validation_inventory_after["fingerprint"]
+        ):
             raise RuntimeError(
                 "parquet source inventory changed during materialization; rerun "
                 "to freeze one conversion"
@@ -1481,10 +1611,20 @@ def materialize_public_corpus(
             "data_card_url": catalog["data_card_url"],
             "acquisition_backend": spec.acquisition_backend,
             "parquet_inventory_fingerprint": (
-                inventory_before["fingerprint"]
-                if inventory_before is not None
+                train_inventory_before["fingerprint"]
+                if train_inventory_before is not None
                 else None
             ),
+            "parquet_inventory_fingerprints": (
+                {
+                    "train": train_inventory_before["fingerprint"],
+                    "validation": validation_inventory_before["fingerprint"],
+                }
+                if train_inventory_before is not None
+                and validation_inventory_before is not None
+                else None
+            ),
+            "parquet_revision": parquet_revision_before,
         },
         "tokenizer": spec.tokenizer,
         "tokenizer_definition_fingerprint": tokenizer_definition_fingerprint(

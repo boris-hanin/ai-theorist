@@ -1,10 +1,12 @@
 {
-  "source": "slimpajama",
+  "source": "slimpajama_6b",
   "tokenizer": "gpt2_openai",
   "train_bytes": 1610612736,
-  "validation_bytes": 134217728,
+  "validation_bytes": 33554432,
   "maximum_documents_per_split": 2000000,
   "token_shard_tokens": 16777216,
-  "acquisition_backend": "zstd_shards",
-  "source_batch_rows": 8192
+  "acquisition_backend": "parquet",
+  "source_batch_rows": 8192,
+  "source_revision": "b5f90f419b7489cdba26fdbc8c022fcb5562f968",
+  "parquet_revision": "c4f51dc260275e8e01aa0fbf46c64832dbee5369"
 }

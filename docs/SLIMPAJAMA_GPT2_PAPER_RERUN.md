@@ -17,10 +17,16 @@ AdamW groups.
 
 ## Frozen paper coordinates
 
-Both assays bind the same immutable artifacts and update budget:
+The original `cerebras/SlimPajama-627B` repository disappeared from Hugging
+Face in August 2026. Both assays therefore bind the same surviving sample and
+update budget:
 
-- `cerebras/SlimPajama-627B`, direct train and validation shards from one full
-  repository revision;
+- `DKYoon/SlimPajama-6B`, a 10% sample of the already-shuffled original
+  SlimPajama `train/chunk1`, at source revision
+  `b5f90f419b7489cdba26fdbc8c022fcb5562f968`;
+- its released validation split, distinct from training, with the generated
+  Parquet repository pinned to
+  `c4f51dc260275e8e01aa0fbf46c64832dbee5369`;
 - the pinned `gpt2_openai` tokenizer at revision
   `607a30d783dfa663caf39e06633721c8d4cfcd7e`;
 - document text tokenized without automatic special tokens, followed by one
@@ -31,21 +37,20 @@ Both assays bind the same immutable artifacts and update budget:
 - 10% linear warmup followed by linear decay to zero;
 - identical fixed validation windows and seed 11.
 
-SlimPajama is currently access-controlled by Hugging Face even though its
-release is public. The controller never accepts a token in a JSON config or
-command-line argument. The operator must accept the dataset terms and make a
-credential available through `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, or the
-standard private Hugging Face token file. The controller waits without
-allocating GPUs until that condition is satisfied.
+This surviving sample is public and does not require a Hugging Face token. Its
+5.49 million training documents cover roughly 6B tokens, so the 300M-token
+assay remains a low-repetition slice of SlimPajama. It is the closest available
+public replacement, but it cannot recover the paper's unpublished example
+order or make the run a byte-identical dataset reproduction.
 
 ## Acquisition and identity
 
-The direct-shard materializer downloads deterministic compressed train and
-validation paths at the resolved immutable commit. Downloads are resumable,
-and every consumed compressed shard is recorded with repository path, byte
-count, and SHA-256 digest. Decompression writes canonical JSONL with source
-split, shard, and record provenance. Train and validation come from the
-dataset's distinct released splits.
+The Parquet materializer resolves separate train and validation inventories,
+rewrites every mutable conversion URL to the pinned conversion commit, and
+downloads resumably. Every consumed file is recorded with its immutable URL,
+byte count, and SHA-256 digest. Canonical JSONL retains source split and row
+provenance. Train and validation come from the dataset's distinct released
+splits.
 
 Raw JSONL, tokenizer assets, and uint32 token shards are all verified before a
 plan can compile. The preregistration records the source revision, source
@@ -71,5 +76,6 @@ remains hidden from fitting.
 
 Final `result.json` reports the Jiang scaling fit and hidden-rung error, the
 CompleteP anchor loss, every gate, and a precise claim scope. It must not label
-Jiang's raw loss a numerical reproduction of CompleteP because the
-architectures intentionally differ.
+the campaign an exact raw-loss reproduction: the accessible corpus is a
+preserved sample, the paper's example order was not published, and the Jiang
+architecture intentionally differs from CompleteP.

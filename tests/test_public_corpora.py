@@ -27,7 +27,12 @@ from ai_theorist.autoscaler.tokenization import (
 
 def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
     sources = {row["id"] for row in public_corpus_catalog()}
-    assert sources == {"fineweb_edu", "openwebtext", "slimpajama"}
+    assert sources == {
+        "fineweb_edu",
+        "openwebtext",
+        "slimpajama",
+        "slimpajama_6b",
+    }
     assert PublicCorpusSpec.from_dict({"source": "fineweb_edu"}).source == "fineweb_edu"
     with pytest.raises(ValueError, match="source must be"):
         PublicCorpusSpec.from_dict({"source": "arbitrary/url"})
@@ -53,6 +58,23 @@ def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
         }
     )
     assert slimpajama.source == "slimpajama"
+    preserved = PublicCorpusSpec.from_dict(
+        {
+            "source": "slimpajama_6b",
+            "tokenizer": "gpt2_openai",
+            "acquisition_backend": "parquet",
+            "source_revision": "b5f90f419b7489cdba26fdbc8c022fcb5562f968",
+            "parquet_revision": "c4f51dc260275e8e01aa0fbf46c64832dbee5369",
+        }
+    )
+    assert preserved.source == "slimpajama_6b"
+    assert preserved.parquet_revision == (
+        "c4f51dc260275e8e01aa0fbf46c64832dbee5369"
+    )
+    with pytest.raises(ValueError, match="full lowercase SHA-1"):
+        PublicCorpusSpec.from_dict({"source_revision": "main"})
+    with pytest.raises(ValueError, match="requires acquisition_backend=parquet"):
+        PublicCorpusSpec.from_dict({"parquet_revision": "a" * 40})
     with pytest.raises(ValueError, match="direct-shard corpus"):
         PublicCorpusSpec.from_dict(
             {"source": "fineweb_edu", "acquisition_backend": "zstd_shards"}
@@ -183,6 +205,8 @@ def test_parquet_materializer_streams_batches_with_global_row_provenance(
         parquet_path,
     )
     inventory = {
+        "split": "train",
+        "parquet_revision": "e" * 40,
         "files": [
             {
                 "url": "https://example.test/fixture.parquet",
@@ -222,8 +246,60 @@ def test_parquet_materializer_streams_batches_with_global_row_provenance(
     assert rows[0]["source_row"] == 10
     assert rows[0]["source_id"] == "id-10"
     assert metadata["first_source_row"] == 10
+    assert metadata["source_split"] == "train"
+    assert metadata["parquet_revision"] == "e" * 40
     assert metadata["source_inventory_fingerprint"] == "f" * 64
     assert metadata["source_parquet_files"][0]["sha256"]
+
+
+def test_parquet_inventory_pins_conversion_revision_and_selects_split(
+    monkeypatch,
+) -> None:
+    catalog = public_corpora.PUBLIC_CORPUS_CATALOG["slimpajama_6b"]
+
+    def fake_request(url: str, timeout: float = 60.0):
+        assert "datasets-server.huggingface.co/parquet" in url
+        return {
+            "parquet_files": [
+                {
+                    "config": "default",
+                    "split": "train",
+                    "url": (
+                        "https://huggingface.co/datasets/DKYoon/SlimPajama-6B/"
+                        "resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet"
+                    ),
+                    "filename": "0000.parquet",
+                    "size": 123,
+                },
+                {
+                    "config": "default",
+                    "split": "validation",
+                    "url": (
+                        "https://huggingface.co/datasets/DKYoon/SlimPajama-6B/"
+                        "resolve/refs%2Fconvert%2Fparquet/default/validation/"
+                        "0000.parquet"
+                    ),
+                    "filename": "0000.parquet",
+                    "size": 45,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    revision = "c" * 40
+    inventory = public_corpora._parquet_inventory(
+        catalog,
+        source_split="validation",
+        parquet_revision=revision,
+    )
+    assert inventory["split"] == "validation"
+    assert inventory["parquet_revision"] == revision
+    assert len(inventory["files"]) == 1
+    assert f"/resolve/{revision}/default/validation/" in inventory["files"][0][
+        "url"
+    ]
+    assert "refs%2Fconvert%2Fparquet" not in inventory["files"][0]["url"]
+    assert len(inventory["fingerprint"]) == 64
 
 
 def test_slimpajama_zstd_materializer_freezes_shards_and_split_provenance(

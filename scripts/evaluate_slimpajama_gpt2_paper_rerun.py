@@ -111,10 +111,11 @@ def main() -> None:
         },
         "interpretation": (
             "The CompleteP anchor calibrates the runtime against the paper's literal "
-            "architecture and training coordinates. Jiang raw loss is reported on "
-            "the identical token stream and optimization budget, but is not treated "
-            "as a numerical reproduction of CompleteP because its architecture is "
-            "deliberately different."
+            "architecture and training coordinates using the preserved 6B sample of "
+            "SlimPajama. Jiang raw loss is reported on the identical token stream "
+            "and optimization budget, but is not treated as a numerical reproduction "
+            "of CompleteP because its architecture is deliberately different and the "
+            "paper's exact example order was not published."
         ),
         "gates": gates,
     }
