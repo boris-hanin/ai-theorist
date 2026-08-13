@@ -174,6 +174,46 @@ def test_pinned_tokenizer_resolution_and_sharded_stream_are_reproducible(
     assert corpus.tokenizer_is_pinned is True
 
 
+def test_batched_tokenization_is_byte_identical_to_serial(
+    tmp_path: Path, monkeypatch
+) -> None:
+    definition = _test_definition(tmp_path, monkeypatch)
+    resolved = resolve_pinned_tokenizer(definition.id, tmp_path / "tokenizer")
+    source = tmp_path / "documents.jsonl"
+    _write_documents(source, 700)
+    serial_directory = tmp_path / "serial"
+    batched_directory = tmp_path / "batched"
+    serial_directory.mkdir()
+    batched_directory.mkdir()
+
+    serial = tokenization._materialize_token_split(
+        split="train",
+        source_path=source,
+        output_directory=serial_directory,
+        text_field="text",
+        tokenizer=resolved,
+        shard_token_limit=1024,
+        progress=None,
+        document_batch_size=1,
+    )
+    batched = tokenization._materialize_token_split(
+        split="train",
+        source_path=source,
+        output_directory=batched_directory,
+        text_field="text",
+        tokenizer=resolved,
+        shard_token_limit=1024,
+        progress=None,
+        document_batch_size=64,
+    )
+
+    assert batched == serial
+    for shard in serial["shards"]:
+        assert (batched_directory / shard["path"]).read_bytes() == (
+            serial_directory / shard["path"]
+        ).read_bytes()
+
+
 def test_tampered_shard_and_tokenizer_asset_are_rejected(
     tmp_path: Path, monkeypatch
 ) -> None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-worktree=/home/ubuntu/ai-theorist-10tpp
+worktree=/home/ubuntu/ai-theorist-corpus
 python=/home/ubuntu/ai-theorist/.venv-forecast/bin/python
 root=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-100bt-continuation-v1
 base=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-12g-v1/64538066147e9fbe
@@ -25,11 +25,10 @@ common=(
   --secondary-checkpoint "$failed/.train-secondary.jsonl.partial.json"
 )
 export PYTHONPATH="$worktree/src"
-# Each record is encoded independently, so the tokenizer's internal Rayon pool
-# only adds memory pressure here.  Keep corpus construction bounded and leave
-# CPU parallelism to the concurrently running materialization/tokenization jobs.
-export TOKENIZERS_PARALLELISM=false
-export RAYON_NUM_THREADS=8
+# Encode bounded document batches through the tokenizer's ordered Rayon path.
+# Two segment workers share 32 threads, leaving ample CPU and memory headroom.
+export TOKENIZERS_PARALLELISM=true
+export RAYON_NUM_THREADS=16
 
 stage=initializing-and-verifying-old-prefix
 echo "$stage" > "$root/stage"

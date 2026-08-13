@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 from time import sleep
+from itertools import islice
 from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Sequence, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -494,6 +495,13 @@ class ResolvedTokenizer:
         token_ids.append(self.definition.document_separator_token_id)
         return token_ids
 
+    def encode_documents(self, texts: Sequence[str]) -> List[List[int]]:
+        encodings = self.tokenizer.encode_batch(
+            list(texts), add_special_tokens=False
+        )
+        separator = self.definition.document_separator_token_id
+        return [list(encoding.ids) + [separator] for encoding in encodings]
+
 
 def _tokenizer_pipeline(tokenizer_path: Path) -> Dict[str, Any]:
     with tokenizer_path.open("r", encoding="utf-8") as handle:
@@ -807,7 +815,10 @@ def _materialize_token_split(
     shard_token_limit: int,
     progress: ProgressCallback,
     source_fingerprint: Optional[str] = None,
+    document_batch_size: int = 1,
 ) -> Dict[str, Any]:
+    if document_batch_size < 1:
+        raise ValueError("document_batch_size must be positive")
     source_fingerprint = source_fingerprint or _hash_file(source_path)
     checkpoint_path = output_directory / f".{split}.tokenization-checkpoint.json"
     contract = {
@@ -879,29 +890,39 @@ def _materialize_token_split(
         )
         buffer = array("I")
 
-    for document, next_offset in _iter_documents_with_offsets(
+    document_iterator = _iter_documents_with_offsets(
         source_path, text_field, source_offset
-    ):
-        encoded = tokenizer.encode_document(document)
-        if not encoded:
-            raise ValueError("the pinned tokenizer produced an empty document")
-        if max(encoded) >= tokenizer.definition.vocab_size:
-            raise ValueError("the pinned tokenizer emitted an out-of-vocabulary token")
-        if buffer and len(buffer) + len(encoded) > shard_token_limit:
-            flush()
-        buffer.extend(encoded)
-        buffer_end_offset = next_offset
-        documents += 1
-        total_tokens += len(encoded)
-        if progress is not None and documents % 1000 == 0:
-            progress(
-                {
-                    "phase": "tokenizing",
-                    "completed": documents,
-                    "total": 0,
-                    "message": f"Tokenized {documents:,} {split} documents",
-                }
-            )
+    )
+    while True:
+        batch = list(islice(document_iterator, document_batch_size))
+        if not batch:
+            break
+        if document_batch_size == 1:
+            encoded_batch = [tokenizer.encode_document(batch[0][0])]
+        else:
+            encoded_batch = tokenizer.encode_documents([row[0] for row in batch])
+        if len(encoded_batch) != len(batch):
+            raise RuntimeError("the pinned tokenizer changed the document batch length")
+        for encoded, (_, next_offset) in zip(encoded_batch, batch):
+            if not encoded:
+                raise ValueError("the pinned tokenizer produced an empty document")
+            if max(encoded) >= tokenizer.definition.vocab_size:
+                raise ValueError("the pinned tokenizer emitted an out-of-vocabulary token")
+            if buffer and len(buffer) + len(encoded) > shard_token_limit:
+                flush()
+            buffer.extend(encoded)
+            buffer_end_offset = next_offset
+            documents += 1
+            total_tokens += len(encoded)
+            if progress is not None and documents % 1000 == 0:
+                progress(
+                    {
+                        "phase": "tokenizing",
+                        "completed": documents,
+                        "total": 0,
+                        "message": f"Tokenized {documents:,} {split} documents",
+                    }
+                )
     flush()
     if not shards:
         raise ValueError(f"{split} corpus contains no tokenizable documents")

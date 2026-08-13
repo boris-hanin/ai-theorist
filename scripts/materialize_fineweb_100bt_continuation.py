@@ -50,6 +50,7 @@ TOKENIZER_FINGERPRINT = (
 REQUIRED_TRAIN_TOKENS = 10_085_203_968
 DEFAULT_EXTRA_TEXT_BYTES = 12 * 1024**3
 SHARD_TOKEN_LIMIT = 16_777_216
+DOCUMENT_BATCH_SIZE = 512
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -400,6 +401,7 @@ def _tokenize_one(
         shard_token_limit=SHARD_TOKEN_LIMIT,
         progress=progress,
         source_fingerprint=source_sha,
+        document_batch_size=DOCUMENT_BATCH_SIZE,
     )
     atomic_write_json(result_path, result)
     _emit({"phase": f"{name}_tokenization_complete", **result})
