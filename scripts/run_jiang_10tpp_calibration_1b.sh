@@ -15,6 +15,8 @@ template="configs/autoscaler/jiang_mistral_10tpp_calibration_200m.json"
 continuation_corpus_config="configs/autoscaler/fineweb_edu_mistral_1b_10tpp_corpus.json"
 cli="${AI_THEORIST_AUTOSCALE:-.venv-forecast/bin/ai-theorist-autoscale}"
 python="${AI_THEORIST_PYTHON:-.venv-forecast/bin/python}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export PYTHONPATH="$repo_root/src${PYTHONPATH:+:$PYTHONPATH}"
 current_stage="starting"
 
 mkdir -p "$calibration_root" "$extension_root" "$continuation_corpus_root"
