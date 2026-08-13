@@ -247,6 +247,21 @@ def test_analytic_counts_match_both_theory_models() -> None:
     )
 
 
+def test_forecast_single_seed_requires_explicit_exploratory_disclosure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["run_profile"] = "forecast"
+    with pytest.raises(ValueError, match="requires at least three seeds"):
+        compile_real_text_scaling_plan(config)
+
+    config["exploratory_single_seed"] = True
+    plan = compile_real_text_scaling_plan(config)
+    assert plan["seeds"] == [3]
+    assert plan["exploratory_single_seed"] is True
+
+
 def test_forecast_critical_batch_plan_and_conservative_schedule(
     tmp_path: Path, monkeypatch
 ) -> None:

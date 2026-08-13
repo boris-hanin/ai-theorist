@@ -880,8 +880,16 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             "run_profile must be smoke, forecast, extension, comparison, or "
             "fixed_budget_scan"
         )
+    exploratory_single_seed = config.get("exploratory_single_seed", False)
+    if not isinstance(exploratory_single_seed, bool):
+        raise ValueError("exploratory_single_seed must be boolean")
     if run_profile in {"forecast", "comparison", "fixed_budget_scan"} and len(seeds) < 3:
-        raise ValueError(f"{run_profile} profile requires at least three seeds")
+        if not (
+            run_profile == "forecast"
+            and exploratory_single_seed is True
+            and len(seeds) == 1
+        ):
+            raise ValueError(f"{run_profile} profile requires at least three seeds")
     base_rates = rates
     tuning_task_rates = rates
     learning_rate_refinement: Optional[Dict[str, Any]] = None
@@ -1249,6 +1257,7 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         "learning_rates": list(rates),
         "optimizer_contract": optimizer_contract,
         "seeds": list(seeds),
+        "exploratory_single_seed": exploratory_single_seed,
         "measurement_contract": {
             "validation_examples": validation_examples,
             "validation_seed": validation_seed,
