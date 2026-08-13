@@ -38,6 +38,8 @@ def main() -> None:
     prereg = _read(args.root / "preregistration.json")
     topology_path = args.root / "topology" / "comparison.json"
     topology = _read(topology_path)
+    override_path = args.root / "execution-override.json"
+    execution_override = _read(override_path) if override_path.is_file() else None
     one_plan = _read(args.root / "one-x" / "plan.json")
     ten_plan = _read(args.root / "ten-x" / "plan.json")
     one_shard = _read(args.root / "one-x" / "trial" / "ladder-shard-000.json")
@@ -94,6 +96,18 @@ def main() -> None:
         ),
     }
     passed = all(gates.values())
+    training_gates = {
+        name: value
+        for name, value in gates.items()
+        if name != "topology_qualification_passed"
+    }
+    explicitly_unqualified = bool(
+        execution_override
+        and execution_override.get("authorization")
+        == "explicit_user_request_to_train_after_failed_topology_gate"
+        and topology.get("status") == "failed"
+    )
+    training_completed = all(training_gates.values())
     one_loss = float(one_record.get("final_validation_loss", float("nan")))
     ten_loss = float(ten_record.get("final_validation_loss", float("nan")))
     frozen = prereg["frozen_one_x_prediction"]
@@ -101,9 +115,20 @@ def main() -> None:
     interval = [float(value) for value in frozen["prediction_interval_95"]]
     result: Dict[str, Any] = {
         "schema_version": 1,
-        "status": "completed" if passed else "failed",
-        "scientific_status": "one_seed_exploratory_300m_horizon_pair",
+        "status": (
+            "completed"
+            if passed
+            else "completed_topology_unqualified"
+            if explicitly_unqualified and training_completed
+            else "failed"
+        ),
+        "scientific_status": (
+            "one_seed_exploratory_300m_horizon_pair_topology_unqualified"
+            if explicitly_unqualified
+            else "one_seed_exploratory_300m_horizon_pair"
+        ),
         "certified_forecast": False,
+        "execution_override": execution_override,
         "preregistration_fingerprint": prereg_fingerprint,
         "topology_qualification_sha256": _sha256(topology_path),
         "gates": gates,
@@ -136,7 +161,7 @@ def main() -> None:
     result["fingerprint"] = _fingerprint(result)
     atomic_write_json(args.root / "result.json", result)
     print(json.dumps(result, sort_keys=True))
-    if not passed:
+    if not passed and not (explicitly_unqualified and training_completed):
         failed = [name for name, value in gates.items() if not value]
         raise ValueError("300M horizon pair failed gates: " + ", ".join(failed))
 
