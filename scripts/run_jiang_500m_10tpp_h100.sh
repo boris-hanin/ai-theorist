@@ -9,6 +9,7 @@ export AI_THEORIST_PYTHON="$python"
 export PYTHONPATH="$source_worktree/src"
 root=/home/ubuntu/ai-theorist/runs/forecast-production/jiang-mistral-500m-10tpp-h100-v1
 manifest=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-100bt-continuation-v1/token-streams/manifest.json
+tokenizer_manifest=/home/ubuntu/ai-theorist/runs/forecast-corpora/mistral-fineweb-100bt-continuation-v1/tokenizer/manifest.json
 required_source_commit=f969cafb3738351ca93fa8d28f6e65abd74a83c5
 required_control_commit=${AI_THEORIST_500M_CONTROL_COMMIT:?set the pinned control commit}
 stage=starting
@@ -25,7 +26,7 @@ git -C "$source_worktree" diff --quiet
 git -C "$source_worktree" diff --cached --quiet
 git -C "$control_worktree" diff --quiet
 git -C "$control_worktree" diff --cached --quiet
-[[ -x "$python" && -x "$cli" && -f "$manifest" ]]
+[[ -x "$python" && -x "$cli" && -f "$manifest" && -f "$tokenizer_manifest" ]]
 [[ "$(systemctl is-active nvidia-fabricmanager)" == active ]]
 [[ "$(nvidia-smi --query-gpu=index --format=csv,noheader,nounits | wc -l | tr -d ' ')" == 8 ]]
 if nvidia-smi --query-gpu=name --format=csv,noheader | grep -Evq '^NVIDIA H100 80GB HBM3$'; then
@@ -62,20 +63,31 @@ PY
 
 stage=verifying-complete-token-stream
 echo "$stage" > "$root/stage"
-"$python" - "$manifest" "$root/dataset-verification.json" <<'PY'
+"$python" - "$manifest" "$tokenizer_manifest" \
+  "$root/dataset-verification.json" <<'PY'
+from hashlib import sha256
 import json, sys
+from pathlib import Path
 from ai_theorist.autoscaler.tokenization import load_token_stream_manifest
 p = load_token_stream_manifest(sys.argv[1], verify_files=True)
+tokenizer_manifest_path = Path(sys.argv[2])
+tokenizer = json.load(open(tokenizer_manifest_path, encoding="utf-8"))
+for asset in tokenizer["assets"]:
+    path = tokenizer_manifest_path.parent / asset["path"]
+    assert path.stat().st_size == int(asset["bytes"])
+    assert sha256(path.read_bytes()).hexdigest() == asset["sha256"]
+assert tokenizer["fingerprint"] == p["tokenizer_fingerprint"]
 out = {
     "schema_version": 1,
     "status": "passed",
     "fingerprint": p["fingerprint"],
     "content_fingerprint": p["content_fingerprint"],
     "tokenizer_fingerprint": p["tokenizer_fingerprint"],
+    "tokenizer_assets_verified": True,
     "training_tokens": p["splits"]["train"]["tokens"],
     "validation_tokens": p["splits"]["validation"]["tokens"],
 }
-json.dump(out, open(sys.argv[2], "w"), indent=2, sort_keys=True)
+json.dump(out, open(sys.argv[3], "w"), indent=2, sort_keys=True)
 print(json.dumps(out, sort_keys=True))
 PY
 
@@ -89,6 +101,7 @@ assert plan["fingerprint"] == pre["plan_fingerprint"]
 assert data["status"] == "passed"
 assert plan["dataset_identity"]["fingerprint"] == pre["dataset_fingerprint"] == data["fingerprint"]
 assert plan["dataset_identity"]["tokenizer_fingerprint"] == pre["tokenizer_fingerprint"] == data["tokenizer_fingerprint"]
+assert data["tokenizer_assets_verified"] is True
 assert all(pre["gates"].values())
 PY
 
