@@ -92,10 +92,11 @@ def _compile_horizon(
             "retained_checkpoint_tokens_per_parameter": retained_tpp,
         }
     )
-    source_eta = float(source_record["optimizer"]["learning_rate"])
-    if source_eta not in {
+    source_learning_rates = {
         float(value) for value in config["optimizer"]["learning_rates"]
-    }:
+    }
+    source_eta = float(source_record["optimizer"]["learning_rate"])
+    if source_eta not in source_learning_rates:
         raise ValueError("source learning rate is absent from the horizon config")
     selected_eta = (
         source_eta
@@ -104,7 +105,13 @@ def _compile_horizon(
     )
     if not math.isfinite(selected_eta) or selected_eta <= 0.0:
         raise ValueError("selected horizon learning rate must be positive and finite")
-    config["optimizer"]["learning_rates"] = [selected_eta]
+    # The forecast compiler requires a genuine tuning grid even when this
+    # phase runs only a separately preregistered frozen ladder LR. Preserve
+    # the source grid and insert the exact horizon-scaled value so the plan
+    # remains valid without implying that a new tuning sweep occurred.
+    config["optimizer"]["learning_rates"] = sorted(
+        source_learning_rates | {selected_eta}
+    )
     if float(source_record["optimizer"]["weight_decay"]) != 0.0:
         raise ValueError("dense horizon extension requires the frozen zero decay")
 
