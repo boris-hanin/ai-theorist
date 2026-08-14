@@ -83,13 +83,14 @@ def main() -> None:
     records: dict[str, Mapping[str, Any]] = {
         "S1": _selected_reference_record(args.root / "tune", selected_eta)
     }
-    for index in range(2, 10):
-        name = f"S{index}"
+    scales = [dict(row) for row in plan["scales"]]
+    for scale in scales[1:]:
+        name = str(scale["name"])
         records[name] = _ddp_record(args.root, name)
 
     rows: list[dict[str, Any]] = []
     integrity: dict[str, bool] = {}
-    for scale in plan["scales"]:
+    for scale in scales:
         name = str(scale["name"])
         record = records[name]
         audit = record.get("metadata", {}).get("optimizer_group_audit", {})
@@ -131,6 +132,7 @@ def main() -> None:
         )
 
     endpoint = rows[-1]
+    endpoint_name = str(scales[-1]["name"])
     frozen_fit = frozen["prediction"]
     predicted = float(frozen_fit["exploratory_prediction"])
     observed = float(endpoint["validation_loss"])
@@ -160,7 +162,7 @@ def main() -> None:
         "frozen_prediction_integrity": frozen_fingerprint
         == _fingerprint(frozen_unsigned),
         "prediction_was_frozen_before_reveal": frozen.get("status")
-        == "frozen_before_S9_reveal",
+        == f"frozen_before_{endpoint_name}_reveal",
         "reference_eta_is_interior": selection.get(
             "learning_rate_optimum_is_interior"
         )
@@ -169,7 +171,7 @@ def main() -> None:
         and int(topology.get("ddp_replicas", 0)) == 8,
         "all_nine_rungs_are_complete_and_faithful": all(integrity.values()),
         "S1_is_single_gpu_tuning_evidence": rows[0]["data_parallel_replicas"] == 1,
-        "S2_through_S9_are_eight_gpu_ddp": all(
+        "nonreference_rungs_are_eight_gpu_ddp": all(
             row["data_parallel_replicas"] == 8 for row in rows[1:]
         ),
         "constant_rho32_L16_alpha2": all(
@@ -178,8 +180,13 @@ def main() -> None:
             and row["rho"] == 32.0
             for row in rows
         ),
-        "endpoint_is_one_billion_active": endpoint["active_parameters"]
-        == 1_014_509_312,
+        "endpoint_is_one_billion_active": (
+            int(endpoint["active_parameters"])
+            == int(prereg["endpoint"]["active_parameters"])
+            and 1_000_000_000
+            <= int(endpoint["active_parameters"])
+            <= 1_030_000_000
+        ),
         "no_corpus_repetition": all(
             row["presented_tokens"]
             <= int(plan["dataset_identity"]["training_tokens"])
@@ -187,9 +194,9 @@ def main() -> None:
         ),
     }
     scientific_gates = {
-        "S9_holdout_relative_error_within_15_percent": holdout_relative_error
+        "endpoint_holdout_relative_error_within_15_percent": holdout_relative_error
         <= 0.15,
-        "S9_holdout_interval_contains_observation": interval_contains,
+        "endpoint_holdout_interval_contains_observation": interval_contains,
         "prefix_scaling_ensemble_certified": frozen_fit.get("certified") is True,
         "full_scaling_ensemble_certified": final_fit.get("certified") is True,
     }
@@ -205,7 +212,7 @@ def main() -> None:
         "selected_learning_rate": selected_eta,
         "rows": rows,
         "holdout": {
-            "scale": "S9",
+            "scale": endpoint_name,
             "fit_parameter_axis": "active_non_embedding_parameters",
             "predicted_validation_loss": predicted,
             "observed_validation_loss": observed,

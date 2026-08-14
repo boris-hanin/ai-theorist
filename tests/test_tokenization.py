@@ -1,5 +1,6 @@
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,7 @@ from ai_theorist.autoscaler.tokenization import (
     resolve_pinned_tokenizer,
     token_stream_identity,
     tokenizer_catalog,
+    write_token_stream_verification_receipt,
 )
 
 
@@ -172,6 +174,50 @@ def test_pinned_tokenizer_resolution_and_sharded_stream_are_reproducible(
     assert corpus.identity_fingerprint == manifest["fingerprint"]
     assert corpus.tokenizer_fingerprint == resolved.manifest["fingerprint"]
     assert corpus.tokenizer_is_pinned is True
+
+
+def test_verification_receipt_binds_fully_hashed_unchanged_shards(
+    tmp_path: Path, monkeypatch
+) -> None:
+    definition, resolved, manifest, manifest_path = _materialized_fixture(
+        tmp_path, monkeypatch
+    )
+    receipt_path = tmp_path / "verification-receipt.json"
+    receipt = write_token_stream_verification_receipt(
+        manifest_path, receipt_path
+    )
+    assert receipt["status"] == "passed"
+    assert receipt["dataset_fingerprint"] == manifest["fingerprint"]
+    identity = token_stream_identity(
+        manifest_path, verification_receipt_path=receipt_path
+    )
+    assert identity["fingerprint"] == manifest["fingerprint"]
+    corpus = TokenizedTextCorpus(
+        TokenizedTextSpec(
+            tokenizer=definition.id,
+            token_stream_manifest_path=str(manifest_path),
+            token_stream_verification_receipt_path=str(receipt_path),
+            maximum_bytes=16_384,
+        ),
+        context_length=2,
+        vocab_size=8,
+    )
+    assert corpus.tokenizer_fingerprint == resolved.manifest["fingerprint"]
+
+    shard = (
+        manifest_path.parent
+        / manifest["splits"]["train"]["shards"][0]["path"]
+    )
+    with shard.open("r+b") as handle:
+        first = handle.read(1)
+        handle.seek(0)
+        handle.write(bytes([first[0] ^ 1]))
+        handle.flush()
+        os.fsync(handle.fileno())
+    with pytest.raises(ValueError, match="changed after full verification"):
+        token_stream_identity(
+            manifest_path, verification_receipt_path=receipt_path
+        )
 
 
 def test_batched_tokenization_is_byte_identical_to_serial(

@@ -21,6 +21,7 @@ from .study import atomic_write_json
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 TOKENIZER_MANIFEST_SCHEMA_VERSION = 1
 TOKEN_STREAM_MANIFEST_SCHEMA_VERSION = 1
+TOKEN_STREAM_VERIFICATION_RECEIPT_SCHEMA_VERSION = 1
 TOKEN_STREAM_FORMAT = "sharded_uint32_le_v1"
 TOKEN_STREAM_PACKING_CONTRACT = "document_eos_concatenation_v1"
 PINNED_TOKENIZERS_PACKAGE_VERSION = "0.21.4"
@@ -1014,8 +1015,99 @@ def materialize_pinned_token_streams(
     return manifest
 
 
+def _token_stream_shard_stats(
+    manifest_path: Path, manifest: Mapping[str, Any]
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for split in ("train", "validation"):
+        for shard in manifest["splits"][split]["shards"]:
+            path = _safe_manifest_path(
+                manifest_path.parent, shard.get("path"), "token shard path"
+            )
+            stat = path.stat()
+            rows.append(
+                {
+                    "split": split,
+                    "path": str(path.resolve()),
+                    "bytes": int(stat.st_size),
+                    "device": int(stat.st_dev),
+                    "inode": int(stat.st_ino),
+                    "mtime_ns": int(stat.st_mtime_ns),
+                    "sha256": str(shard["sha256"]),
+                }
+            )
+    return rows
+
+
+def write_token_stream_verification_receipt(
+    manifest_path: Path, output_path: Path
+) -> Dict[str, Any]:
+    """Fully verify a stream once and bind future reads to unchanged files.
+
+    The receipt never replaces the initial content-hash pass. It lets repeated
+    local workers avoid re-reading a multi-gigabyte immutable corpus after that
+    pass by requiring the exact manifest hash and exact device/inode/size/mtime
+    tuple for every already-hashed shard.
+    """
+
+    manifest_path = manifest_path.expanduser().resolve()
+    manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+    payload: Dict[str, Any] = {
+        "schema_version": TOKEN_STREAM_VERIFICATION_RECEIPT_SCHEMA_VERSION,
+        "status": "passed",
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": _hash_file(manifest_path),
+        "dataset_fingerprint": manifest["fingerprint"],
+        "content_fingerprint": manifest["content_fingerprint"],
+        "tokenizer_fingerprint": manifest["tokenizer_fingerprint"],
+        "training_tokens": int(manifest["splits"]["train"]["tokens"]),
+        "validation_tokens": int(manifest["splits"]["validation"]["tokens"]),
+        "shards": _token_stream_shard_stats(manifest_path, manifest),
+    }
+    payload["fingerprint"] = _fingerprint(payload)
+    atomic_write_json(output_path, payload)
+    return payload
+
+
+def _validate_token_stream_verification_receipt(
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
+    receipt_path: Path,
+) -> Dict[str, Any]:
+    with receipt_path.open("r", encoding="utf-8") as handle:
+        receipt = json.load(handle)
+    if not isinstance(receipt, dict):
+        raise ValueError("token stream verification receipt must contain an object")
+    fingerprint = receipt.get("fingerprint")
+    unsigned = dict(receipt)
+    unsigned.pop("fingerprint", None)
+    if not isinstance(fingerprint, str) or fingerprint != _fingerprint(unsigned):
+        raise ValueError("token stream verification receipt fingerprint mismatch")
+    expected = {
+        "schema_version": TOKEN_STREAM_VERIFICATION_RECEIPT_SCHEMA_VERSION,
+        "status": "passed",
+        "manifest_path": str(manifest_path.resolve()),
+        "manifest_sha256": _hash_file(manifest_path),
+        "dataset_fingerprint": manifest["fingerprint"],
+        "content_fingerprint": manifest["content_fingerprint"],
+        "tokenizer_fingerprint": manifest["tokenizer_fingerprint"],
+        "training_tokens": int(manifest["splits"]["train"]["tokens"]),
+        "validation_tokens": int(manifest["splits"]["validation"]["tokens"]),
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ValueError("token stream verification receipt does not bind this manifest")
+    recorded = receipt.get("shards")
+    current = _token_stream_shard_stats(manifest_path, manifest)
+    if not isinstance(recorded, list) or recorded != current:
+        raise ValueError("token stream shards changed after full verification")
+    return receipt
+
+
 def load_token_stream_manifest(
-    manifest_path: Path, *, verify_files: bool = True
+    manifest_path: Path,
+    *,
+    verify_files: bool = True,
+    verification_receipt_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     with manifest_path.open("r", encoding="utf-8") as handle:
         manifest = json.load(handle)
@@ -1055,7 +1147,13 @@ def load_token_stream_manifest(
     ):
         raise ValueError("token stream packing contract is invalid")
 
-    if verify_files:
+    if verify_files and verification_receipt_path is not None:
+        _validate_token_stream_verification_receipt(
+            manifest_path,
+            manifest,
+            verification_receipt_path.expanduser().resolve(),
+        )
+    elif verify_files:
         for split in ("train", "validation"):
             metadata = manifest.get("splits", {}).get(split)
             if not isinstance(metadata, dict) or not isinstance(metadata.get("shards"), list):
@@ -1106,8 +1204,16 @@ def load_token_stream_manifest(
     return manifest
 
 
-def token_stream_identity(manifest_path: Path) -> Dict[str, Any]:
-    manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+def token_stream_identity(
+    manifest_path: Path,
+    *,
+    verification_receipt_path: Optional[Path] = None,
+) -> Dict[str, Any]:
+    manifest = load_token_stream_manifest(
+        manifest_path,
+        verify_files=True,
+        verification_receipt_path=verification_receipt_path,
+    )
     return {
         "format": manifest["format"],
         "fingerprint": manifest["fingerprint"],

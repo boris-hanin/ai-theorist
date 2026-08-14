@@ -1061,7 +1061,14 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     manifest_path = dataset.get("token_stream_manifest_path")
     if not isinstance(manifest_path, str) or not manifest_path.strip():
         raise ValueError("a verified token_stream_manifest_path is required")
-    identity = token_stream_identity(Path(manifest_path))
+    receipt_path = dataset.get("token_stream_verification_receipt_path")
+    if receipt_path is None:
+        identity = token_stream_identity(Path(manifest_path))
+    else:
+        identity = token_stream_identity(
+            Path(manifest_path),
+            verification_receipt_path=Path(str(receipt_path)),
+        )
     if dataset.get("tokenizer") != identity["tokenizer_id"]:
         raise ValueError("dataset tokenizer does not match token stream manifest")
     runtime = PretrainingRuntimeSpec.from_dict(config.get("runtime", {}))

@@ -114,6 +114,7 @@ class TokenizedTextSpec:
     text_field: str = "text"
     maximum_bytes: int = 536_870_912
     token_stream_manifest_path: Optional[str] = None
+    token_stream_verification_receipt_path: Optional[str] = None
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "TokenizedTextSpec":
@@ -126,6 +127,7 @@ class TokenizedTextSpec:
                 "text_field",
                 "maximum_bytes",
                 "token_stream_manifest_path",
+                "token_stream_verification_receipt_path",
             ),
             "tokenized text dataset",
         )
@@ -145,9 +147,19 @@ class TokenizedTextSpec:
                 raise ValueError(
                     "token_stream_manifest_path requires an allow-listed pinned tokenizer"
                 )
+            if result.token_stream_verification_receipt_path is not None and not (
+                result.token_stream_verification_receipt_path.strip()
+            ):
+                raise ValueError(
+                    "token_stream_verification_receipt_path must be non-empty"
+                )
         elif result.tokenizer not in {"byte_v1", "uint16_bin_v1", "uint32_bin_v1"}:
             raise ValueError(
                 "raw datasets require byte_v1, uint16_bin_v1, or uint32_bin_v1"
+            )
+        elif result.token_stream_verification_receipt_path is not None:
+            raise ValueError(
+                "token_stream_verification_receipt_path requires a token stream manifest"
             )
         if not result.text_field:
             raise ValueError("text_field must be non-empty")
@@ -317,8 +329,13 @@ class _ShardedTokenStream:
         split: str,
         context_length: int,
         maximum_bytes: int,
+        manifest: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+        manifest = (
+            dict(manifest)
+            if manifest is not None
+            else load_token_stream_manifest(manifest_path, verify_files=True)
+        )
         metadata = manifest["splits"][split]
         total_bytes = sum(int(row["bytes"]) for row in metadata["shards"])
         if total_bytes > maximum_bytes:
@@ -417,7 +434,16 @@ class TokenizedTextCorpus:
         self.tokenizer_manifest: Optional[Dict[str, Any]] = None
         if spec.token_stream_manifest_path:
             manifest_path = Path(spec.token_stream_manifest_path)
-            manifest = load_token_stream_manifest(manifest_path, verify_files=True)
+            receipt_path = (
+                Path(spec.token_stream_verification_receipt_path)
+                if spec.token_stream_verification_receipt_path is not None
+                else None
+            )
+            manifest = load_token_stream_manifest(
+                manifest_path,
+                verify_files=True,
+                verification_receipt_path=receipt_path,
+            )
             if manifest["tokenizer_id"] != spec.tokenizer:
                 raise ValueError(
                     "dataset tokenizer does not match the token stream manifest"
@@ -434,10 +460,18 @@ class TokenizedTextCorpus:
             self.tokenizer_is_pinned = True
             self.tokenizer_fingerprint = str(manifest["tokenizer_fingerprint"])
             self.train_tokens = _ShardedTokenStream(
-                manifest_path, "train", context_length, spec.maximum_bytes
+                manifest_path,
+                "train",
+                context_length,
+                spec.maximum_bytes,
+                manifest,
             )
             self.validation_tokens = _ShardedTokenStream(
-                manifest_path, "validation", context_length, spec.maximum_bytes
+                manifest_path,
+                "validation",
+                context_length,
+                spec.maximum_bytes,
+                manifest,
             )
             self._fingerprint = str(manifest["content_fingerprint"])
             self._identity_fingerprint = str(manifest["fingerprint"])

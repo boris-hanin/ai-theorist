@@ -82,8 +82,14 @@ def main() -> None:
         raise ValueError("campaign is not preregistered")
     if selection.get("learning_rate_optimum_is_interior") is not True:
         raise ValueError("reference eta is not interior")
-    if (args.root / "ladder" / "S9" / "ladder-shard-000.json").exists():
-        raise ValueError("refusing to freeze a prediction after the S9 reveal")
+    scales = [dict(row) for row in plan["scales"]]
+    target_name = str(scales[-1]["name"])
+    if (
+        args.root / "ladder" / target_name / "ladder-shard-000.json"
+    ).exists():
+        raise ValueError(
+            f"refusing to freeze a prediction after the {target_name} reveal"
+        )
 
     selected_eta = float(selection["selected_learning_rate"])
     records: dict[str, Mapping[str, Any]] = {}
@@ -93,13 +99,12 @@ def main() -> None:
     )
     records["S1"] = reference
     sources["S1"] = _sha(reference_path)
-    for index in range(2, 9):
-        name = f"S{index}"
+    for scale in scales[1:-1]:
+        name = str(scale["name"])
         record, path = _ddp_record(args.root / "ladder", name)
         records[name] = record
         sources[name] = _sha(path)
 
-    scales = [dict(row) for row in plan["scales"]]
     fit_scales = scales[:-1]
     sizes: list[float] = []
     losses: list[float] = []
@@ -146,9 +151,11 @@ def main() -> None:
     )
     payload = {
         "schema_version": 1,
-        "status": "frozen_before_S9_reveal",
+        "status": f"frozen_before_{target_name}_reveal",
         "certified_forecast": bool(fit["certified"]),
-        "scientific_status": "preregistered_single_seed_S9_holdout_prediction",
+        "scientific_status": (
+            f"preregistered_single_seed_{target_name}_holdout_prediction"
+        ),
         "preregistration_sha256": _sha(preregistration_path),
         "plan_sha256": _sha(plan_path),
         "config_sha256": _sha(config_path),

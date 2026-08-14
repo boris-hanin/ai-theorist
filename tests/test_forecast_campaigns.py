@@ -524,6 +524,65 @@ def test_jiang_moe_rho32_active_1b_ladder_uses_active_tpp_and_exact_geometry(
     assert canary_plan["scales"][-1]["optimizer_steps"] == 3
 
 
+def test_jiang_moe_rho32_active_1b_10tpp_ladder_is_exact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch, vocab_size=32_768)
+    config = json.loads(
+        Path(
+            "configs/autoscaler/"
+            "jiang_moe_fineweb_mistral_rho32_active_1b_10tpp.json"
+        ).read_text(encoding="utf-8")
+    )
+    config["dataset"]["token_stream_manifest_path"] = str(manifest_path)
+    config["dataset"].pop("token_stream_verification_receipt_path")
+    config["dataset"]["tokenizer"] = "forecast_test"
+    config["ladder"]["require_gate_eligible_plan"] = False
+    config["ladder"]["maximum_repetition_ratio"] = 1_000_000_000.0
+    plan = compile_real_text_scaling_plan(config)
+
+    assert [
+        (row["depth"], row["width"], row["hidden_width"])
+        for row in plan["scales"]
+    ] == [
+        (16, 512, 1024),
+        (16, 768, 1536),
+        (16, 1024, 2048),
+        (16, 1280, 2560),
+        (16, 1536, 3072),
+        (16, 1792, 3584),
+        (16, 2048, 4096),
+        (16, 2304, 4608),
+        (16, 2688, 5376),
+    ]
+    assert [
+        row["active_non_embedding_parameters"] for row in plan["scales"]
+    ] == [
+        33_678_400,
+        75_683_392,
+        134_465_600,
+        210_025_024,
+        302_361_664,
+        411_475_520,
+        537_366_592,
+        680_034_880,
+        925_494_592,
+    ]
+    assert all(row["depth"] * row["hidden_width"] / row["width"] == 32.0
+               for row in plan["scales"])
+    assert all(
+        abs(row["presented_tokens"] / row["active_parameters"] - 10.0)
+        <= 0.002
+        for row in plan["scales"]
+    )
+    endpoint = plan["scales"][-1]
+    assert endpoint["parameters"] == 2_401_916_224
+    assert endpoint["active_parameters"] == 1_014_263_104
+    assert endpoint["presented_tokens"] == 10_142_613_504
+    assert endpoint["optimizer_steps"] == 77_382
+    assert endpoint["heldout"] is True
+
+
 def test_jiang_moe_real_text_trial_audits_every_lr_epsilon_and_init_group(
     tmp_path: Path, monkeypatch
 ) -> None:
