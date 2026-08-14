@@ -155,6 +155,17 @@ def test_moe_forward_is_causal_and_one_full_update_is_finite():
     assert diagnostics["active_expert_fraction"] == pytest.approx(0.25)
 
 
+def test_sparse_dispatch_supports_bf16_autocast_with_fp32_residual_stream():
+    model = make_model().train()
+    tokens = torch.arange(8).remainder(16)[None, :].repeat(2, 1)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        logits = model(tokens)
+        loss = F.cross_entropy(logits.float().reshape(-1, 16), tokens.reshape(-1))
+    loss.backward()
+    assert torch.isfinite(logits).all()
+    assert torch.isfinite(loss)
+
+
 def test_sparse_dispatch_matches_dense_mask_definition_and_only_runs_selected_tokens():
     model = make_model()
     moe = model.blocks[0].moe.eval()

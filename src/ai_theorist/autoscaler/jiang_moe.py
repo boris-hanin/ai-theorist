@@ -291,7 +291,13 @@ class JiangSparseMoE(nn.Module):
                 expert_inputs = flat_hidden.index_select(0, token_indices)
                 coefficients = selected_gates[token_indices, slots].unsqueeze(-1)
                 contributions = coefficients * expert(expert_inputs)
-                output = output.index_add(0, token_indices, contributions)
+                # Autocast can leave the residual stream in fp32 while the
+                # expert linears return bf16.  Accumulate in the residual
+                # stream's dtype: index_add requires an exact dtype match and
+                # the explicit cast remains differentiable.
+                output = output.index_add(
+                    0, token_indices, contributions.to(dtype=output.dtype)
+                )
             elif self.training:
                 # DDP must see every expert parameter in every backward pass,
                 # even in a small batch where an expert receives no tokens.
