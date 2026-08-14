@@ -62,10 +62,36 @@ Python 3.10 and PyTorch 2.6.0+cu124. It reproduced slopes `-0.0835834380` and
 `-2.0055062915` for Appendix E. Both passed; the differences from the local
 numbers are numerical roundoff. No training campaign was started.
 
-## Remaining scientific gate
+## Trained fixed-eta transfer result
 
-The next experiment must test trained fixed-normalized-`eta` trajectories and
-report the local stability edge separately. The finite `rho=32` ladder should
-stop at `L=16` for the primary claim: `alpha_ffn=rho/L` is already `2` there,
-near the measured crossover at `1.8`. `L>=32` is an explicit crossover probe,
-not theory-certified transfer evidence.
+The next gate was run on SlimPajama with the pinned GPT-2 tokenizer. A first
+eight-point reference grid stopped correctly because its optimum was at the
+lower boundary. A preregistered adaptive lower bracket then selected the
+interior normalized learning rate `eta=0.00390625`. That value was frozen and
+applied without nonreference retuning to all Table 2 parameter groups.
+
+| `L` | `D` | `M` | active non-embedding params | mean loss | mean fractional progress |
+|---:|---:|---:|---:|---:|---:|
+| 2 | 128 | 2048 | 1,187,336 | 6.21075 | 0.42668 |
+| 4 | 256 | 2048 | 5,264,912 | 6.19194 | 0.42663 |
+| 6 | 384 | 2048 | 13,019,160 | 6.19812 | 0.42554 |
+| 8 | 512 | 2048 | 25,236,512 | 6.18824 | 0.42616 |
+| 12 | 768 | 2048 | 66,206,256 | 6.19403 | 0.42546 |
+| 16 | 1024 | 2048 | 134,465,600 | 6.18153 | 0.42632 |
+
+Across a `113.25x` active-nonembedding parameter span, the log-progress slope
+is `-0.0003816` against a preregistered absolute limit of `0.30`. Every
+trajectory was finite, all eight optimizer groups were complete and disjoint,
+routing was nondegenerate, and all three seeds were present at every scale.
+
+The endpoint wrong-global-LR control reached mean loss `6.73747`, versus
+`6.18153` for the theory-scaled endpoint: an `8.99%` degradation against the
+preregistered minimum of `0.5%`. All gates passed. The compact immutable record
+is `transfer-result-summary.json`; its hashes bind the locally preserved raw
+preregistration, selection, runtime qualification, and full transfer result.
+
+This establishes short-horizon fixed-normalized-eta transfer, not token-horizon
+transfer or a loss scaling law. The finite `rho=32` primary family still stops
+at `L=16`, where `alpha_ffn=2` is near the measured crossover at `1.8`.
+`L>=32` remains an explicit crossover probe, not theory-certified transfer
+evidence.
