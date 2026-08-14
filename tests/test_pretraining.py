@@ -51,6 +51,21 @@ def test_runtime_checkpoint_supports_wall_clock_or_step_cadence() -> None:
     )
 
 
+def test_runtime_retained_checkpoint_tpp_contract_is_strict() -> None:
+    runtime = PretrainingRuntimeSpec.from_dict(
+        {"retained_checkpoint_tokens_per_parameter": [10, 20.0, 40]}
+    )
+    assert runtime.retained_checkpoint_tokens_per_parameter == (10.0, 20.0, 40.0)
+    with pytest.raises(ValueError, match="unique, increasing"):
+        PretrainingRuntimeSpec.from_dict(
+            {"retained_checkpoint_tokens_per_parameter": [20, 10]}
+        )
+    with pytest.raises(ValueError, match="must be a sequence"):
+        PretrainingRuntimeSpec.from_dict(
+            {"retained_checkpoint_tokens_per_parameter": "10,20"}
+        )
+
+
 def test_distributed_wall_clock_checkpoint_uses_primary_decision(monkeypatch) -> None:
     runtime = PretrainingRuntimeSpec.from_dict(
         {"checkpoint_interval_seconds": 60}

@@ -178,6 +178,7 @@ class PretrainingRuntimeSpec:
     checkpoint_interval_steps: int = 0
     checkpoint_interval_seconds: float = 0.0
     resume: bool = True
+    retained_checkpoint_tokens_per_parameter: Tuple[float, ...] = ()
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PretrainingRuntimeSpec":
@@ -193,10 +194,34 @@ class PretrainingRuntimeSpec:
                 "checkpoint_interval_steps",
                 "checkpoint_interval_seconds",
                 "resume",
+                "retained_checkpoint_tokens_per_parameter",
             ),
             "pretraining runtime",
         )
-        result = cls(**dict(payload))
+        values = dict(payload)
+        raw_retained_tpp = values.get(
+            "retained_checkpoint_tokens_per_parameter", ()
+        )
+        if (
+            isinstance(raw_retained_tpp, (str, bytes))
+            or not isinstance(raw_retained_tpp, (list, tuple))
+        ):
+            raise ValueError(
+                "retained_checkpoint_tokens_per_parameter must be a sequence"
+            )
+        retained_tpp = tuple(
+            float(value) for value in raw_retained_tpp
+        )
+        if any(
+            not math.isfinite(value) or value <= 0.0
+            for value in retained_tpp
+        ) or tuple(sorted(set(retained_tpp))) != retained_tpp:
+            raise ValueError(
+                "retained_checkpoint_tokens_per_parameter must contain unique, "
+                "increasing positive finite values"
+            )
+        values["retained_checkpoint_tokens_per_parameter"] = retained_tpp
+        result = cls(**values)
         if result.precision not in {"fp32", "bf16"}:
             raise ValueError("precision must be fp32 or bf16")
         if result.attention_backend not in {"auto", "math", "flash"}:

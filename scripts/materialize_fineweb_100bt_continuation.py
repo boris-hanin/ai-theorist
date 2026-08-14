@@ -126,7 +126,14 @@ def initialize(args: argparse.Namespace) -> None:
     args.output_root.mkdir(parents=True, exist_ok=True)
     base_stream = load_token_stream_manifest(args.base_stream, verify_files=True)
     base_tokenizer = load_tokenizer_manifest(args.base_tokenizer, verify_assets=True)
-    if base_stream["fingerprint"] != BASE_DATASET_FINGERPRINT:
+    expected_base_fingerprint = (
+        args.expected_base_fingerprint
+        if args.append_only
+        else BASE_DATASET_FINGERPRINT
+    )
+    if not expected_base_fingerprint:
+        raise ValueError("append-only mode requires --expected-base-fingerprint")
+    if base_stream["fingerprint"] != expected_base_fingerprint:
         raise ValueError("base FineWeb stream fingerprint changed")
     if base_tokenizer["fingerprint"] != TOKENIZER_FINGERPRINT:
         raise ValueError("base Mistral tokenizer fingerprint changed")
@@ -159,8 +166,13 @@ def initialize(args: argparse.Namespace) -> None:
             "secondary_checkpoint": str(args.secondary_checkpoint.resolve()),
             "secondary_documents": secondary_checkpoint["document_count"],
             "secondary_text_bytes": secondary_checkpoint["text_bytes"],
-            "required_train_tokens": REQUIRED_TRAIN_TOKENS,
+            "required_train_tokens": args.required_train_tokens,
             "extra_text_bytes": args.extra_text_bytes,
+            "append_only": args.append_only,
+            "start_source_row": args.start_source_row,
+            "excluded_jsonl_paths": [
+                str(path.resolve()) for path in args.exclude_jsonl
+            ],
         },
     )
     _emit({"phase": "initialized", "output_root": str(args.output_root)})
@@ -173,6 +185,8 @@ def materialize_extra(args: argparse.Namespace) -> None:
         result = _load(result_path)
         if (
             result.get("status") == "complete"
+            and int(result.get("target_text_bytes", -1)) == args.extra_text_bytes
+            and int(result.get("start_source_row", -1)) == args.start_source_row
             and int(result["file_bytes"]) == extra_path.stat().st_size
             and result["file_sha256"] == _hash_file(extra_path)
         ):
@@ -189,9 +203,15 @@ def materialize_extra(args: argparse.Namespace) -> None:
         "inventory_fingerprint": inventory["fingerprint"],
         "target_text_bytes": args.extra_text_bytes,
         "source_batch_rows": args.source_batch_rows,
+        "start_source_row": args.start_source_row,
         "excluded_paths": [
             str(path.resolve())
-            for path in (args.base_train, args.base_validation, args.secondary)
+            for path in (
+                args.base_train,
+                args.base_validation,
+                args.secondary,
+                *args.exclude_jsonl,
+            )
         ],
     }
     checkpoint: dict[str, Any] | None = None
@@ -204,7 +224,7 @@ def materialize_extra(args: argparse.Namespace) -> None:
         text_bytes = 0
         documents = 0
         duplicates_skipped = 0
-        next_source_row = 0
+        next_source_row = args.start_source_row
         source_files: list[dict[str, Any]] = []
         handle = partial.open("wb")
     else:
@@ -216,7 +236,14 @@ def materialize_extra(args: argparse.Namespace) -> None:
         handle = partial.open("r+b")
         handle.truncate(int(checkpoint["file_position"]))
         handle.seek(0, os.SEEK_END)
-    used_ids = _load_used_ids([args.base_train, args.base_validation, args.secondary])
+    used_ids = _load_used_ids(
+        [
+            args.base_train,
+            args.base_validation,
+            args.secondary,
+            *args.exclude_jsonl,
+        ]
+    )
     if partial.is_file() and partial.stat().st_size:
         used_ids.update(
             str(row["source_id"])
@@ -329,6 +356,8 @@ def materialize_extra(args: argparse.Namespace) -> None:
         "path": str(extra_path.resolve()),
         "documents": documents,
         "text_bytes": text_bytes,
+        "target_text_bytes": args.extra_text_bytes,
+        "start_source_row": args.start_source_row,
         "file_bytes": extra_path.stat().st_size,
         "file_sha256": _hash_file(extra_path),
         "duplicates_skipped": duplicates_skipped,
@@ -440,7 +469,11 @@ def _link_shards(
 
 def assemble(args: argparse.Namespace) -> None:
     base = load_token_stream_manifest(args.base_stream, verify_files=True)
-    secondary = _load(args.output_root / "secondary-tokens" / "result.json")
+    secondary = (
+        None
+        if args.append_only
+        else _load(args.output_root / "secondary-tokens" / "result.json")
+    )
     extra = _load(args.output_root / "extra-tokens" / "result.json")
     tokenizer_manifest = load_tokenizer_manifest(
         args.output_root / "tokenizer" / "manifest.json", verify_assets=True
@@ -462,15 +495,16 @@ def assemble(args: argparse.Namespace) -> None:
             start_index=0,
         )
     )
-    train_rows.extend(
-        _link_shards(
-            source_directory=args.output_root / "secondary-tokens",
-            source_rows=secondary["shards"],
-            destination=temporary,
-            split="train",
-            start_index=len(train_rows),
+    if secondary is not None:
+        train_rows.extend(
+            _link_shards(
+                source_directory=args.output_root / "secondary-tokens",
+                source_rows=secondary["shards"],
+                destination=temporary,
+                split="train",
+                start_index=len(train_rows),
+            )
         )
-    )
     train_rows.extend(
         _link_shards(
             source_directory=args.output_root / "extra-tokens",
@@ -488,21 +522,26 @@ def assemble(args: argparse.Namespace) -> None:
         start_index=0,
     )
     train_tokens = sum(int(row["tokens"]) for row in train_rows)
-    if train_tokens < REQUIRED_TRAIN_TOKENS:
+    if train_tokens < args.required_train_tokens:
         raise RuntimeError(
-            f"continuation has {train_tokens} tokens, below {REQUIRED_TRAIN_TOKENS}"
+            f"continuation has {train_tokens} tokens, below "
+            f"{args.required_train_tokens}"
         )
     splits = {
         "train": {
             "documents": int(base["splits"]["train"]["documents"])
-            + int(secondary["documents"])
+            + (int(secondary["documents"]) if secondary is not None else 0)
             + int(extra["documents"]),
             "tokens": train_tokens,
             "source_sha256": sha256(
                 json.dumps(
                     [
                         base["splits"]["train"]["source_sha256"],
-                        secondary["source_sha256"],
+                        *(
+                            [secondary["source_sha256"]]
+                            if secondary is not None
+                            else []
+                        ),
                         extra["source_sha256"],
                     ],
                     separators=(",", ":"),
@@ -570,7 +609,9 @@ def assemble(args: argparse.Namespace) -> None:
         "parquet_revision": PARQUET_REVISION,
         "base_train_tokens": base["splits"]["train"]["tokens"],
         "continuation_train_tokens": verified["splits"]["train"]["tokens"],
-        "required_train_tokens": REQUIRED_TRAIN_TOKENS,
+        "required_train_tokens": args.required_train_tokens,
+        "append_only": args.append_only,
+        "start_source_row": args.start_source_row,
         "secondary": secondary,
         "extra": _load(args.output_root / "extra-materialization.json"),
         "extra_tokens": extra,
@@ -578,7 +619,9 @@ def assemble(args: argparse.Namespace) -> None:
             "base_prefix_exact": True,
             "same_pinned_tokenizer": True,
             "unique_document_ids_across_segments": True,
-            "sufficient_unique_tokens": train_tokens >= REQUIRED_TRAIN_TOKENS,
+            "sufficient_unique_tokens": (
+                train_tokens >= args.required_train_tokens
+            ),
             "immutable_source_revisions": True,
         },
     }
@@ -601,11 +644,30 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--segment", choices=("secondary", "extra"))
     result.add_argument("--extra-text-bytes", type=int, default=DEFAULT_EXTRA_TEXT_BYTES)
     result.add_argument("--source-batch-rows", type=int, default=8192)
+    result.add_argument("--append-only", action="store_true")
+    result.add_argument("--expected-base-fingerprint")
+    result.add_argument("--exclude-jsonl", type=Path, action="append", default=[])
+    result.add_argument("--start-source-row", type=int, default=0)
+    result.add_argument(
+        "--required-train-tokens", type=int, default=REQUIRED_TRAIN_TOKENS
+    )
     return result
 
 
 def main() -> None:
     args = parser().parse_args()
+    if args.start_source_row < 0:
+        raise ValueError("start-source-row must be non-negative")
+    if args.required_train_tokens < 1:
+        raise ValueError("required-train-tokens must be positive")
+    if not args.append_only and (
+        args.start_source_row != 0
+        or args.expected_base_fingerprint is not None
+        or args.exclude_jsonl
+    ):
+        raise ValueError(
+            "start/exclusion/base-fingerprint overrides require append-only mode"
+        )
     if args.command == "initialize":
         initialize(args)
     elif args.command == "materialize-extra":

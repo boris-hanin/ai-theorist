@@ -53,6 +53,7 @@ from .pretraining import (
     TokenizedTextCorpus,
     TokenizedTextSpec,
     _autocast,
+    _runtime_checkpoint_path,
     clear_runtime_checkpoint,
     close_distributed,
     load_runtime_checkpoint,
@@ -1704,6 +1705,58 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         ),
         "execution_order": execution_order,
     }
+    if runtime.retained_checkpoint_tokens_per_parameter:
+        retained_scales: Dict[str, Any] = {}
+        for scale in scales:
+            parameter_axis = scale.token_budget_parameter_axis
+            parameter_count = int(getattr(scale, parameter_axis))
+            checkpoints = []
+            prior_step = 0
+            for tokens_per_parameter in (
+                runtime.retained_checkpoint_tokens_per_parameter
+            ):
+                presented_tokens, optimizer_step = _scheduled_token_geometry(
+                    tokens_per_parameter * parameter_count,
+                    context_length=int(config["architecture"]["context_length"]),
+                    fixed_batch_examples=batch_examples,
+                    batch_schedule=batch_schedule,
+                )
+                if presented_tokens > scale.presented_tokens:
+                    raise ValueError(
+                        "a retained checkpoint exceeds the compiled training horizon "
+                        f"for {scale.name}"
+                    )
+                if optimizer_step <= prior_step:
+                    raise ValueError(
+                        "retained checkpoint TPP coordinates collapse to the same "
+                        f"optimizer step for {scale.name}"
+                    )
+                checkpoints.append(
+                    {
+                        "requested_tokens_per_parameter": tokens_per_parameter,
+                        "parameter_axis": parameter_axis,
+                        "parameter_count": parameter_count,
+                        "optimizer_step": optimizer_step,
+                        "presented_tokens": presented_tokens,
+                        "effective_tokens_per_parameter": (
+                            presented_tokens / parameter_count
+                        ),
+                    }
+                )
+                prior_step = optimizer_step
+            retained_scales[scale.name] = checkpoints
+        plan_payload["retained_checkpoint_contract"] = {
+            "schema_version": 1,
+            "state": "model_optimizer_and_sampling_generator",
+            "coordinates": "presented_tokens_per_token_budget_parameter_axis",
+            "survives_successful_trial_cleanup": True,
+            "scales": retained_scales,
+        }
+        plan_payload["execution_order"] = [
+            "compile_update_aligned_retained_horizon_checkpoints",
+            "retain_full_model_optimizer_and_sampling_state_at_each_horizon",
+            *plan_payload["execution_order"],
+        ]
     if batch_schedule is not None:
         plan_payload["batch_schedule"] = batch_schedule
         plan_payload["execution_order"] = [
@@ -2241,6 +2294,18 @@ def forecast_trial_cache_identity(
     return identity_fingerprint, run_id
 
 
+def _retained_checkpoint_base_path(
+    cache_directory: Path,
+    run_id: str,
+    tokens_per_parameter: float,
+) -> Path:
+    label = f"{tokens_per_parameter:g}".replace(".", "p")
+    # The checkpoint writer replaces the final suffix with .pt (or a sharded
+    # rank suffix). Keep a dedicated terminal suffix so decimal eta/TPP labels
+    # elsewhere in the run id can never be mistaken for it.
+    return cache_directory / f"{run_id}.horizon-{label}tpp.retained"
+
+
 def _run_trial(
     *,
     config: Mapping[str, Any],
@@ -2352,6 +2417,15 @@ def _run_trial(
     if cumulative_tokens[-1] != int(scale["presented_tokens"]):
         raise RuntimeError("compiled update batches do not reach presented_tokens")
     steps = int(scale["optimizer_steps"])
+    retained_checkpoint_contract = plan.get("retained_checkpoint_contract")
+    retained_checkpoints: Dict[int, Dict[str, Any]] = {}
+    if isinstance(retained_checkpoint_contract, Mapping):
+        scale_contract = retained_checkpoint_contract["scales"].get(
+            str(scale["name"]), []
+        )
+        retained_checkpoints = {
+            int(row["optimizer_step"]): dict(row) for row in scale_contract
+        }
     generator = torch.Generator(device="cpu").manual_seed(100_003 + seed)
     resume_base = cache_directory / f"{run_id}.resume"
     resumed = load_runtime_checkpoint(
@@ -2397,6 +2471,32 @@ def _run_trial(
         )
         if resumed_tokens != cumulative_tokens[start_step]:
             raise ValueError("runtime checkpoint token coordinate is inconsistent")
+    for retained_step, retained in retained_checkpoints.items():
+        if retained_step <= start_step:
+            retained_base = _retained_checkpoint_base_path(
+                cache_directory,
+                run_id,
+                float(retained["requested_tokens_per_parameter"]),
+            )
+            retained_path = _runtime_checkpoint_path(
+                retained_base, context, runtime
+            )
+            retained_exists = retained_path.is_file()
+            if context.world_size > 1:
+                marker = torch.tensor(
+                    1 if retained_exists else 0,
+                    dtype=torch.int32,
+                    device=context.device,
+                )
+                torch.distributed.all_reduce(
+                    marker, op=torch.distributed.ReduceOp.MIN
+                )
+                retained_exists = bool(marker.item())
+            if not retained_exists:
+                raise ValueError(
+                    "runtime resume is beyond a missing retained horizon checkpoint: "
+                    f"{retained_base}"
+                )
     validation_interval = _positive_int(
         int(config.get("validation_interval_steps", max(1, steps // 8))),
         "validation_interval_steps",
@@ -2469,7 +2569,11 @@ def _run_trial(
                 float(config["optimizer"]["expert_bias_learning_rate"]),
                 synchronize=context.world_size > 1,
             )
-        if step % validation_interval == 0 or step == steps:
+        if (
+            step % validation_interval == 0
+            or step == steps
+            or step in retained_checkpoints
+        ):
             validation_loss = _evaluate(
                 model,
                 corpus,
@@ -2519,6 +2623,32 @@ def _run_trial(
                 },
             )
             last_checkpoint_at = checkpoint_now
+        retained = retained_checkpoints.get(step)
+        if retained is not None:
+            retained_base = _retained_checkpoint_base_path(
+                cache_directory,
+                run_id,
+                float(retained["requested_tokens_per_parameter"]),
+            )
+            save_runtime_checkpoint(
+                base_path=retained_base,
+                model=model,
+                plain_model=plain_model,
+                optimizer=optimizer,
+                context=context,
+                runtime=runtime,
+                identity_fingerprint=identity_fingerprint,
+                step=step,
+                generator=generator,
+                extra={
+                    "validation_checkpoints": checkpoints,
+                    "tokens_seen": cumulative_tokens[step],
+                    "elapsed_seconds": elapsed_before_resume
+                    + time.monotonic()
+                    - started,
+                    "retained_checkpoint_contract": retained,
+                },
+            )
     duration = elapsed_before_resume + time.monotonic() - started
     final_loss = float(checkpoints[-1]["validation_loss"])
     diagnostics: Dict[str, Any] = {}
@@ -2646,6 +2776,19 @@ def _run_trial(
                 "activation_checkpointing": runtime.activation_checkpointing,
                 "sampling_contract": "replicated_global_draw_rank_partition_v1",
                 "resumed_from_step": start_step,
+                "retained_checkpoints": [
+                    {
+                        **row,
+                        "base_path": str(
+                            _retained_checkpoint_base_path(
+                                cache_directory,
+                                run_id,
+                                float(row["requested_tokens_per_parameter"]),
+                            )
+                        ),
+                    }
+                    for _, row in sorted(retained_checkpoints.items())
+                ],
                 "diagnostics": diagnostics,
                 "peak_memory_bytes": (
                     int(torch.cuda.max_memory_allocated(context.device))

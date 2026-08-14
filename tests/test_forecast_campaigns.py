@@ -1157,6 +1157,64 @@ def test_plan_compiles_exact_vocab_aware_constant_tpp_ladder(
     assert compile_real_text_scaling_plan(changed)["fingerprint"] != plan["fingerprint"]
 
 
+def test_forecast_retains_full_update_aligned_horizon_checkpoints(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_config(tmp_path, manifest_path)
+    config["runtime"]["retained_checkpoint_tokens_per_parameter"] = [0.01, 0.02]
+    plan = compile_real_text_scaling_plan(config)
+    contract = plan["retained_checkpoint_contract"]
+    assert contract["state"] == "model_optimizer_and_sampling_generator"
+    scale = plan["scales"][0]
+    rows = contract["scales"][scale["name"]]
+    assert [row["requested_tokens_per_parameter"] for row in rows] == [
+        0.01,
+        0.02,
+    ]
+    assert rows[-1]["optimizer_step"] == scale["optimizer_steps"]
+
+    corpus = TokenizedTextCorpus(
+        forecast_campaigns.forecast_tokenized_text_spec(config),
+        context_length=2,
+        vocab_size=16,
+    )
+    cache = tmp_path / "retained-trials"
+    cache.mkdir()
+    record = forecast_campaigns._run_trial(
+        config=config,
+        plan=plan,
+        scale=scale,
+        corpus=corpus,
+        runtime=PretrainingRuntimeSpec.from_dict(config["runtime"]),
+        context=DistributedContext(0, 1, 0, "cpu"),
+        eta=0.001,
+        seed=3,
+        optimizer_mode="theory",
+        cache_directory=cache,
+    )
+    retained = record.metadata["retained_checkpoints"]
+    assert len(retained) == 2
+    assert {
+        int(row["step"]) for row in record.validation_checkpoints
+    }.issuperset({row["optimizer_step"] for row in retained})
+    assert all(
+        Path(row["base_path"]).with_suffix(".pt").is_file()
+        for row in retained
+    )
+    assert not any(cache.glob("*.resume.pt"))
+
+    payload = torch.load(
+        Path(retained[-1]["base_path"]).with_suffix(".pt"),
+        map_location="cpu",
+        weights_only=False,
+    )
+    assert payload["step"] == scale["optimizer_steps"]
+    assert payload["extra"]["tokens_seen"] == scale["presented_tokens"]
+    assert "model_state_dict" in payload
+    assert "optimizer_state_dict" in payload
+
+
 def test_forecast_binding_replaces_placeholder_and_compiles_verified_plan(
     tmp_path: Path, monkeypatch
 ) -> None:

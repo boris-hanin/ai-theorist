@@ -66,6 +66,12 @@ def main() -> None:
             "resume": True,
         }
     )
+    # Horizon-retention coordinates belong to the full scientific run. A
+    # short runtime canary has a deliberately tiny token budget and must not
+    # pretend to produce those durable scientific checkpoints.
+    config["runtime"].pop(
+        "retained_checkpoint_tokens_per_parameter", None
+    )
     config["optimizer"]["fused"] = args.fused == "true"
     if args.learning_rate not in {
         float(value) for value in config["optimizer"]["learning_rates"]
