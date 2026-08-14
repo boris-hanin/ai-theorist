@@ -2,7 +2,10 @@
 set -euo pipefail
 
 worktree=/home/ubuntu/ai-theorist-completep
-python=/home/ubuntu/ai-theorist/.venv-forecast/bin/python
+# The preregistered plan and three resumable cache entries were compiled under
+# CPython 3.10 / PyTorch 2.6. Even a one-ulp schedule-audit drift under Python
+# 3.12 changes the immutable plan fingerprint, so preserve the source runtime.
+python=/home/ubuntu/ai-theorist/.venv-forecast-py310/bin/python
 cli="$worktree/scripts/ai_theorist_autoscale_python.sh"
 export AI_THEORIST_PYTHON="$python"
 export PYTHONPATH="$worktree/src"
