@@ -252,8 +252,11 @@ def runtime_checkpoint_due(
     )
     if not enabled:
         return False
+    # A final-step checkpoint is immediately deleted after the completed trial
+    # record is written.  For billion-parameter Adam runs it can be tens of GB,
+    # so writing it only enlarges the failure window and distorts throughput.
     if step == total_steps:
-        return True
+        return False
     if (
         runtime.checkpoint_interval_steps
         and step % runtime.checkpoint_interval_steps == 0
@@ -943,6 +946,19 @@ def runtime_checkpoint_path(base_path: Path, context: DistributedContext) -> Pat
     )
 
 
+def _runtime_checkpoint_path(
+    base_path: Path,
+    context: DistributedContext,
+    runtime: PretrainingRuntimeSpec,
+) -> Path:
+    # DDP replicas have identical model, optimizer, and replicated-global-draw
+    # generator state, so one rank-zero checkpoint is the complete state. FSDP
+    # remains genuinely sharded and therefore retains one path per rank.
+    if runtime.distributed == "ddp":
+        return base_path.with_suffix(".pt")
+    return runtime_checkpoint_path(base_path, context)
+
+
 def save_runtime_checkpoint(
     *,
     base_path: Path,
@@ -958,11 +974,14 @@ def save_runtime_checkpoint(
 ) -> None:
     """Atomically persist a same-topology mid-trial restart point.
 
-    Non-distributed runs store one ordinary state dictionary. FSDP runs store
-    one sharded model/optimizer file per local rank, avoiding rank-zero model
-    consolidation and its memory spike. Resumption therefore deliberately
-    requires the same world size.
+    Non-distributed runs store one ordinary state dictionary. DDP runs store
+    one shared rank-zero state because every replica and its replicated global
+    sampling generator are identical. FSDP stores one genuinely sharded file
+    per rank. Resumption deliberately requires the same topology.
     """
+    if runtime.distributed == "ddp" and not context.is_primary:
+        torch.distributed.barrier()
+        return
     if runtime.distributed == "fsdp":
         from torch.distributed.fsdp import (
             FullyShardedDataParallel,
@@ -989,8 +1008,9 @@ def save_runtime_checkpoint(
         optimizer_state = optimizer.state_dict()
     _atomic_torch_save(
         {
-            "schema_version": 1,
+            "schema_version": 2,
             "identity_fingerprint": identity_fingerprint,
+            "distributed": runtime.distributed,
             "world_size": context.world_size,
             "rank": context.rank,
             "step": step,
@@ -999,7 +1019,7 @@ def save_runtime_checkpoint(
             "generator_state": generator.get_state().cpu(),
             "extra": dict(extra),
         },
-        runtime_checkpoint_path(base_path, context),
+        _runtime_checkpoint_path(base_path, context, runtime),
     )
     if context.world_size > 1:
         torch.distributed.barrier()
@@ -1016,7 +1036,11 @@ def load_runtime_checkpoint(
     identity_fingerprint: str,
     generator: torch.Generator,
 ) -> Optional[Dict[str, Any]]:
-    path = runtime_checkpoint_path(base_path, context)
+    path = _runtime_checkpoint_path(base_path, context, runtime)
+    if runtime.distributed == "ddp" and not path.is_file():
+        legacy_path = runtime_checkpoint_path(base_path, context)
+        if legacy_path.is_file():
+            path = legacy_path
     local_exists = path.is_file()
     if context.world_size > 1:
         marker = torch.tensor(
@@ -1029,11 +1053,24 @@ def load_runtime_checkpoint(
     if not runtime.resume or not local_exists:
         return None
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    schema_version = checkpoint.get("schema_version")
     if (
-        checkpoint.get("schema_version") != 1
+        schema_version not in {1, 2}
         or checkpoint.get("identity_fingerprint") != identity_fingerprint
         or checkpoint.get("world_size") != context.world_size
-        or checkpoint.get("rank") != context.rank
+        or (
+            (schema_version == 1 or runtime.distributed != "ddp")
+            and checkpoint.get("rank") != context.rank
+        )
+        or (
+            schema_version == 2
+            and checkpoint.get("distributed") != runtime.distributed
+        )
+        or (
+            schema_version == 2
+            and runtime.distributed == "ddp"
+            and checkpoint.get("rank") != 0
+        )
     ):
         raise ValueError("runtime checkpoint identity or topology mismatch")
     if context.world_size > 1:
@@ -1080,9 +1117,16 @@ def load_runtime_checkpoint(
 
 
 def clear_runtime_checkpoint(
-    base_path: Path, context: DistributedContext
+    base_path: Path,
+    context: DistributedContext,
+    runtime: Optional[PretrainingRuntimeSpec] = None,
 ) -> None:
-    runtime_checkpoint_path(base_path, context).unlink(missing_ok=True)
+    runtime = runtime or PretrainingRuntimeSpec()
+    path = _runtime_checkpoint_path(base_path, context, runtime)
+    if runtime.distributed != "ddp" or context.is_primary:
+        path.unlink(missing_ok=True)
+    if runtime.distributed == "ddp":
+        runtime_checkpoint_path(base_path, context).unlink(missing_ok=True)
     if context.world_size > 1:
         torch.distributed.barrier()
 
@@ -1413,7 +1457,7 @@ def run_standard_pretraining_trial(
     if context.world_size > 1:
         torch.distributed.barrier()
     if resume_path is not None:
-        clear_runtime_checkpoint(resume_path, context)
+        clear_runtime_checkpoint(resume_path, context, runtime)
     return record, {
         "state_dict": state,
         "optimizer_state_dict": optimizer_state,

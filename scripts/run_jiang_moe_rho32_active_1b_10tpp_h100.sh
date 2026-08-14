@@ -72,10 +72,11 @@ if [[ ! -f "$root/preregistration.json" ]]; then
     > "$root/preregistration.stdout.json"
 fi
 "$python" - "$root/preregistration.json" "$root/plan-single.json" \
-  "$root/plan-ddp.json" <<'PY'
+  "$root/plan-ddp.json" "$required_commit" <<'PY'
 import json, sys
-pre, single, ddp=(json.load(open(path)) for path in sys.argv[1:])
+pre, single, ddp=(json.load(open(path)) for path in sys.argv[1:4])
 assert pre["status"] == "preregistered" and all(pre["gates"].values())
+assert pre["repo_commit"] == sys.argv[4]
 assert pre["single_plan_fingerprint"] == single["fingerprint"]
 assert pre["ddp_plan_fingerprint"] == ddp["fingerprint"]
 assert pre["endpoint"]["active_parameters"] == 1_014_263_104

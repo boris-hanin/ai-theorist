@@ -2657,7 +2657,7 @@ def _run_trial(
         atomic_write_json(record_path, record.to_dict())
     if context.world_size > 1:
         torch.distributed.barrier()
-    clear_runtime_checkpoint(resume_base, context)
+    clear_runtime_checkpoint(resume_base, context, runtime)
     return _broadcast_record(record, context)
 
 

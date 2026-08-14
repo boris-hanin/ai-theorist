@@ -39,7 +39,7 @@ def test_runtime_checkpoint_supports_wall_clock_or_step_cadence() -> None:
     assert runtime_checkpoint_due(
         runtime, step=10, total_steps=100, last_checkpoint_at=100, now=101
     )
-    assert runtime_checkpoint_due(
+    assert not runtime_checkpoint_due(
         runtime, step=100, total_steps=100, last_checkpoint_at=100, now=101
     )
     assert not runtime_checkpoint_due(
@@ -70,6 +70,66 @@ def test_distributed_wall_clock_checkpoint_uses_primary_decision(monkeypatch) ->
         last_checkpoint_at=100,
         now=101,
     )
+
+
+def test_ddp_checkpoint_is_one_shared_rank_zero_state(tmp_path, monkeypatch) -> None:
+    runtime = PretrainingRuntimeSpec.from_dict(
+        {"distributed": "ddp", "num_processes": 8, "resume": True}
+    )
+    primary = DistributedContext(0, 8, 0, "cpu")
+    replica = DistributedContext(1, 8, 1, "cpu")
+    model = torch.nn.Linear(3, 2)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+    generator = torch.Generator().manual_seed(17)
+    base = tmp_path / "trial.resume"
+    barriers = []
+
+    monkeypatch.setattr(
+        torch.distributed, "barrier", lambda: barriers.append("barrier")
+    )
+    monkeypatch.setattr(
+        torch.distributed, "all_reduce", lambda tensor, op: None
+    )
+    pretraining.save_runtime_checkpoint(
+        base_path=base,
+        model=model,
+        plain_model=model,
+        optimizer=optimizer,
+        context=primary,
+        runtime=runtime,
+        identity_fingerprint="a" * 64,
+        step=7,
+        generator=generator,
+        extra={"tokens_seen": 123},
+    )
+    shared = base.with_suffix(".pt")
+    assert shared.is_file()
+    assert not pretraining.runtime_checkpoint_path(base, primary).exists()
+    checkpoint = torch.load(shared, map_location="cpu", weights_only=False)
+    assert checkpoint["schema_version"] == 2
+    assert checkpoint["distributed"] == "ddp"
+    assert checkpoint["rank"] == 0
+
+    replica_model = torch.nn.Linear(3, 2)
+    replica_optimizer = torch.optim.Adam(replica_model.parameters(), lr=0.01)
+    resumed = pretraining.load_runtime_checkpoint(
+        base_path=base,
+        model=replica_model,
+        plain_model=replica_model,
+        optimizer=replica_optimizer,
+        context=replica,
+        runtime=runtime,
+        identity_fingerprint="a" * 64,
+        generator=torch.Generator(),
+    )
+    assert resumed == {"step": 7, "extra": {"tokens_seen": 123}}
+    assert all(
+        torch.equal(left, right)
+        for left, right in zip(model.parameters(), replica_model.parameters())
+    )
+    pretraining.clear_runtime_checkpoint(base, primary, runtime)
+    assert not shared.exists()
+    assert barriers == ["barrier", "barrier"]
 
 
 def _corpus_spec(tmp_path):

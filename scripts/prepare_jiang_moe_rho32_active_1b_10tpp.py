@@ -5,6 +5,7 @@ import argparse
 from hashlib import sha256
 import json
 from pathlib import Path
+import subprocess
 from typing import Any, Mapping
 
 from ai_theorist.autoscaler.forecast_campaigns import compile_real_text_scaling_plan
@@ -87,6 +88,12 @@ def main() -> None:
     receipt = args.verification_receipt.expanduser().resolve()
     if not manifest.is_file() or not receipt.is_file():
         raise ValueError("manifest and full verification receipt are required")
+    repo_root = Path(__file__).resolve().parents[1]
+    repo_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_root, text=True
+    ).strip()
+    if len(repo_commit) != 40:
+        raise ValueError("could not bind the preregistration to a repo commit")
     if _sha(manifest) != EXPECTED_MANIFEST_SHA256:
         raise ValueError("FineWeb-Mistral token stream manifest changed")
     if _sha(args.transfer_summary) != EXPECTED_TRANSFER_SUMMARY_SHA256:
@@ -233,6 +240,7 @@ def main() -> None:
             "Mistral-token stream. The 1B-active endpoint is a preregistered "
             "holdout; the dataset differs from the short SlimPajama transfer pilot."
         ),
+        "repo_commit": repo_commit,
         "decision": {
             "primary_shape": "fixed L=16, fixed M/D=2, width-scaled",
             "rho_lm_over_d": 32.0,
