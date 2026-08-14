@@ -37,7 +37,7 @@ EXPECTED_ACTIVE_NONEMBEDDING = (
 EXPECTED_ENDPOINT = {
     "parameters": 2_401_916_224,
     "active_parameters": 1_014_263_104,
-    "non_embedding_parameters": 2_314_147_712,
+    "non_embedding_parameters": 2_313_147_712,
     "active_non_embedding_parameters": 925_494_592,
 }
 EXPECTED_TRANSFER_SUMMARY_SHA256 = (

@@ -578,6 +578,8 @@ def test_jiang_moe_rho32_active_1b_10tpp_ladder_is_exact(
     endpoint = plan["scales"][-1]
     assert endpoint["parameters"] == 2_401_916_224
     assert endpoint["active_parameters"] == 1_014_263_104
+    assert endpoint["non_embedding_parameters"] == 2_313_147_712
+    assert endpoint["active_non_embedding_parameters"] == 925_494_592
     assert endpoint["presented_tokens"] == 10_142_613_504
     assert endpoint["optimizer_steps"] == 77_382
     assert endpoint["heldout"] is True
