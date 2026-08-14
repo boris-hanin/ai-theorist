@@ -54,6 +54,14 @@ falls by about 75x and lands on the predicted extra `L^-2` law. This directly
 rules out applying `sqrt(D)/(L M)` to the raw matrix and then applying the
 architectural `1/L` again.
 
+## Independent compute-host reproduction
+
+The exact committed runner at `034b27b` was deployed to the 8x H100 host using
+Python 3.10 and PyTorch 2.6.0+cu124. It reproduced slopes `-0.0835834380` and
+`-2.0843739833` for the main-text convention, and `-0.0055024478` and
+`-2.0055062915` for Appendix E. Both passed; the differences from the local
+numbers are numerical roundoff. No training campaign was started.
+
 ## Remaining scientific gate
 
 The next experiment must test trained fixed-normalized-`eta` trajectories and

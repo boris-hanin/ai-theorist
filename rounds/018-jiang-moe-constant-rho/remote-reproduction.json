@@ -1,0 +1,23 @@
+{
+  "status": "passed",
+  "repo_commit": "034b27bbe5e573d9af563782d7be6f645f2c295c",
+  "runtime": {
+    "host_class": "8x H100 80GB",
+    "python": "3.10",
+    "torch": "2.6.0+cu124"
+  },
+  "training_started": false,
+  "routing_conventions": {
+    "main_text": {
+      "correct_variance_slope_in_L": -0.08358343800002281,
+      "double_depth_variance_slope_in_L": -2.084373983322614,
+      "preregistered_bars_pass": true
+    },
+    "appendix_e": {
+      "correct_variance_slope_in_L": -0.005502447843711943,
+      "double_depth_variance_slope_in_L": -2.00550629150204,
+      "preregistered_bars_pass": true
+    }
+  },
+  "comparison_to_local": "matches to numerical precision"
+}
