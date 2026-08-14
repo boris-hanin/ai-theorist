@@ -125,7 +125,9 @@ def main() -> None:
             and plan["optimizer_contract"]["beta2"] == 0.95
             and plan["optimizer_contract"]["epsilon"] == 1e-12
             and plan["optimizer_contract"]["weight_decay"] == 0.0
-            and plan["schedule"]["name"] == "jiang_half_warmup_constant"
+            and plan["schedule"]["family"] == "linear_warmup_constant"
+            and plan["schedule"]["warmup_fraction"] == 0.5
+            and plan["schedule"]["last_multiplier"] == 1.0
         ),
     }
     if not all(gates.values()):
