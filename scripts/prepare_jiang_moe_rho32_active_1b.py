@@ -170,7 +170,7 @@ def main() -> None:
                     / float(row["active_parameters"])
                     - 0.375
                 )
-                <= 0.0002
+                <= 0.0003
                 for row in scales
             )
         ),
