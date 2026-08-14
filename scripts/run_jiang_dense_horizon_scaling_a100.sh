@@ -70,9 +70,12 @@ fi
 stage=compiling-and-preregistering-dense-horizons
 echo "$stage" > "$root/stage"
 if [[ ! -f "$root/preregistration.json" ]]; then
-  "$python" "$repo/scripts/prepare_jiang_dense_horizon_scaling.py" \
-    "$source_300" "$source_1b" "$manifest" "$receipt" \
-    --output-root "$root" > "$root/preregistration.stdout.json"
+  (
+    cd "$repo"
+    "$python" "$repo/scripts/prepare_jiang_dense_horizon_scaling.py" \
+      "$source_300" "$source_1b" "$manifest" "$receipt" \
+      --output-root "$root"
+  ) > "$root/preregistration.stdout.json"
 fi
 "$python" - "$root/preregistration.json" "$required_commit" <<'PY'
 import json, sys

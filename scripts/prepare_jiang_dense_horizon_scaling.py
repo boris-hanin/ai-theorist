@@ -220,8 +220,9 @@ def main() -> None:
         atomic_write_json(target / "config.json", config)
         atomic_write_json(target / "plan.json", plan)
 
+    repo_root = Path(__file__).resolve().parents[1]
     commit = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
+        ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
         check=True,
         capture_output=True,
         text=True,
