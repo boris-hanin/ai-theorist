@@ -75,7 +75,11 @@ fi
 import json, sys
 p=json.load(open(sys.argv[1]))
 assert p["status"] == "passed"
-assert {row["plan_fingerprint"] for row in p["campaigns"]} == {"$required_plan"}
+if "campaigns" in p:
+    fingerprints = {row["plan_fingerprint"] for row in p["campaigns"]}
+else:
+    fingerprints = {p["plan_fingerprint"]}
+assert fingerprints == {"$required_plan"}
 PY
 
 stage=resuming-fifteen-trial-tuning-pool
