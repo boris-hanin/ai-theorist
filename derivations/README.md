@@ -22,6 +22,8 @@ correction and the taxonomy.
 | `11-chizat-width-lr-transfer.md` | **heuristic + measurement** | fixed-eta Chizat width coordinate; measured in `rounds/012-chizat-width-transfer` |
 | `12-chizat-trained-boundaries-muon.md` | **heuristic + exploratory measurement** | trained-boundary and Muon coordinates; exploratory evidence in `rounds/013-chizat-muon` |
 | `13-chizat-joint-lmd-transfer.md` | **heuristic + measurement** | coherent joint `L/M/D` rates and the preferred `LM/D` invariant path; measured in `rounds/014-chizat-lmd-transfer` |
+| `14-jiang-chizat-interleaved.md` | **implementation contract** | source-faithful interleaved MHSA + Jiang/Chizat FFN model and per-axis audit requirements |
+| `15-jiang-moe-constant-rho.md` | **heuristic + structural DMFT audit** | first-principles compatibility of constant `LM/D` with Jiang sparse-MoE initialization, per-group Adam rules, epsilon rules, and `alpha_*` |
 
 ## The two methods
 

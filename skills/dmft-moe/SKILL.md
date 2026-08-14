@@ -107,6 +107,28 @@ Consequences:
 - Transfer across `alpha_ffn` is weakest exactly at `alpha_ffn = 1`, which is
   the paper's base config.
 
+## Constant `rho = L M / D` (Jiang--Chizat compatibility)
+
+Jiang's raw expert-down scale is `sqrt(D)/M`, and the residual branch supplies
+`1/L`. Therefore `sqrt(D)/(L M)` is the **effective residualized scale**. Do
+not put it into the raw down matrix or depth is counted twice.
+
+At constant `rho`, `M=rho D/L`, so the residualized down initialization becomes
+`1/(rho sqrt(D))` and the residualized down LR becomes `1/(rho D)`: both are
+depth-independent in the normalized width coordinate. The full substitution,
+including every Adam epsilon and the tied embedding/unembedding boundary, is in
+`derivations/15-jiang-moe-constant-rho.md` and executable with
+`scripts/constant_rho_compatibility.py`.
+
+Two qualifications are mandatory:
+
+- `alpha_* = D/(MEL) = 1/(rho E)`. Fixed `E` preserves a finite neural-SDE
+  sector; only growing `E` at fixed `kappa` drives the family to the universal
+  neural ODE.
+- `alpha_ffn=M/D=rho/L`. Fixed rho with unbounded depth eventually crosses
+  below the measured expert-down crossover. A finite ladder can be compatible;
+  an unlimited constant-rho depth limit is not already validated.
+
 ## Checks specific to this skill
 
 - **Down-init check first.** Confirm `sigma(W_down) sqrt(m) ~ alpha_ffn^{-1/2}`
