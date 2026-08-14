@@ -69,7 +69,7 @@ from hashlib import sha256
 import json, sys
 from pathlib import Path
 from ai_theorist.autoscaler.tokenization import load_token_stream_manifest
-p = load_token_stream_manifest(sys.argv[1], verify_files=True)
+p = load_token_stream_manifest(Path(sys.argv[1]), verify_files=True)
 tokenizer_manifest_path = Path(sys.argv[2])
 tokenizer = json.load(open(tokenizer_manifest_path, encoding="utf-8"))
 for asset in tokenizer["assets"]:
