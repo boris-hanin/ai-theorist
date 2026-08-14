@@ -356,6 +356,50 @@ def test_jiang_moe_plan_preserves_source_parameterization_and_active_axes(
         compile_real_text_scaling_plan(invalid)
 
 
+def test_jiang_moe_rho32_transfer_pilot_is_exact_and_fully_factorial(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch, vocab_size=50_257)
+    config = json.loads(
+        Path(
+            "configs/autoscaler/jiang_moe_slimpajama_rho32_transfer_pilot.json"
+        ).read_text(encoding="utf-8")
+    )
+    config["dataset"]["token_stream_manifest_path"] = str(manifest_path)
+    config["dataset"]["tokenizer"] = "forecast_test"
+    plan = compile_real_text_scaling_plan(config)
+    assert [
+        (row["depth"], row["width"], row["hidden_width"])
+        for row in plan["scales"]
+    ] == [
+        (2, 128, 2048),
+        (4, 256, 2048),
+        (6, 384, 2048),
+        (8, 512, 2048),
+        (12, 768, 2048),
+        (16, 1024, 2048),
+    ]
+    assert all(row["rho_lm_over_d"] == 32.0 for row in plan["scales"])
+    assert all(
+        row["width"]
+        / (row["hidden_width"] * row["num_experts"] * row["depth"])
+        == pytest.approx(1 / 128)
+        for row in plan["scales"]
+    )
+    assert plan["architecture_contract"]["optional_declared_rho_lm_over_d"] == 32.0
+    assert len(build_forecast_fleet_tasks(plan, phase="tune")) == 24
+    ladder = build_forecast_fleet_tasks(
+        plan,
+        phase="ladder",
+        selected_learning_rate=plan["learning_rates"][4],
+        run_negative_control=True,
+    )
+    assert len(ladder) == 18
+    assert sum(row.optimizer_mode == "theory" for row in ladder) == 15
+    assert sum(row.optimizer_mode == "wrong_global" for row in ladder) == 3
+    assert all(row["presented_tokens"] == 6_553_600 for row in plan["scales"])
+
+
 def test_jiang_moe_real_text_trial_audits_every_lr_epsilon_and_init_group(
     tmp_path: Path, monkeypatch
 ) -> None:
