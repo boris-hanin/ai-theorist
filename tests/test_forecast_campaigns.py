@@ -2,6 +2,7 @@ from hashlib import sha256
 from copy import deepcopy
 import json
 from pathlib import Path
+import runpy
 import shutil
 import subprocess
 import sys
@@ -433,6 +434,94 @@ def test_jiang_moe_rho32_adaptive_lower_bracket_remains_fully_factorial(
         (12, 768, 2048),
         (16, 1024, 2048),
     ]
+
+
+def test_jiang_moe_rho32_active_1b_ladder_uses_active_tpp_and_exact_geometry(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch, vocab_size=50_257)
+    config = json.loads(
+        Path(
+            "configs/autoscaler/jiang_moe_slimpajama_rho32_active_1b.json"
+        ).read_text(encoding="utf-8")
+    )
+    config["dataset"]["token_stream_manifest_path"] = str(manifest_path)
+    config["dataset"]["tokenizer"] = "forecast_test"
+    # The synthetic test stream is intentionally tiny. Production
+    # preregistration separately enforces no repetition against SlimPajama.
+    config["ladder"]["require_gate_eligible_plan"] = False
+    config["ladder"]["maximum_repetition_ratio"] = 1_000_000.0
+    plan = compile_real_text_scaling_plan(config)
+    assert [
+        (row["depth"], row["width"], row["hidden_width"])
+        for row in plan["scales"]
+    ] == [
+        (16, 512, 1024),
+        (16, 768, 1536),
+        (16, 1024, 2048),
+        (16, 1280, 2560),
+        (16, 1536, 3072),
+        (16, 1792, 3584),
+        (16, 2048, 4096),
+        (16, 2304, 4608),
+        (16, 2624, 5248),
+    ]
+    assert all(row["rho_lm_over_d"] == 32.0 for row in plan["scales"])
+    assert all(
+        row["token_budget_parameter_axis"] == "active_parameters"
+        and row["target_parameter_axis"] == "active_non_embedding_parameters"
+        for row in plan["scales"]
+    )
+    endpoint = plan["scales"][-1]
+    assert endpoint["active_parameters"] == 1_014_509_312
+    assert endpoint["active_non_embedding_parameters"] == 881_963_200
+    assert endpoint["parameters"] == 2_336_879_360
+    assert endpoint["heldout"] is True
+    assert len(build_forecast_fleet_tasks(plan, phase="tune")) == 8
+    ladder = build_forecast_fleet_tasks(
+        plan,
+        phase="ladder",
+        selected_learning_rate=plan["learning_rates"][4],
+        run_negative_control=False,
+    )
+    assert len(ladder) == 8
+    assert {task.scale_name for task in ladder} == {
+        "S2",
+        "S3",
+        "S4",
+        "S5",
+        "S6",
+        "S7",
+        "S8",
+        "S9",
+    }
+
+    source = tmp_path / "active-tpp-config.json"
+    canary = tmp_path / "active-tpp-canary.json"
+    source.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prepare_forecast_runtime_canary.py",
+            str(source),
+            str(manifest_path),
+            str(canary),
+            "--steps",
+            "3",
+            "--learning-rate",
+            str(plan["learning_rates"][4]),
+            "--batch-examples",
+            "128",
+            "--gradient-accumulation-steps",
+            "16",
+        ],
+    )
+    runpy.run_path("scripts/prepare_forecast_runtime_canary.py", run_name="__main__")
+    canary_plan = compile_real_text_scaling_plan(
+        json.loads(canary.read_text(encoding="utf-8"))
+    )
+    assert canary_plan["scales"][-1]["optimizer_steps"] == 3
 
 
 def test_jiang_moe_real_text_trial_audits_every_lr_epsilon_and_init_group(

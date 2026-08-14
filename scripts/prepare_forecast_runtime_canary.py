@@ -81,8 +81,9 @@ def main() -> None:
         batch_tokens = int(config["batch_examples"]) * int(
             config["architecture"]["context_length"]
         )
+        token_budget_axis = str(largest["token_budget_parameter_axis"])
         config["ladder"]["tokens_per_parameter"] = (
-            args.steps * batch_tokens / int(largest["parameters"])
+            args.steps * batch_tokens / int(largest[token_budget_axis])
         )
     config["validation_interval_steps"] = max(1, args.steps // 4)
     plan = compile_real_text_scaling_plan(config)
