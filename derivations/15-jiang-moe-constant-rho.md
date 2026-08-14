@@ -1,7 +1,7 @@
 # Constant `L M / D` and Jiang MoE hyperparameter transfer
 
-> **Status before round 018 measurement: derived compatibility conditions and
-> preregistered initialization check.** This combines Jiang et al. Table 2
+> **Status: parameterisation and structural-limit compatibility validated in
+> round 018; trained loss dynamics remain untested.** This combines Jiang et al. Table 2
 > (arXiv:2601.20205v3) with the Chizat residual-scale identity. It is not a
 > full MoE cavity solution; `derivations/07-moe-dmft.md` documents that gap.
 
@@ -131,5 +131,8 @@ Constant `L M / D` is compatible with the Jiang MoE parameterisation provided:
 5. the claimed ODE/SDE sector is tracked through `alpha_*`; and
 6. the ladder does not silently cross into an unvalidated `M/D` regime.
 
-Round 018 tests the scale identities and the double-depth control before a
-trained transfer campaign is allowed to run.
+Round 018 passed every exact identity and both routing-initialization variants.
+The correct initial stream-variance slopes were `-0.0836` (main text) and
+`-0.0055` (Appendix E), while the double-depth controls were `-2.0844` and
+`-2.0055`, against predictions `0` and `-2`. A trained fixed-normalized-`eta`
+transfer campaign is still required before making a loss-dynamics claim.

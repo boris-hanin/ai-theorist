@@ -254,13 +254,27 @@ def derive(reference: Shape, shapes: Iterable[Shape]) -> dict[str, object]:
     }
 
 
-def monte_carlo(shapes: Sequence[Shape], *, seeds: int, input_dimension: int, tokens: int) -> dict[str, object]:
+def monte_carlo(
+    shapes: Sequence[Shape],
+    *,
+    seeds: int,
+    input_dimension: int,
+    tokens: int,
+    routing_convention: str,
+) -> dict[str, object]:
     if seeds < 2:
         raise ValueError("Monte Carlo requires at least two seeds")
     import torch
 
     from moe import MoENet, data
 
+    conventions = {
+        "main_text": {"gamma": 1.0, "b_std": 0.0},
+        "appendix_e": {"gamma": None, "b_std": 1.0},
+    }
+    if routing_convention not in conventions:
+        raise ValueError("routing_convention must be main_text or appendix_e")
+    routing = conventions[routing_convention]
     torch.set_num_threads(1)
     values: dict[str, dict[str, object]] = {}
     for shape in shapes:
@@ -275,8 +289,8 @@ def monte_carlo(shapes: Sequence[Shape], *, seeds: int, input_dimension: int, to
                 kappa=shape.kappa,
                 alpha_ffn=shape.alpha_ffn,
                 D=input_dimension,
-                gamma=None,
-                b_std=1.0,
+                gamma=routing["gamma"],
+                b_std=routing["b_std"],
                 seed=31_000 + seed,
                 dtype=torch.float32,
             )
@@ -297,19 +311,30 @@ def monte_carlo(shapes: Sequence[Shape], *, seeds: int, input_dimension: int, to
             ],
         }
     ordered = [values[shape.label] for shape in shapes]
+    correct_slope = _slope(
+        [float(row["L"]) for row in ordered],
+        [float(row["correct_mean"]) for row in ordered],
+    )
+    double_depth_slope = _slope(
+        [float(row["L"]) for row in ordered],
+        [float(row["double_depth_mean"]) for row in ordered],
+    )
     return {
         "seeds": seeds,
         "input_dimension": input_dimension,
         "tokens": tokens,
+        "routing_convention": routing_convention,
+        "routing_initialization": routing,
         "rows": values,
-        "correct_variance_slope_in_L": _slope(
-            [float(row["L"]) for row in ordered],
-            [float(row["correct_mean"]) for row in ordered],
-        ),
-        "double_depth_variance_slope_in_L": _slope(
-            [float(row["L"]) for row in ordered],
-            [float(row["double_depth_mean"]) for row in ordered],
-        ),
+        "correct_variance_slope_in_L": correct_slope,
+        "double_depth_variance_slope_in_L": double_depth_slope,
+        "preregistered_bars": {
+            "correct_absolute_slope_max": 0.20,
+            "double_depth_absolute_error_from_minus_two_max": 0.20,
+            "correct_pass": abs(correct_slope) <= 0.20,
+            "double_depth_pass": abs(double_depth_slope + 2.0) <= 0.20,
+            "all_pass": abs(correct_slope) <= 0.20 and abs(double_depth_slope + 2.0) <= 0.20,
+        },
     }
 
 
@@ -332,6 +357,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--monte-carlo-seeds", type=int, default=0)
     parser.add_argument("--input-dimension", type=int, default=8)
     parser.add_argument("--tokens", type=int, default=8)
+    parser.add_argument(
+        "--routing-convention",
+        choices=("main_text", "appendix_e"),
+        default="appendix_e",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
@@ -354,6 +384,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             seeds=args.monte_carlo_seeds,
             input_dimension=args.input_dimension,
             tokens=args.tokens,
+            routing_convention=args.routing_convention,
         )
     if args.output:
         _atomic_write(args.output, payload)
