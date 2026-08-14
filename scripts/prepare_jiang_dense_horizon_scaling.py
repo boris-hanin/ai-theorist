@@ -60,6 +60,7 @@ def _compile_horizon(
     total_tpp: float,
     retained_tpp: list[float],
     expected_geometry: tuple[int, int, int, int, int],
+    selected_learning_rate: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     config = deepcopy(dict(source_config))
     config["dataset"]["token_stream_manifest_path"] = str(manifest.resolve())
@@ -91,11 +92,19 @@ def _compile_horizon(
             "retained_checkpoint_tokens_per_parameter": retained_tpp,
         }
     )
-    selected_eta = float(source_record["optimizer"]["learning_rate"])
-    if selected_eta not in {
+    source_eta = float(source_record["optimizer"]["learning_rate"])
+    if source_eta not in {
         float(value) for value in config["optimizer"]["learning_rates"]
     }:
         raise ValueError("source learning rate is absent from the horizon config")
+    selected_eta = (
+        source_eta
+        if selected_learning_rate is None
+        else float(selected_learning_rate)
+    )
+    if not math.isfinite(selected_eta) or selected_eta <= 0.0:
+        raise ValueError("selected horizon learning rate must be positive and finite")
+    config["optimizer"]["learning_rates"] = [selected_eta]
     if float(source_record["optimizer"]["weight_decay"]) != 0.0:
         raise ValueError("dense horizon extension requires the frozen zero decay")
 
@@ -149,6 +158,7 @@ def _compile_horizon(
     return config, plan, {
         "target": target,
         "selected_learning_rate": selected_eta,
+        "source_learning_rate": source_eta,
         "seed": int(source_record["seed"]),
         "task_id": (
             f"ladder-{target['name']}-theory-eta{selected_eta:g}-"
