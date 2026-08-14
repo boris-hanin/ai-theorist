@@ -67,7 +67,7 @@ def _token_hash(token_ids) -> str:
     return digest.hexdigest()
 
 
-def _stream(tmp_path: Path, monkeypatch) -> Path:
+def _stream(tmp_path: Path, monkeypatch, *, vocab_size: int = 16) -> Path:
     tokenizer = Tokenizer(
         WordLevel(
             {
@@ -75,7 +75,7 @@ def _stream(tmp_path: Path, monkeypatch) -> Path:
                 "Autoscaler": 1,
                 "<|endoftext|>": 2,
                 "<|extra_id_0|>": 3,
-                **{f"unused-{index}": index for index in range(4, 16)},
+                **{f"unused-{index}": index for index in range(4, vocab_size)},
             },
             unk_token="[UNK]",
         )
@@ -94,7 +94,7 @@ def _stream(tmp_path: Path, monkeypatch) -> Path:
         tokenizer_file="tokenizer.json",
         package="tokenizers",
         package_version=PINNED_TOKENIZERS_PACKAGE_VERSION,
-        vocab_size=16,
+        vocab_size=vocab_size,
         special_tokens={
             "bos": None,
             "eos": "<|endoftext|>",
@@ -668,6 +668,42 @@ def test_extension_profile_binds_one_seed_and_frozen_parent_contract(
     invalid["run_negative_control"] = True
     with pytest.raises(ValueError, match="refuses a wrong-LR control"):
         compile_real_text_scaling_plan(invalid)
+
+
+def test_jiang_500m_rho32_geometry_is_exact(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch, vocab_size=32_768)
+    config = json.loads(
+        Path("configs/autoscaler/jiang_mistral_10tpp_calibration_200m.json")
+        .read_text(encoding="utf-8")
+    )
+    config["dataset"]["token_stream_manifest_path"] = str(manifest_path)
+    config["dataset"]["tokenizer"] = "forecast_test"
+    config["run_profile"] = "smoke"
+    config["ladder"]["target_parameters"][-1] = 498_723_456
+    config["ladder"]["depths"][-1] = 8
+    config["ladder"]["target_forecasts"] = []
+    config["ladder"]["heldout_scale_count"] = 1
+    config["ladder"]["require_gate_eligible_plan"] = False
+    config["runtime"].update(
+        distributed="ddp",
+        num_processes=8,
+        gradient_accumulation_steps=1,
+    )
+    config["validation_interval_steps"] = 2_378
+    plan = compile_real_text_scaling_plan(config)
+    target = plan["scales"][-1]
+    assert target["parameters"] == 498_723_456
+    assert target["non_embedding_parameters"] == 428_436_096
+    assert (target["depth"], target["width"], target["hidden_width"]) == (
+        8,
+        2_112,
+        8_448,
+    )
+    assert target["num_heads"] == 33
+    assert target["rho_lm_over_d"] == 32.0
+    assert target["tokens_per_parameter"] == pytest.approx(10.0, abs=0.001)
 
 
 def test_ddp_sampling_partitions_the_same_global_draw_as_one_gpu() -> None:
