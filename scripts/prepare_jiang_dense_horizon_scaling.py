@@ -179,6 +179,7 @@ def main() -> None:
         args.manifest.resolve(),
         verification_receipt_path=args.receipt.resolve(),
     )
+    receipt_payload = _load(args.receipt.resolve())
     if identity["tokenizer_fingerprint"] != EXPECTED_TOKENIZER_FINGERPRINT:
         raise ValueError("the pinned Mistral tokenizer fingerprint changed")
 
@@ -228,7 +229,7 @@ def main() -> None:
         text=True,
     ).stdout.strip()
     gates = {
-        "verified_immutable_token_stream": identity["status"] == "complete",
+        "verified_immutable_token_stream": receipt_payload.get("status") == "passed",
         "same_pinned_mistral_tokenizer": (
             identity["tokenizer_fingerprint"] == EXPECTED_TOKENIZER_FINGERPRINT
         ),
