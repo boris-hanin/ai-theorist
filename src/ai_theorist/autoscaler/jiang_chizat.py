@@ -119,6 +119,7 @@ class JiangChizatAttention(nn.Module):
         shape: JiangChizatShape,
         *,
         value_initialization_multiplier: float = JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
+        initialization_std: Optional[float] = None,
         bias: bool = True,
         attention_backend: str = "math",
         capture_diagnostics: bool = True,
@@ -133,6 +134,11 @@ class JiangChizatAttention(nn.Module):
         self.num_heads = shape.num_heads
         self.head_dimension = shape.head_dimension
         self.value_initialization_multiplier = value_initialization_multiplier
+        if initialization_std is not None and (
+            not math.isfinite(initialization_std) or initialization_std <= 0.0
+        ):
+            raise ValueError("initialization_std must be finite and positive")
+        self.initialization_std = initialization_std
         if attention_backend not in {"auto", "math", "flash"}:
             raise ValueError("attention_backend must be auto, math, or flash")
         self.attention_backend = attention_backend
@@ -146,7 +152,11 @@ class JiangChizatAttention(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        std = 1.0 / math.sqrt(self.width)
+        std = (
+            self.initialization_std
+            if self.initialization_std is not None
+            else 1.0 / math.sqrt(self.width)
+        )
         with torch.no_grad():
             q_weight, k_weight, v_weight = self.qkv.weight.chunk(3, dim=0)
             nn.init.normal_(q_weight, mean=0.0, std=std)

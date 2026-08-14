@@ -32,6 +32,15 @@ from .jiang_chizat import (
     JiangChizatShape,
     JiangChizatTransformer,
 )
+from .jiang_moe import (
+    JIANG_MOE_ADAM_THEORY,
+    JIANG_MOE_REPORTED_LR_MULTIPLIERS,
+    JiangMoEBlock,
+    JiangMoEReference,
+    JiangMoEShape,
+    JiangMoETransformer,
+    jiang_moe_parameter_counts,
+)
 from .lr_schedules import LearningRateSchedule
 from .normalized_transformer import (
     NUGPT_ADAM_THEORY,
@@ -92,6 +101,13 @@ class TheoryScale:
     heldout: bool
     rho_lm_over_d: Optional[float]
     rho_relative_error: Optional[float]
+    active_parameters: int
+    active_non_embedding_parameters: int
+    target_parameter_axis: str
+    token_budget_parameter_axis: str
+    tokens_per_active_parameter: float
+    num_experts: Optional[int]
+    active_experts: Optional[int]
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -370,11 +386,13 @@ def _generate_ladder(
     if block_type not in {
         "completep_transformer",
         "jiang_chizat_transformer",
+        "jiang_moe_transformer",
         "normalized_transformer",
     }:
         raise ValueError(
             "architecture.block_type must be completep_transformer, "
-            "jiang_chizat_transformer, or normalized_transformer"
+            "jiang_chizat_transformer, jiang_moe_transformer, or "
+            "normalized_transformer"
         )
     vocab_size = _positive_int(architecture.get("vocab_size"), "vocab_size", 8)
     if vocab_size != int(identity["vocab_size"]):
@@ -438,6 +456,31 @@ def _generate_ladder(
     if fixed_optimizer_steps is not None and batch_schedule is not None:
         raise ValueError("fixed-step ladders refuse variable batch schedules")
     unique_tokens = int(identity["training_tokens"])
+    allowed_parameter_axes = {
+        "parameters",
+        "non_embedding_parameters",
+        "active_parameters",
+        "active_non_embedding_parameters",
+    }
+    target_parameter_axis = str(
+        ladder.get("target_parameter_axis", "parameters")
+    )
+    token_budget_parameter_axis = str(
+        ladder.get("token_budget_parameter_axis", "parameters")
+    )
+    if target_parameter_axis not in allowed_parameter_axes:
+        raise ValueError(
+            "ladder.target_parameter_axis must be a supported parameter count"
+        )
+    if token_budget_parameter_axis not in allowed_parameter_axes:
+        raise ValueError(
+            "ladder.token_budget_parameter_axis must be a supported parameter count"
+        )
+    if block_type != "jiang_moe_transformer" and (
+        target_parameter_axis.startswith("active_")
+        or token_budget_parameter_axis.startswith("active_")
+    ):
+        raise ValueError("active parameter axes are reserved for sparse MoE ladders")
 
     shapes: List[Dict[str, Any]] = []
     candidates = range(head_dimension, maximum_width + 1, head_dimension)
@@ -484,13 +527,31 @@ def _generate_ladder(
                         mlp_multiplier=mlp_multiplier,
                         position_encoding=position_encoding,
                     ),
+                    "active_parameters": completep_parameter_count(
+                        vocab_size=vocab_size,
+                        context_length=context_length,
+                        depth=depth,
+                        width=width,
+                        mlp_multiplier=mlp_multiplier,
+                        position_encoding=position_encoding,
+                    ),
+                    "active_non_embedding_parameters": completep_non_embedding_parameter_count(
+                        vocab_size=vocab_size,
+                        context_length=context_length,
+                        depth=depth,
+                        width=width,
+                        mlp_multiplier=mlp_multiplier,
+                        position_encoding=position_encoding,
+                    ),
                     "num_heads": width // head_dimension,
                     "rho_lm_over_d": None,
                     "rho_relative_error": None,
                 }
                 for width in candidates
             ]
-            shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
+            shapes.append(
+                min(rows, key=lambda row: abs(row[target_parameter_axis] - target))
+            )
         contract = {
             "parameterization": "completep_alpha_1_adamw",
             "theory": asdict(COMPLETEP_ADAMW_THEORY),
@@ -560,12 +621,16 @@ def _generate_ladder(
                         "hidden_width": hidden_width,
                         "parameters": parameters,
                         "non_embedding_parameters": non_embedding_parameters,
+                        "active_parameters": parameters,
+                        "active_non_embedding_parameters": non_embedding_parameters,
                         "num_heads": residual_width // head_dimension,
                         "rho_lm_over_d": actual_rho,
                         "rho_relative_error": abs(actual_rho / rho - 1.0),
                     }
                 )
-            shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
+            shapes.append(
+                min(rows, key=lambda row: abs(row[target_parameter_axis] - target))
+            )
         optimizer_payload = config.get("optimizer", {})
         optimizer_name = (
             str(optimizer_payload.get("name", "adam"))
@@ -587,6 +652,239 @@ def _generate_ladder(
             "residual_branch_scale": "1/L",
             "unembedding_forward_scale": "(D/D0)^(-1)",
             "layer_norm_numerical_epsilon": 1e-5,
+        }
+    elif block_type == "jiang_moe_transformer":
+        reference_depth = _positive_int(
+            architecture.get("reference_depth"), "reference_depth"
+        )
+        reference_hidden = _positive_int(
+            architecture.get("reference_hidden_width"), "reference_hidden_width"
+        )
+        reference_residual = _positive_int(
+            architecture.get("reference_residual_width"),
+            "reference_residual_width",
+        )
+        reference_num_experts = _positive_int(
+            architecture.get("reference_num_experts"), "reference_num_experts"
+        )
+        reference_active_experts = _positive_int(
+            architecture.get("reference_active_experts"),
+            "reference_active_experts",
+        )
+        if reference_active_experts > reference_num_experts:
+            raise ValueError("reference_active_experts cannot exceed reference_num_experts")
+        default_num_experts = _positive_int(
+            architecture.get("num_experts", reference_num_experts), "num_experts"
+        )
+        default_active_experts = _positive_int(
+            architecture.get("active_experts", reference_active_experts),
+            "active_experts",
+        )
+        expert_counts = tuple(
+            _positive_int(value, "ladder.num_experts")
+            for value in ladder.get("num_experts", [default_num_experts] * len(targets))
+        )
+        active_counts = tuple(
+            _positive_int(value, "ladder.active_experts")
+            for value in ladder.get(
+                "active_experts", [default_active_experts] * len(targets)
+            )
+        )
+        if len(expert_counts) != len(targets) or len(active_counts) != len(targets):
+            raise ValueError(
+                "ladder.num_experts and ladder.active_experts must match target_parameters"
+            )
+        reference_sparsity = reference_active_experts / reference_num_experts
+        for experts, active in zip(expert_counts, active_counts):
+            if active > experts or not math.isclose(
+                active / experts, reference_sparsity, rel_tol=0.0, abs_tol=1e-12
+            ):
+                raise ValueError(
+                    "Jiang MoE scaling requires exact fixed A/E sparsity"
+                )
+        hidden_multiple = _positive_int(
+            int(ladder.get("hidden_width_multiple", head_dimension)),
+            "hidden_width_multiple",
+        )
+        raw_residual_widths = ladder.get("residual_widths")
+        raw_expert_widths = ladder.get("expert_widths")
+        if (raw_residual_widths is None) != (raw_expert_widths is None):
+            raise ValueError(
+                "Jiang MoE exact geometry requires both residual_widths and "
+                "expert_widths"
+            )
+        exact_residual_widths: Optional[Tuple[int, ...]] = None
+        exact_expert_widths: Optional[Tuple[int, ...]] = None
+        if raw_residual_widths is not None and raw_expert_widths is not None:
+            exact_residual_widths = tuple(
+                _positive_int(value, "ladder.residual_widths")
+                for value in raw_residual_widths
+            )
+            exact_expert_widths = tuple(
+                _positive_int(value, "ladder.expert_widths")
+                for value in raw_expert_widths
+            )
+            if (
+                len(exact_residual_widths) != len(targets)
+                or len(exact_expert_widths) != len(targets)
+            ):
+                raise ValueError(
+                    "ladder residual_widths and expert_widths must match "
+                    "target_parameters"
+                )
+            if any(width % head_dimension for width in exact_residual_widths):
+                raise ValueError(
+                    "every Jiang MoE residual width must be divisible by head_dimension"
+                )
+            if any(width % hidden_multiple for width in exact_expert_widths):
+                raise ValueError(
+                    "every Jiang MoE expert width must satisfy hidden_width_multiple"
+                )
+        raw_ffn_ratios = ladder.get("ffn_ratios")
+        if raw_ffn_ratios is None:
+            ffn_ratios = (reference_hidden / reference_residual,) * len(targets)
+        else:
+            ffn_ratios = tuple(
+                _positive_float(value, "ladder.ffn_ratios")
+                for value in raw_ffn_ratios
+            )
+            if len(ffn_ratios) != len(targets):
+                raise ValueError("ladder.ffn_ratios must match target_parameters")
+
+        # Constant L*M/D is a useful separately declared shape ablation, but it
+        # is not a condition of Jiang et al.'s sparse-MoE transfer theorem.
+        # The source result scales D, L, alpha=M/D, and E independently at fixed
+        # kappa=A/E.  Never impose the dense hybrid's rho constraint silently.
+        enforce_moe_rho = "rho_lm_over_d" in ladder
+        moe_rho: Optional[float] = None
+        moe_rho_tolerance: Optional[float] = None
+        if enforce_moe_rho:
+            moe_rho = _positive_float(
+                ladder["rho_lm_over_d"], "ladder.rho_lm_over_d"
+            )
+            moe_rho_tolerance = float(
+                ladder.get("maximum_rho_relative_error", 0.25)
+            )
+            if not 0.0 <= moe_rho_tolerance < 1.0:
+                raise ValueError("maximum_rho_relative_error must be in [0,1)")
+
+        for scale_index, (target, depth, experts, active, ffn_ratio) in enumerate(
+            zip(targets, depths, expert_counts, active_counts, ffn_ratios)
+        ):
+            rows = []
+            scale_residual_candidates = (
+                (exact_residual_widths[scale_index],)
+                if exact_residual_widths is not None
+                else candidates
+            )
+            for residual_width in scale_residual_candidates:
+                if exact_expert_widths is not None:
+                    hidden_width = exact_expert_widths[scale_index]
+                elif enforce_moe_rho:
+                    assert moe_rho is not None
+                    hidden_width = _nearest_multiple(
+                        moe_rho * residual_width / depth, hidden_multiple
+                    )
+                else:
+                    hidden_width = _nearest_multiple(
+                        ffn_ratio * residual_width, hidden_multiple
+                    )
+                counts = jiang_moe_parameter_counts(
+                    vocab_size=vocab_size,
+                    context_length=context_length,
+                    depth=depth,
+                    residual_width=residual_width,
+                    expert_width=hidden_width,
+                    num_experts=experts,
+                    active_experts=active,
+                )
+                actual_rho = depth * hidden_width / residual_width
+                rho_relative_error = (
+                    abs(actual_rho / moe_rho - 1.0)
+                    if moe_rho is not None
+                    else None
+                )
+                rows.append(
+                    {
+                        "target": target,
+                        "depth": depth,
+                        "width": residual_width,
+                        "hidden_width": hidden_width,
+                        **{
+                            key: counts[key]
+                            for key in (
+                                "parameters",
+                                "non_embedding_parameters",
+                                "active_parameters",
+                                "active_non_embedding_parameters",
+                            )
+                        },
+                        "num_heads": residual_width // head_dimension,
+                        "num_experts": experts,
+                        "active_experts": active,
+                        "rho_lm_over_d": actual_rho,
+                        "rho_relative_error": rho_relative_error,
+                    }
+                )
+            shapes.append(
+                min(rows, key=lambda row: abs(row[target_parameter_axis] - target))
+            )
+        router_gamma = _positive_float(
+            architecture.get("router_gamma", 1.0), "architecture.router_gamma"
+        )
+        if router_gamma < 0.5:
+            raise ValueError("architecture.router_gamma must be at least 1/2")
+        if not math.isclose(router_gamma, 1.0, rel_tol=0.0, abs_tol=0.0):
+            raise ValueError(
+                "the source-faithful Jiang main-experiment path requires "
+                "router_gamma=1"
+            )
+        initialization_std = _positive_float(
+            architecture.get("initialization_std", 0.02),
+            "architecture.initialization_std",
+        )
+        contract = {
+            "parameterization": "jiang_moe_completep_adam_table2",
+            "theory": asdict(JIANG_MOE_ADAM_THEORY),
+            "independently_scalable_dimensions": [
+                "residual_width_D",
+                "depth_L",
+                "expert_width_M",
+                "expert_count_E",
+            ],
+            "rho_lm_over_d_is_not_a_source_transfer_invariant": True,
+            "optional_declared_rho_lm_over_d": moe_rho,
+            "optional_maximum_rho_relative_error": moe_rho_tolerance,
+            "fixed_active_expert_fraction": reference_sparsity,
+            "reference_num_experts": reference_num_experts,
+            "reference_active_experts": reference_active_experts,
+            "router_gamma": router_gamma,
+            "reference_initialization_std": initialization_std,
+            "embedding_initialization_std": "sigma0",
+            "router_initialization_std": (
+                "sigma0 * (D/D0)^(-gamma); main-paper gamma=1"
+            ),
+            "attention_qko_initialization_std": "sigma0 * (D/D0)^(-1/2)",
+            "expert_up_initialization_std": "sigma0 * (D/D0)^(-1/2)",
+            "expert_down_initialization_std": (
+                "sigma0 * (D/D0)^(-1/2) * "
+                "(alpha_ffn/alpha_ffn0)^(-1) * 1/4"
+            ),
+            "value_initialization_multiplier": 1.0 / 16.0,
+            "tied_embeddings": True,
+            "learned_absolute_positions": True,
+            "activation": "gelu",
+            "attention_scale": "QK^T/d_head",
+            "residual_branch_scale": "1/L",
+            "moe_mixing": "sigmoid-weighted hard top-A divided by A",
+            "load_balancing": "manual expert bias; no auxiliary loss",
+            "unembedding_forward_scale": "(D/D0)^(-1)",
+            "layer_norm_numerical_epsilon": 1e-5,
+            "parameter_reporting": {
+                "total": "shared + all expert banks",
+                "active_per_token": "shared + A selected expert banks",
+                "router_and_all_routing_biases_are_active": True,
+            },
         }
     else:
         mlp_multiplier = _positive_int(
@@ -618,13 +916,27 @@ def _generate_ladder(
                         width=width,
                         mlp_multiplier=mlp_multiplier,
                     ) - (2 * vocab_size * width + vocab_size),
+                    "active_parameters": nugpt_parameter_count(
+                        vocab_size=vocab_size,
+                        depth=depth,
+                        width=width,
+                        mlp_multiplier=mlp_multiplier,
+                    ),
+                    "active_non_embedding_parameters": nugpt_parameter_count(
+                        vocab_size=vocab_size,
+                        depth=depth,
+                        width=width,
+                        mlp_multiplier=mlp_multiplier,
+                    ) - (2 * vocab_size * width + vocab_size),
                     "num_heads": width // head_dimension,
                     "rho_lm_over_d": None,
                     "rho_relative_error": None,
                 }
                 for width in candidates
             ]
-            shapes.append(min(rows, key=lambda row: abs(row["parameters"] - target)))
+            shapes.append(
+                min(rows, key=lambda row: abs(row[target_parameter_axis] - target))
+            )
         contract = {
             "parameterization": "nugpt_mid_alignment",
             "theory": asdict(NUGPT_ADAM_THEORY),
@@ -635,7 +947,10 @@ def _generate_ladder(
     scales: List[TheoryScale] = []
     for index, row in enumerate(shapes):
         parameters = int(row["parameters"])
-        relative_error = abs(parameters / int(row["target"]) - 1.0)
+        active_parameters = int(row["active_parameters"])
+        relative_error = abs(
+            int(row[target_parameter_axis]) / int(row["target"]) - 1.0
+        )
         if relative_error > tolerance:
             raise ValueError(
                 f"no width <= {maximum_width} places S{index + 1} within the "
@@ -647,12 +962,23 @@ def _generate_ladder(
             raise ValueError(
                 f"S{index + 1} violates the declared L*M/D tolerance"
             )
+        if (
+            block_type == "jiang_moe_transformer"
+            and row["rho_relative_error"] is not None
+            and moe_rho_tolerance is not None
+            and float(row["rho_relative_error"]) > moe_rho_tolerance
+        ):
+            raise ValueError(
+                f"S{index + 1} violates the optional declared L*M/D ablation tolerance"
+            )
         if fixed_optimizer_steps is not None:
             optimizer_steps = fixed_optimizer_steps
             presented_tokens = optimizer_steps * batch_tokens
         else:
             assert tokens_per_parameter is not None
-            requested_tokens = tokens_per_parameter * parameters
+            requested_tokens = tokens_per_parameter * int(
+                row[token_budget_parameter_axis]
+            )
             presented_tokens, optimizer_steps = _scheduled_token_geometry(
                 requested_tokens,
                 context_length=context_length,
@@ -691,6 +1017,25 @@ def _generate_ladder(
                     if row["rho_relative_error"] is not None
                     else None
                 ),
+                active_parameters=active_parameters,
+                active_non_embedding_parameters=int(
+                    row["active_non_embedding_parameters"]
+                ),
+                target_parameter_axis=target_parameter_axis,
+                token_budget_parameter_axis=token_budget_parameter_axis,
+                tokens_per_active_parameter=(
+                    presented_tokens / active_parameters
+                ),
+                num_experts=(
+                    int(row["num_experts"])
+                    if row.get("num_experts") is not None
+                    else None
+                ),
+                active_experts=(
+                    int(row["active_experts"])
+                    if row.get("active_experts") is not None
+                    else None
+                ),
             )
         )
     reference_index = int(ladder.get("reference_scale_index", 0))
@@ -726,6 +1071,12 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "nGPT refuses FSDP because sharded post-step matrix projection is not "
             "yet definition preserving; use DDP or one GPU"
+        )
+    if block_type == "jiang_moe_transformer" and runtime.distributed == "fsdp":
+        raise ValueError(
+            "Jiang MoE currently requires DDP or one GPU: its manually updated "
+            "routing-bias parameter is replicated and synchronized after each "
+            "global batch, not FSDP-sharded"
         )
     head_dimension = int(config["architecture"]["head_dimension"])
     if runtime.attention_backend == "flash" and head_dimension % 8:
@@ -774,6 +1125,8 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         else {"adam", "adamw"}
         if block_type == "jiang_chizat_transformer"
         else {"adam"}
+        if block_type == "jiang_moe_transformer"
+        else {"adam"}
     )
     if not isinstance(optimizer, Mapping) or optimizer.get("name") not in allowed_optimizers:
         raise ValueError(
@@ -812,6 +1165,45 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
         )
     if optimizer.get("name") == "adam" and float(optimizer.get("weight_decay", 0.0)) != 0.0:
         raise ValueError("forecast Adam uses zero weight decay; use AdamW for decay")
+    if block_type == "jiang_moe_transformer":
+        if not math.isclose(
+            float(optimizer.get("beta1", 0.9)), 0.9, rel_tol=0.0, abs_tol=0.0
+        ) or not math.isclose(
+            float(optimizer.get("beta2", 0.95)), 0.95, rel_tol=0.0, abs_tol=0.0
+        ):
+            raise ValueError("Jiang MoE requires Adam betas (0.9, 0.95)")
+        if not math.isclose(
+            float(optimizer.get("epsilon", 1e-12)),
+            1e-12,
+            rel_tol=0.0,
+            abs_tol=0.0,
+        ):
+            raise ValueError("Jiang MoE requires base Adam epsilon 1e-12")
+        configured_multipliers = dict(
+            optimizer.get(
+                "learning_rate_multipliers", JIANG_MOE_REPORTED_LR_MULTIPLIERS
+            )
+        )
+        if set(configured_multipliers) != set(JIANG_MOE_REPORTED_LR_MULTIPLIERS) or any(
+            not math.isclose(
+                float(configured_multipliers[name]),
+                expected,
+                rel_tol=0.0,
+                abs_tol=0.0,
+            )
+            for name, expected in JIANG_MOE_REPORTED_LR_MULTIPLIERS.items()
+        ):
+            raise ValueError(
+                "Jiang MoE production requires the exact Appendix-D.1 LR "
+                "multipliers; tune a separately preregistered reference contract "
+                "before changing them"
+            )
+        _positive_float(
+            optimizer.get("expert_bias_learning_rate"),
+            "optimizer.expert_bias_learning_rate",
+        )
+        if weight_decay_tau_grid or include_zero_weight_decay:
+            raise ValueError("the Jiang main-paper MoE contract uses Adam with zero decay")
     frozen_optimizer_contract: Optional[Dict[str, Any]] = None
     raw_frozen_optimizer = config.get("frozen_optimizer")
     if raw_frozen_optimizer is not None:
@@ -1113,8 +1505,8 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     else:
         if not target_forecasts or tuple(sorted(set(target_forecasts))) != target_forecasts:
             raise ValueError("ladder.target_forecasts must be unique and increasing")
-        if target_forecasts[0] <= scales[-1].parameters:
-            raise ValueError("every target forecast must exceed the largest ladder scale")
+        # Forecast targets live on the declared fit axis, not necessarily total
+        # parameters (MoEs report total and active axes separately).
     fit_parameter_axis = str(
         ladder.get(
             "fit_parameter_axis",
@@ -1123,13 +1515,26 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             else "parameters",
         )
     )
-    if fit_parameter_axis not in {"parameters", "non_embedding_parameters"}:
+    if fit_parameter_axis not in {
+        "parameters",
+        "non_embedding_parameters",
+        "active_parameters",
+        "active_non_embedding_parameters",
+    }:
         raise ValueError(
-            "ladder.fit_parameter_axis must be parameters or non_embedding_parameters"
+            "ladder.fit_parameter_axis must be a supported total or active "
+            "parameter count"
         )
-    if run_profile == "fixed_budget_scan" and fit_parameter_axis != "non_embedding_parameters":
+    if block_type != "jiang_moe_transformer" and fit_parameter_axis.startswith("active_"):
+        raise ValueError("active fit axes are reserved for sparse MoE ladders")
+    required_fixed_budget_axis = (
+        "active_non_embedding_parameters"
+        if block_type == "jiang_moe_transformer"
+        else "non_embedding_parameters"
+    )
+    if run_profile == "fixed_budget_scan" and fit_parameter_axis != required_fixed_budget_axis:
         raise ValueError(
-            "fixed_budget_scan requires non_embedding_parameters as the primary fit axis"
+            f"fixed_budget_scan requires {required_fixed_budget_axis} as the primary fit axis"
         )
     minimum_span = _positive_float(
         ladder.get("minimum_parameter_span", 1.0 if run_profile == "comparison" else 30.0),
@@ -1139,6 +1544,10 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
     observed_span = float(getattr(fit_scales[-1], fit_parameter_axis)) / float(
         getattr(fit_scales[0], fit_parameter_axis)
     )
+    if target_forecasts and target_forecasts[0] <= getattr(
+        scales[-1], fit_parameter_axis
+    ):
+        raise ValueError("every target forecast must exceed the largest ladder fit scale")
     maximum_repetition = _positive_float(
         ladder.get("maximum_repetition_ratio", 1.0), "maximum_repetition_ratio"
     )
@@ -1158,7 +1567,9 @@ def compile_real_text_scaling_plan(config: Mapping[str, Any]) -> Dict[str, Any]:
             raise ValueError(
                 "forecast plan is guaranteed to fail its corpus repetition gate"
             )
-        if target_forecasts and target_forecasts[-1] / scales[-1].parameters > maximum_extrapolation:
+        if target_forecasts and target_forecasts[-1] / getattr(
+            scales[-1], fit_parameter_axis
+        ) > maximum_extrapolation:
             raise ValueError(
                 "forecast plan is guaranteed to fail its extrapolation gate"
             )
@@ -1591,6 +2002,69 @@ def _build_model_and_groups(
             ),
         }
         block_types: Sequence[type[nn.Module]] = (JiangChizatBlock,)
+    elif block_type == "jiang_moe_transformer":
+        shape = JiangMoEShape(
+            depth=int(scale["depth"]),
+            residual_width=int(scale["width"]),
+            expert_width=int(scale["hidden_width"]),
+            head_dimension=int(architecture["head_dimension"]),
+            num_experts=int(scale["num_experts"]),
+            active_experts=int(scale["active_experts"]),
+        )
+        reference = JiangMoEReference(
+            depth=int(architecture["reference_depth"]),
+            residual_width=int(architecture["reference_residual_width"]),
+            expert_width=int(architecture["reference_hidden_width"]),
+            num_experts=int(architecture["reference_num_experts"]),
+            active_experts=int(architecture["reference_active_experts"]),
+        )
+        plain_model = JiangMoETransformer(
+            shape,
+            vocab_size=int(architecture["vocab_size"]),
+            context_length=int(architecture["context_length"]),
+            reference=reference,
+            initialization_std=float(architecture.get("initialization_std", 0.02)),
+            router_gamma=float(architecture.get("router_gamma", 1.0)),
+            attention_backend=runtime.attention_backend,
+            activation_checkpointing=runtime.activation_checkpointing,
+            capture_attention_diagnostics=capture_diagnostics,
+        ).to(context.device)
+        assert isinstance(plain_model, JiangMoETransformer)
+        multipliers = dict(
+            optimizer_payload.get(
+                "learning_rate_multipliers", JIANG_MOE_REPORTED_LR_MULTIPLIERS
+            )
+        )
+        groups = plain_model.optimizer_parameter_groups(
+            eta,
+            epsilon0=float(optimizer_payload.get("epsilon", 1e-12)),
+            learning_rate_multipliers=multipliers,
+        )
+        group_audit = plain_model.optimizer_contract_audit(
+            eta,
+            epsilon0=float(optimizer_payload.get("epsilon", 1e-12)),
+            learning_rate_multipliers=multipliers,
+        )
+        expert_bias_learning_rate = _positive_float(
+            optimizer_payload["expert_bias_learning_rate"],
+            "optimizer.expert_bias_learning_rate",
+        )
+        group_audit = {
+            **group_audit,
+            "base_weight_decay": 0.0,
+            "weight_decay_tau_ema": None,
+            "manual_expert_bias": plain_model.manual_parameter_contract(
+                expert_bias_learning_rate
+            ),
+            "parameter_accounting": plain_model.parameter_accounting(),
+            "initialization_contract": plain_model.initialization_contract(),
+            "source_constant_initialization_multipliers": {
+                "attention_value": 1.0 / 16.0,
+                "expert_down": 1.0 / 4.0,
+            },
+            "router_gamma": float(architecture.get("router_gamma", 1.0)),
+        }
+        block_types = (JiangMoEBlock,)
     else:
         architecture_template = ArchitectureTemplate.from_dict(architecture)
         scale_level = ScaleLevel(
@@ -1953,6 +2427,8 @@ def _run_trial(
         ):
             raise RuntimeError("scheduled batch is not divisible by data-parallel microbatches")
         optimizer.zero_grad(set_to_none=True)
+        if isinstance(plain_model, JiangMoETransformer):
+            plain_model.begin_routing_measurement()
         for accumulation_index in range(accumulation_steps):
             inputs, targets = _sample_rank_partitioned_batch(
                 corpus,
@@ -1981,6 +2457,11 @@ def _run_trial(
         optimizer.step()
         if isinstance(plain_model, NormalizedTransformer):
             plain_model.project_normalized_weights()
+        elif isinstance(plain_model, JiangMoETransformer):
+            plain_model.update_expert_biases(
+                float(config["optimizer"]["expert_bias_learning_rate"]),
+                synchronize=context.world_size > 1,
+            )
         if step % validation_interval == 0 or step == steps:
             validation_loss = _evaluate(
                 model,
@@ -2038,6 +2519,8 @@ def _run_trial(
         diagnostics = plain_model.sphere_diagnostics()
     elif isinstance(plain_model, JiangChizatTransformer):
         diagnostics = plain_model.diagnostics()
+    elif isinstance(plain_model, JiangMoETransformer):
+        diagnostics = plain_model.routing_diagnostics()
     elif isinstance(plain_model, CompletePTransformer):
         diagnostics = plain_model.diagnostics()
     record: Optional[BatchRunRecord] = None
@@ -2049,6 +2532,8 @@ def _run_trial(
                 if isinstance(plain_model, CompletePTransformer)
                 else "nugpt_real_text_scaling"
                 if isinstance(plain_model, NormalizedTransformer)
+                else "jiang_moe_real_text_scaling"
+                if isinstance(plain_model, JiangMoETransformer)
                 else "jiang_chizat_real_text_scaling"
             ),
             optimizer=OptimizerHyperparameters(
@@ -2080,7 +2565,9 @@ def _run_trial(
             learning_rate_schedule=schedule.name,
             final_validation_loss=final_loss,
             estimated_flops=float(
-                6 * int(scale["parameters"]) * int(scale["presented_tokens"])
+                6
+                * int(scale.get("active_parameters", scale["parameters"]))
+                * int(scale["presented_tokens"])
             ),
             wall_time_seconds=duration,
             validation_checkpoints=tuple(checkpoints),
@@ -2090,6 +2577,30 @@ def _run_trial(
                 "tokenizer_fingerprint": corpus.tokenizer_fingerprint,
                 "tokenizer_is_pinned": corpus.tokenizer_is_pinned,
                 "optimizer_mode": optimizer_mode,
+                "parameter_accounting": {
+                    "total_parameters": int(scale["parameters"]),
+                    "active_parameters_per_token": int(
+                        scale.get("active_parameters", scale["parameters"])
+                    ),
+                    "total_non_embedding_parameters": int(
+                        scale["non_embedding_parameters"]
+                    ),
+                    "active_non_embedding_parameters_per_token": int(
+                        scale.get(
+                            "active_non_embedding_parameters",
+                            scale["non_embedding_parameters"],
+                        )
+                    ),
+                    "tokens_per_total_parameter": float(
+                        scale["tokens_per_parameter"]
+                    ),
+                    "tokens_per_active_parameter": float(
+                        scale.get(
+                            "tokens_per_active_parameter",
+                            scale["tokens_per_parameter"],
+                        )
+                    ),
+                },
                 "weight_decay_tau_ema": weight_decay_tau_ema,
                 "peak_parameter_group_contract": group_contract,
                 "optimizer_group_audit": group_audit,

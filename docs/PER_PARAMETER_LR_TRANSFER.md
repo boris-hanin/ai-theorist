@@ -106,10 +106,13 @@ arXiv:2601.20205v3, Sections 3.1-3.3, Table 2, Appendices A and D.1.
   and MoE residual branches each scaled by `1/L`.
 - Router: sigmoid gates, hard no-gradient top-`A` set, fixed
   `kappa=A/E`, and mixing divided by `A`.
-- Expert up weights initialize at `D^-1/2`; down weights at
-  `(1/4) sqrt(D)/M` after applying the reported constant-scale multiplier;
-  expert biases initialize at zero. Router initialization obeys
-  `D^-gamma`, `gamma >= 1/2`.
+- A global initialization coordinate `sigma0` is declared at the reference
+  model. Embedding/unembedding and learned-position entries use `sigma0`;
+  attention Q/K/O and expert-up entries use
+  `sigma0 (D/D0)^-1/2`; V receives the additional reported `1/16`; expert
+  down uses `sigma0 (D/D0)^-1/2 (alpha/alpha0)^-1 / 4`; and expert biases
+  initialize at zero. Router initialization is
+  `sigma0 (D/D0)^-gamma`, with `gamma=1` in every main-text experiment.
 - Attention Q/K initialize at `D^-1/2`, while V uses the reported `1/16`
   initialization multiplier. QKV and output weights are distinct optimizer
   groups because only QKV receives the reported LR multiplier.
@@ -120,9 +123,21 @@ arXiv:2601.20205v3, Sections 3.1-3.3, Table 2, Appendices A and D.1.
   `1/16`, with all other group constants equal to one. Reference probes are
   relative checks around these source values; the values are never silently
   replaced by an all-one setup.
-- The non-Adam expert routing bias is a separate zero-initialized buffer with
+- The non-Adam expert routing bias is a separate zero-initialized model
+  parameter, deliberately excluded from Adam, with
   update `b_i <- b_i - eta_bias (Load_i-kappa)` and constant `eta_bias` at
-  fixed sparsity.
+  fixed sparsity. The source proves this no-scaling rule but does not report a
+  universal numeric `eta_bias`; every campaign must therefore declare (and,
+  for production evidence, qualify) its reference value explicitly.
+- D, L, expert width M, and expert count E are independently scalable in the
+  Jiang result. Only `kappa=A/E` is held fixed. Constant `L*M/D` is available
+  as an explicitly requested shape ablation, never imposed as a hidden MoE
+  transfer condition.
+- Parameter manifests report exact total and per-token active counts. Routing,
+  every routing bias, and the A selected expert banks are counted active; all E
+  expert banks are counted in total parameters. Token-choice dispatch executes
+  only selected expert-token pairs rather than evaluating every expert and
+  masking afterward.
 - Adam uses `(0.9,0.95)`, base epsilon `1e-12`, zero weight decay, no gradient
   clipping, linear warmup for the first half of the fixed-token run, then a
   constant peak LR.

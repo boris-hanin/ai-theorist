@@ -106,14 +106,20 @@ def test_expert_initialization_and_manual_bias_rule_match_table2():
     shape = JiangMoEShape(2, 32, 128, 8, 8, 2)
     model = make_model(shape)
     expert = model.blocks[0].moe.experts[0]
-    assert float(expert.up.weight.detach().std()) == pytest.approx(32 ** -0.5, rel=0.12)
+    width_ratio = shape.residual_width / REFERENCE.residual_width
+    ffn_ratio_ratio = shape.ffn_ratio / REFERENCE.ffn_ratio
+    hidden_std = 0.02 * width_ratio ** -0.5
+    assert float(expert.up.weight.detach().std()) == pytest.approx(hidden_std, rel=0.12)
     assert float(expert.down.weight.detach().std()) == pytest.approx(
-        math.sqrt(32) / 128 / 4.0, rel=0.12
+        hidden_std * ffn_ratio_ratio ** -1.0 / 4.0, rel=0.12
     )
     q_weight, k_weight, v_weight = model.blocks[0].attention.qkv.weight.chunk(3, dim=0)
-    assert float(q_weight.detach().std()) == pytest.approx(32 ** -0.5, rel=0.12)
-    assert float(k_weight.detach().std()) == pytest.approx(32 ** -0.5, rel=0.12)
-    assert float(v_weight.detach().std()) == pytest.approx(32 ** -0.5 / 16.0, rel=0.12)
+    assert float(q_weight.detach().std()) == pytest.approx(hidden_std, rel=0.12)
+    assert float(k_weight.detach().std()) == pytest.approx(hidden_std, rel=0.12)
+    assert float(v_weight.detach().std()) == pytest.approx(hidden_std / 16.0, rel=0.12)
+    assert float(model.blocks[0].moe.router.weight.detach().std()) == pytest.approx(
+        0.02 * width_ratio ** -1.0, rel=0.12
+    )
     moe = model.blocks[0].moe
     with torch.no_grad():
         moe.last_load.copy_(torch.tensor([0.5, 0.25, 0.0, 0.25, 0.5, 0.25, 0.0, 0.25]))
@@ -147,3 +153,35 @@ def test_moe_forward_is_causal_and_one_full_update_is_finite():
     assert torch.isfinite(loss)
     diagnostics = model.routing_diagnostics()
     assert diagnostics["active_expert_fraction"] == pytest.approx(0.25)
+
+
+def test_sparse_dispatch_matches_dense_mask_definition_and_only_runs_selected_tokens():
+    model = make_model()
+    moe = model.blocks[0].moe.eval()
+    hidden = torch.randn(3, 5, model.shape.residual_width)
+    with torch.no_grad():
+        gates = torch.sigmoid(moe.router(hidden))
+        selected = (gates + moe.expert_bias).topk(
+            model.shape.active_experts, dim=-1
+        ).indices
+        mask = torch.zeros_like(gates).scatter_(-1, selected, 1.0)
+        dense_reference = torch.zeros_like(hidden)
+        for index, expert in enumerate(moe.experts):
+            dense_reference += (
+                mask[..., index] * gates[..., index]
+            ).unsqueeze(-1) * expert(hidden)
+        dense_reference /= model.shape.active_experts
+        sparse = moe(hidden)
+    assert torch.allclose(sparse, dense_reference, atol=1e-7, rtol=1e-6)
+
+
+def test_active_and_total_parameter_accounting_is_exact_and_distinct():
+    model = make_model()
+    counts = model.parameter_accounting()
+    assert counts["parameters"] == sum(
+        parameter.numel() for parameter in model.parameters()
+    )
+    assert counts["parameters"] > counts["active_parameters"]
+    assert counts["non_embedding_parameters"] > counts[
+        "active_non_embedding_parameters"
+    ]

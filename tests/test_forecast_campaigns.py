@@ -19,6 +19,7 @@ from ai_theorist.autoscaler.forecast_campaigns import (
     completep_parameter_count,
     compile_real_text_scaling_plan,
     forecast_trial_cache_identity,
+    jiang_moe_parameter_counts,
     jiang_parameter_count,
     nugpt_parameter_count,
     run_real_text_scaling_campaign,
@@ -47,6 +48,12 @@ from ai_theorist.autoscaler.jiang_chizat import (
     JiangChizatReference,
     JiangChizatShape,
     JiangChizatTransformer,
+)
+from ai_theorist.autoscaler.jiang_moe import (
+    JIANG_MOE_REPORTED_LR_MULTIPLIERS,
+    JiangMoEReference,
+    JiangMoEShape,
+    JiangMoETransformer,
 )
 from ai_theorist.autoscaler.normalized_transformer import NormalizedTransformer
 from ai_theorist.autoscaler.schema import ArchitectureTemplate, ScaleLevel
@@ -211,6 +218,63 @@ def _jiang_config(tmp_path: Path, manifest_path: Path):
     }
 
 
+def _jiang_moe_config(tmp_path: Path, manifest_path: Path):
+    shapes = [(1, 4), (1, 6), (1, 8), (2, 8), (2, 12), (2, 16)]
+    counts = [
+        jiang_moe_parameter_counts(
+            vocab_size=16,
+            context_length=2,
+            depth=depth,
+            residual_width=width,
+            expert_width=max(2, int(round((width / depth) / 2)) * 2),
+            num_experts=4,
+            active_experts=1,
+        )
+        for depth, width in shapes
+    ]
+    config = _jiang_config(tmp_path, manifest_path)
+    config["architecture"] = {
+        "block_type": "jiang_moe_transformer",
+        "vocab_size": 16,
+        "context_length": 2,
+        "head_dimension": 2,
+        "reference_depth": 1,
+        "reference_hidden_width": 4,
+        "reference_residual_width": 4,
+        "reference_num_experts": 4,
+        "reference_active_experts": 1,
+        "num_experts": 4,
+        "active_experts": 1,
+        "router_gamma": 1.0,
+        "initialization_std": 2.0 ** -6,
+    }
+    config["ladder"] = {
+        **config["ladder"],
+        "target_parameters": [row["active_parameters"] for row in counts],
+        "depths": [depth for depth, _ in shapes],
+        "residual_widths": [width for _, width in shapes],
+        "expert_widths": [
+            max(2, int(round((width / depth) / 2)) * 2)
+            for depth, width in shapes
+        ],
+        "target_parameter_axis": "active_parameters",
+        "token_budget_parameter_axis": "active_parameters",
+        "fit_parameter_axis": "active_non_embedding_parameters",
+        "num_experts": [4] * len(shapes),
+        "active_experts": [1] * len(shapes),
+        "target_forecasts": [counts[-1]["active_non_embedding_parameters"] * 2],
+    }
+    config["ladder"].pop("rho_lm_over_d")
+    config["ladder"].pop("maximum_rho_relative_error", None)
+    config["optimizer"] = {
+        **config["optimizer"],
+        "learning_rate_multipliers": dict(JIANG_MOE_REPORTED_LR_MULTIPLIERS),
+        "expert_bias_learning_rate": 0.01,
+    }
+    config["runtime"]["activation_checkpointing"] = False
+    return config
+
+
 def test_analytic_counts_match_both_theory_models() -> None:
     jiang = JiangChizatTransformer(
         JiangChizatShape(2, 8, 8, 2),
@@ -245,6 +309,116 @@ def test_analytic_counts_match_both_theory_models() -> None:
             vocab_size=16, depth=2, width=8, mlp_multiplier=2
         )
     )
+
+
+def test_jiang_moe_plan_preserves_source_parameterization_and_active_axes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_moe_config(tmp_path, manifest_path)
+    plan = compile_real_text_scaling_plan(config)
+    contract = plan["architecture_contract"]
+    assert contract["router_gamma"] == 1.0
+    assert contract["rho_lm_over_d_is_not_a_source_transfer_invariant"] is True
+    assert contract["optional_declared_rho_lm_over_d"] is None
+    assert contract["fixed_active_expert_fraction"] == pytest.approx(0.25)
+    assert contract["attention_scale"] == "QK^T/d_head"
+    assert contract["residual_branch_scale"] == "1/L"
+    assert contract["moe_mixing"] == (
+        "sigmoid-weighted hard top-A divided by A"
+    )
+    assert all(row["parameters"] > row["active_parameters"] for row in plan["scales"])
+    assert all(
+        row["target_parameter_axis"] == "active_parameters"
+        and row["token_budget_parameter_axis"] == "active_parameters"
+        and row["active_experts"] / row["num_experts"] == pytest.approx(0.25)
+        for row in plan["scales"]
+    )
+
+    invalid = deepcopy(config)
+    invalid["architecture"]["router_gamma"] = 0.5
+    with pytest.raises(ValueError, match="router_gamma=1"):
+        compile_real_text_scaling_plan(invalid)
+    invalid = deepcopy(config)
+    invalid["optimizer"]["learning_rate_multipliers"][
+        "jiang_moe_router"
+    ] = 1.0
+    with pytest.raises(ValueError, match="exact Appendix-D.1"):
+        compile_real_text_scaling_plan(invalid)
+    invalid = deepcopy(config)
+    invalid["ladder"]["active_experts"][-1] = 2
+    with pytest.raises(ValueError, match="fixed A/E sparsity"):
+        compile_real_text_scaling_plan(invalid)
+    invalid = deepcopy(config)
+    invalid["runtime"]["distributed"] = "fsdp"
+    invalid["runtime"]["num_processes"] = 2
+    with pytest.raises(ValueError, match="requires DDP or one GPU"):
+        compile_real_text_scaling_plan(invalid)
+
+
+def test_jiang_moe_real_text_trial_audits_every_lr_epsilon_and_init_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch)
+    config = _jiang_moe_config(tmp_path, manifest_path)
+    plan = compile_real_text_scaling_plan(config)
+    scale = plan["scales"][3]
+    corpus = TokenizedTextCorpus(
+        forecast_campaigns.forecast_tokenized_text_spec(config),
+        context_length=2,
+        vocab_size=16,
+    )
+    cache = tmp_path / "moe-trials"
+    cache.mkdir()
+    record = forecast_campaigns._run_trial(
+        config=config,
+        plan=plan,
+        scale=scale,
+        corpus=corpus,
+        runtime=PretrainingRuntimeSpec.from_dict(config["runtime"]),
+        context=DistributedContext(0, 1, 0, "cpu"),
+        eta=0.001,
+        seed=3,
+        optimizer_mode="theory",
+        cache_directory=cache,
+    )
+    audit = record.metadata["optimizer_group_audit"]
+    assert audit["complete"] is True
+    assert audit["disjoint"] is True
+    assert len(audit["groups"]) == 8
+    groups = {row["name"]: row for row in audit["groups"]}
+    assert groups["jiang_moe_router"]["learning_rate"] == pytest.approx(
+        0.001 * (scale["width"] / 4) ** -1 / 16
+    )
+    assert groups["jiang_moe_expert_down"]["learning_rate"] == pytest.approx(
+        0.001 * (scale["hidden_width"] / 4) ** -1 / 16
+    )
+    assert groups["jiang_moe_expert_up"]["adam_epsilon"] == pytest.approx(
+        1e-12
+        * (scale["hidden_width"] / 4) ** -1
+        * (scale["depth"] / 1) ** -1
+    )
+    assert groups["jiang_moe_expert_down"]["adam_epsilon"] == pytest.approx(
+        1e-12
+        * (scale["width"] / 4)
+        * (scale["hidden_width"] / 4) ** -2
+        * (scale["depth"] / 1) ** -1
+    )
+    initialization = audit["initialization_contract"]
+    assert initialization["router_gamma"] == 1.0
+    assert initialization["attention_value_std"] == pytest.approx(
+        initialization["attention_qko_std"] / 16
+    )
+    assert initialization["expert_down_std"] == pytest.approx(
+        initialization["attention_qko_std"]
+        * initialization["ffn_ratio_ratio"] ** -1
+        / 4
+    )
+    assert audit["manual_expert_bias"]["learning_rate"] == 0.01
+    assert record.metadata["parameter_accounting"]["total_parameters"] > (
+        record.metadata["parameter_accounting"]["active_parameters_per_token"]
+    )
+    assert record.metadata["diagnostics"]["maximum_absolute_expert_bias"] > 0.0
 
 
 def test_forecast_single_seed_requires_explicit_exploratory_disclosure(

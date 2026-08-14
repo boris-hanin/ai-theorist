@@ -20,6 +20,7 @@ from ai_theorist.autoscaler.pretraining import (
     close_distributed,
     prepare_distributed,
 )
+from ai_theorist.autoscaler.jiang_moe import JiangMoETransformer
 from ai_theorist.autoscaler.study import atomic_write_json
 
 
@@ -41,6 +42,16 @@ EXPECTED_GROUPS = {
         "completep_hidden_norms",
         "completep_final_norm",
         "completep_unembedding",
+    },
+    "jiang_moe_transformer": {
+        "jiang_moe_embeddings",
+        "jiang_moe_norms",
+        "jiang_moe_attention_qkv",
+        "jiang_moe_attention_output",
+        "jiang_moe_router",
+        "jiang_moe_expert_up",
+        "jiang_moe_expert_down",
+        "jiang_moe_other_biases",
     },
 }
 
@@ -110,8 +121,11 @@ def _qualify_config(
                 )
             if audit.get("complete") is not True or audit.get("disjoint") is not True:
                 raise RuntimeError(f"{scale['name']} optimizer group audit failed")
-            if audit.get("optimizer_backend") != "fused_adamw":
-                raise RuntimeError(f"{scale['name']} did not construct fused AdamW")
+            expected_backend = f"fused_{config['optimizer']['name']}"
+            if audit.get("optimizer_backend") != expected_backend:
+                raise RuntimeError(
+                    f"{scale['name']} did not construct {expected_backend}"
+                )
             if any(
                 not math.isfinite(float(group["epsilon"]))
                 or float(group["epsilon"]) <= 0.0
@@ -127,6 +141,10 @@ def _qualify_config(
                     ],
                     "optimizer_groups": sorted(group_names),
                     "optimizer_backend": audit["optimizer_backend"],
+                    "initialization_contract": audit.get(
+                        "initialization_contract"
+                    ),
+                    "manual_expert_bias": audit.get("manual_expert_bias"),
                 }
             )
             if scale["name"] == endpoint["name"]:
@@ -144,6 +162,8 @@ def _qualify_config(
                     device=context.device,
                 )
                 optimizer.zero_grad(set_to_none=True)
+                if isinstance(plain_model, JiangMoETransformer):
+                    plain_model.begin_routing_measurement()
                 with _autocast(runtime, context.device):
                     logits = model(inputs)
                     loss = F.cross_entropy(
@@ -156,12 +176,20 @@ def _qualify_config(
                     raise RuntimeError("endpoint FlashAttention canary loss is non-finite")
                 loss.backward()
                 optimizer.step()
+                if isinstance(plain_model, JiangMoETransformer):
+                    plain_model.update_expert_biases(
+                        float(config["optimizer"]["expert_bias_learning_rate"])
+                    )
                 torch.cuda.synchronize(context.device)
                 rows[-1]["endpoint_canary_loss"] = float(loss.detach().cpu())
                 rows[-1]["endpoint_microbatch_examples"] = microbatch
                 rows[-1]["endpoint_peak_memory_bytes"] = int(
                     torch.cuda.max_memory_allocated(context.device)
                 )
+                if isinstance(plain_model, JiangMoETransformer):
+                    rows[-1]["routing_diagnostics"] = (
+                        plain_model.routing_diagnostics()
+                    )
             del optimizer, model, plain_model
             torch.cuda.empty_cache()
     finally:
@@ -178,7 +206,7 @@ def _qualify_config(
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit every fixed-budget model scale and run endpoint fused-AdamW "
+            "Audit every fixed-budget model scale and run endpoint fused-Adam/AdamW "
             "FlashAttention canaries."
         )
     )

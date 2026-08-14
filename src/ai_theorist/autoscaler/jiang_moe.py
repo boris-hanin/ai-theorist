@@ -7,6 +7,7 @@ from typing import Dict, List, Mapping, Tuple
 import torch
 from torch import Tensor, nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as activation_checkpoint
 
 from .jiang_chizat import (
     JIANG_REPORTED_DOWN_INIT_MULTIPLIER,
@@ -116,22 +117,85 @@ class JiangMoEReference:
         return self.active_experts / self.num_experts
 
 
+def jiang_moe_parameter_counts(
+    *,
+    vocab_size: int,
+    context_length: int,
+    depth: int,
+    residual_width: int,
+    expert_width: int,
+    num_experts: int,
+    active_experts: int,
+) -> Dict[str, int]:
+    """Return exact total and per-token active parameter counts.
+
+    The router and every routing bias participate in every token's routing
+    decision, so they are active even though only ``active_experts`` expert
+    MLPs are evaluated.  Tied token embedding/unembedding weights are counted
+    once.  The manually updated expert biases are model parameters even though
+    they are deliberately excluded from Adam.
+    """
+
+    shape = JiangMoEShape(
+        depth=depth,
+        residual_width=residual_width,
+        expert_width=expert_width,
+        head_dimension=residual_width,
+        num_experts=num_experts,
+        active_experts=active_experts,
+    )
+    del shape
+    if vocab_size < 8 or context_length < 2:
+        raise ValueError("vocab_size >= 8 and context_length >= 2 are required")
+    embedding = (vocab_size + context_length) * residual_width
+    final_norm = 2 * residual_width
+    shared_per_block = (
+        4 * residual_width * residual_width
+        + 8 * residual_width
+        + residual_width * num_experts
+        + num_experts
+    )
+    per_expert = (
+        2 * residual_width * expert_width
+        + expert_width
+        + residual_width
+    )
+    total = (
+        embedding
+        + final_norm
+        + depth * (shared_per_block + num_experts * per_expert)
+    )
+    active = (
+        embedding
+        + final_norm
+        + depth * (shared_per_block + active_experts * per_expert)
+    )
+    return {
+        "parameters": int(total),
+        "active_parameters": int(active),
+        "non_embedding_parameters": int(total - embedding),
+        "active_non_embedding_parameters": int(active - embedding),
+        "embedding_parameters": int(embedding),
+        "shared_parameters_per_block": int(shared_per_block),
+        "parameters_per_expert_per_block": int(per_expert),
+    }
+
+
 class JiangExpert(nn.Module):
-    def __init__(self, residual_width: int, expert_width: int) -> None:
+    def __init__(
+        self,
+        residual_width: int,
+        expert_width: int,
+        *,
+        up_initialization_std: float,
+        down_initialization_std: float,
+    ) -> None:
         super().__init__()
         self.up = nn.Linear(residual_width, expert_width, bias=True)
         self.down = nn.Linear(expert_width, residual_width, bias=True)
-        nn.init.normal_(self.up.weight, mean=0.0, std=residual_width ** -0.5)
+        nn.init.normal_(self.up.weight, mean=0.0, std=up_initialization_std)
         nn.init.zeros_(self.up.bias)
-        nn.init.normal_(
-            self.down.weight,
-            mean=0.0,
-            std=(
-                math.sqrt(residual_width)
-                / expert_width
-                * JIANG_REPORTED_DOWN_INIT_MULTIPLIER
-            ),
-        )
+        nn.init.normal_(self.down.weight, mean=0.0, std=down_initialization_std)
         nn.init.zeros_(self.down.bias)
 
     def forward(self, hidden: Tensor) -> Tensor:
@@ -139,7 +203,15 @@ class JiangExpert(nn.Module):
 
 
 class JiangSparseMoE(nn.Module):
-    def __init__(self, shape: JiangMoEShape, *, router_gamma: float = 0.5) -> None:
+    def __init__(
+        self,
+        shape: JiangMoEShape,
+        *,
+        router_gamma: float = 1.0,
+        router_initialization_std: float,
+        expert_up_initialization_std: float,
+        expert_down_initialization_std: float,
+    ) -> None:
         super().__init__()
         if not math.isfinite(router_gamma) or router_gamma < 0.5:
             raise ValueError("router_gamma must be finite and at least 1/2")
@@ -148,14 +220,41 @@ class JiangSparseMoE(nn.Module):
         nn.init.normal_(
             self.router.weight,
             mean=0.0,
-            std=shape.residual_width ** (-router_gamma),
+            std=router_initialization_std,
         )
         self.experts = nn.ModuleList(
-            JiangExpert(shape.residual_width, shape.expert_width)
+            JiangExpert(
+                shape.residual_width,
+                shape.expert_width,
+                up_initialization_std=expert_up_initialization_std,
+                down_initialization_std=expert_down_initialization_std,
+            )
             for _ in range(shape.num_experts)
         )
-        self.register_buffer("expert_bias", torch.zeros(shape.num_experts))
+        # This is a manually updated parameter from equation (2), not an Adam
+        # parameter.  Keeping it as a frozen Parameter makes exact model-state
+        # accounting include it while the optimizer audit correctly excludes it.
+        self.expert_bias = nn.Parameter(
+            torch.zeros(shape.num_experts), requires_grad=False
+        )
         self.register_buffer("last_load", torch.zeros(shape.num_experts), persistent=False)
+        self.register_buffer(
+            "last_balancing_load", torch.zeros(shape.num_experts), persistent=False
+        )
+        self.register_buffer(
+            "maximum_balancing_load_deviation",
+            torch.zeros(()),
+            persistent=False,
+        )
+        self.register_buffer(
+            "routing_assignment_counts",
+            torch.zeros(shape.num_experts, dtype=torch.float64),
+            persistent=False,
+        )
+        self.register_buffer(
+            "routing_token_count", torch.zeros((), dtype=torch.float64), persistent=False
+        )
+        self._routing_measurement_active = False
 
     def forward(self, hidden: Tensor) -> Tensor:
         router_logits = self.router(hidden)
@@ -164,15 +263,75 @@ class JiangSparseMoE(nn.Module):
             self.shape.active_experts,
             dim=-1,
         ).indices
-        mask = torch.zeros_like(gates).scatter_(-1, selected, 1.0)
         with torch.no_grad():
-            reduce_dimensions = tuple(range(mask.ndim - 1))
-            self.last_load.copy_(mask.mean(dim=reduce_dimensions))
-        output = torch.zeros_like(hidden)
+            flat_selected = selected.reshape(-1, self.shape.active_experts)
+            assignment_counts = torch.bincount(
+                flat_selected.reshape(-1), minlength=self.shape.num_experts
+            ).to(dtype=torch.float64)
+            token_count = flat_selected.shape[0]
+            self.last_load.copy_(
+                (assignment_counts / max(token_count, 1)).to(self.last_load.dtype)
+            )
+            if self._routing_measurement_active:
+                self.routing_assignment_counts.add_(assignment_counts)
+                self.routing_token_count.add_(token_count)
+
+        # Exact token-choice dispatch: only tokens actually assigned to an
+        # expert pass through that expert.  The earlier prototype evaluated all
+        # experts on all tokens and merely multiplied inactive outputs by zero,
+        # which had sparse semantics but dense compute.
+        flat_hidden = hidden.reshape(-1, self.shape.residual_width)
+        flat_gates = gates.reshape(-1, self.shape.num_experts)
+        flat_selected = selected.reshape(-1, self.shape.active_experts)
+        selected_gates = flat_gates.gather(1, flat_selected)
+        output = torch.zeros_like(flat_hidden)
         for index, expert in enumerate(self.experts):
-            coefficient = (mask[..., index] * gates[..., index]).unsqueeze(-1)
-            output = output + coefficient * expert(hidden)
-        return output / self.shape.active_experts
+            token_indices, slots = torch.where(flat_selected == index)
+            if token_indices.numel():
+                expert_inputs = flat_hidden.index_select(0, token_indices)
+                coefficients = selected_gates[token_indices, slots].unsqueeze(-1)
+                contributions = coefficients * expert(expert_inputs)
+                output = output.index_add(0, token_indices, contributions)
+            elif self.training:
+                # DDP must see every expert parameter in every backward pass,
+                # even in a small batch where an expert receives no tokens.
+                zero_anchor = sum(
+                    parameter.reshape(-1)[0]
+                    for parameter in expert.parameters()
+                ) * 0.0
+                output = output + zero_anchor.to(output.dtype)
+        return output.reshape_as(hidden) / self.shape.active_experts
+
+    @torch.no_grad()
+    def begin_routing_measurement(self) -> None:
+        self.routing_assignment_counts.zero_()
+        self.routing_token_count.zero_()
+        self._routing_measurement_active = True
+
+    @torch.no_grad()
+    def finish_routing_measurement(self, *, synchronize: bool = False) -> Tensor:
+        self._routing_measurement_active = False
+        if synchronize:
+            if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+                raise RuntimeError("routing synchronization requires initialized distributed")
+            torch.distributed.all_reduce(
+                self.routing_assignment_counts, op=torch.distributed.ReduceOp.SUM
+            )
+            torch.distributed.all_reduce(
+                self.routing_token_count, op=torch.distributed.ReduceOp.SUM
+            )
+        if self.routing_token_count.item() <= 0.0:
+            raise RuntimeError("routing measurement observed no tokens")
+        self.last_load.copy_(
+            (self.routing_assignment_counts / self.routing_token_count).to(
+                self.last_load.dtype
+            )
+        )
+        self.last_balancing_load.copy_(self.last_load)
+        self.maximum_balancing_load_deviation.copy_(
+            (self.last_load - self.shape.sparsity).abs().max()
+        )
+        return self.last_load
 
     @torch.no_grad()
     def update_expert_bias(self, learning_rate: float) -> None:
@@ -184,7 +343,17 @@ class JiangSparseMoE(nn.Module):
 
 
 class JiangMoEBlock(nn.Module):
-    def __init__(self, shape: JiangMoEShape) -> None:
+    def __init__(
+        self,
+        shape: JiangMoEShape,
+        *,
+        router_gamma: float = 1.0,
+        hidden_initialization_std: float,
+        router_initialization_std: float,
+        expert_down_initialization_std: float,
+        attention_backend: str = "math",
+        capture_attention_diagnostics: bool = True,
+    ) -> None:
         super().__init__()
         self.shape = shape
         self.attention_norm = nn.LayerNorm(shape.residual_width)
@@ -197,10 +366,19 @@ class JiangMoEBlock(nn.Module):
                 head_dimension=shape.head_dimension,
             ),
             value_initialization_multiplier=JIANG_REPORTED_VALUE_INIT_MULTIPLIER,
+            initialization_std=hidden_initialization_std,
             bias=True,
+            attention_backend=attention_backend,
+            capture_diagnostics=capture_attention_diagnostics,
         )
         self.moe_norm = nn.LayerNorm(shape.residual_width)
-        self.moe = JiangSparseMoE(shape)
+        self.moe = JiangSparseMoE(
+            shape,
+            router_gamma=router_gamma,
+            router_initialization_std=router_initialization_std,
+            expert_up_initialization_std=hidden_initialization_std,
+            expert_down_initialization_std=expert_down_initialization_std,
+        )
 
     def forward(self, hidden: Tensor) -> Tensor:
         scale = 1.0 / self.shape.depth
@@ -217,22 +395,58 @@ class JiangMoETransformer(nn.Module):
         vocab_size: int,
         context_length: int,
         reference: JiangMoEReference,
-        embedding_initialization_std: float = 0.02,
+        initialization_std: float = 0.02,
+        router_gamma: float = 1.0,
+        attention_backend: str = "math",
+        activation_checkpointing: bool = False,
+        capture_attention_diagnostics: bool = True,
     ) -> None:
         super().__init__()
         if vocab_size < 8 or context_length < 2:
             raise ValueError("vocab_size >= 8 and context_length >= 2 are required")
+        if not math.isfinite(initialization_std) or initialization_std <= 0.0:
+            raise ValueError("initialization_std must be finite and positive")
         if not math.isclose(shape.sparsity, reference.sparsity):
             raise ValueError("Jiang MoE transfer requires fixed active-expert fraction kappa")
         self.shape = shape
         self.reference = reference
         self.vocab_size = vocab_size
         self.context_length = context_length
+        self.activation_checkpointing = activation_checkpointing
+        self.residual_width_ratio = (
+            shape.residual_width / reference.residual_width
+        )
+        self.depth_ratio = shape.depth / reference.depth
+        self.ffn_ratio_ratio = shape.ffn_ratio / reference.ffn_ratio
+        self.initialization_std = initialization_std
+        self.router_gamma = router_gamma
+        self.hidden_initialization_std = (
+            initialization_std * self.residual_width_ratio ** -0.5
+        )
+        self.router_initialization_std = (
+            initialization_std * self.residual_width_ratio ** -router_gamma
+        )
+        self.expert_down_initialization_std = (
+            self.hidden_initialization_std
+            * self.ffn_ratio_ratio ** -1.0
+            * JIANG_REPORTED_DOWN_INIT_MULTIPLIER
+        )
         self.token_embedding = nn.Embedding(vocab_size, shape.residual_width)
         self.position_embedding = nn.Embedding(context_length, shape.residual_width)
-        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=embedding_initialization_std)
-        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=embedding_initialization_std)
-        self.blocks = nn.ModuleList(JiangMoEBlock(shape) for _ in range(shape.depth))
+        nn.init.normal_(self.token_embedding.weight, mean=0.0, std=initialization_std)
+        nn.init.normal_(self.position_embedding.weight, mean=0.0, std=initialization_std)
+        self.blocks = nn.ModuleList(
+            JiangMoEBlock(
+                shape,
+                router_gamma=router_gamma,
+                hidden_initialization_std=self.hidden_initialization_std,
+                router_initialization_std=self.router_initialization_std,
+                expert_down_initialization_std=self.expert_down_initialization_std,
+                attention_backend=attention_backend,
+                capture_attention_diagnostics=capture_attention_diagnostics,
+            )
+            for _ in range(shape.depth)
+        )
         self.final_norm = nn.LayerNorm(shape.residual_width)
 
     def forward_features(self, tokens: Tensor) -> Tensor:
@@ -241,11 +455,69 @@ class JiangMoETransformer(nn.Module):
         positions = torch.arange(tokens.shape[1], device=tokens.device)
         hidden = self.token_embedding(tokens) + self.position_embedding(positions)[None, :, :]
         for block in self.blocks:
-            hidden = block(hidden)
+            if self.activation_checkpointing and self.training:
+                hidden = activation_checkpoint(block, hidden, use_reentrant=False)
+            else:
+                hidden = block(hidden)
         return self.final_norm(hidden)
 
     def forward(self, tokens: Tensor) -> Tensor:
-        return F.linear(self.forward_features(tokens), self.token_embedding.weight)
+        # The non-MoE boundary follows CompleteP: tied readout with the inverse
+        # residual-width multiplier relative to the tuned reference model.
+        return (
+            F.linear(self.forward_features(tokens), self.token_embedding.weight)
+            / self.residual_width_ratio
+        )
+
+    def parameter_accounting(self) -> Dict[str, int]:
+        counts = jiang_moe_parameter_counts(
+            vocab_size=self.vocab_size,
+            context_length=self.context_length,
+            depth=self.shape.depth,
+            residual_width=self.shape.residual_width,
+            expert_width=self.shape.expert_width,
+            num_experts=self.shape.num_experts,
+            active_experts=self.shape.active_experts,
+        )
+        constructed = sum(parameter.numel() for parameter in self.parameters())
+        if constructed != counts["parameters"]:
+            raise RuntimeError(
+                f"MoE accounting expected {counts['parameters']} parameters but "
+                f"constructed {constructed}"
+            )
+        return counts
+
+    def initialization_contract(self) -> Dict[str, object]:
+        """Return the exact source-coordinate initialization used by the model."""
+
+        return {
+            "reference_initialization_std": self.initialization_std,
+            "residual_width_ratio": self.residual_width_ratio,
+            "ffn_ratio_ratio": self.ffn_ratio_ratio,
+            "router_gamma": self.router_gamma,
+            "embedding_and_unembedding_std": self.initialization_std,
+            "position_embedding_std": self.initialization_std,
+            "attention_qko_std": self.hidden_initialization_std,
+            "attention_value_std": (
+                self.hidden_initialization_std
+                * JIANG_REPORTED_VALUE_INIT_MULTIPLIER
+            ),
+            "router_std": self.router_initialization_std,
+            "expert_up_std": self.hidden_initialization_std,
+            "expert_down_std": self.expert_down_initialization_std,
+            "expert_bias_initialization": 0.0,
+            "formulas": {
+                "embedding_and_unembedding": "sigma0",
+                "attention_qko_and_expert_up": "sigma0 * (D/D0)^(-1/2)",
+                "attention_value": "sigma0 * (D/D0)^(-1/2) * 1/16",
+                "router": "sigma0 * (D/D0)^(-gamma); gamma=1 in main text",
+                "expert_down": (
+                    "sigma0 * (D/D0)^(-1/2) * "
+                    "(alpha/alpha0)^(-1) * 1/4"
+                ),
+                "expert_bias": "0",
+            },
+        }
 
     def optimizer_parameter_groups(
         self,
@@ -411,13 +683,25 @@ class JiangMoETransformer(nn.Module):
         )
 
     @torch.no_grad()
-    def update_expert_biases(self, learning_rate: float) -> None:
+    def begin_routing_measurement(self) -> None:
         for block in self.blocks:
+            block.moe.begin_routing_measurement()
+
+    @torch.no_grad()
+    def update_expert_biases(
+        self, learning_rate: float, *, synchronize: bool = False
+    ) -> None:
+        for block in self.blocks:
+            if block.moe._routing_measurement_active:
+                block.moe.finish_routing_measurement(synchronize=synchronize)
             block.moe.update_expert_bias(learning_rate)
 
     @torch.no_grad()
     def routing_diagnostics(self) -> Dict[str, object]:
-        loads = [block.moe.last_load.detach().cpu().tolist() for block in self.blocks]
+        loads = [
+            block.moe.last_balancing_load.detach().cpu().tolist()
+            for block in self.blocks
+        ]
         deviations = [
             abs(value - self.shape.sparsity)
             for layer in loads
@@ -426,8 +710,28 @@ class JiangMoETransformer(nn.Module):
         return {
             "loads": loads,
             "maximum_absolute_load_deviation": max(deviations) if deviations else 0.0,
+            "maximum_balancing_load_deviation_by_layer": [
+                float(block.moe.maximum_balancing_load_deviation.item())
+                for block in self.blocks
+            ],
             "active_expert_fraction": self.shape.sparsity,
             "rho_LM_over_D": self.shape.rho_lm_over_d,
+            "routing_token_counts": [
+                int(block.moe.routing_token_count.item()) for block in self.blocks
+            ],
+            "expert_biases": [
+                block.moe.expert_bias.detach().cpu().tolist()
+                for block in self.blocks
+            ],
+            "maximum_absolute_expert_bias": max(
+                (
+                    float(block.moe.expert_bias.detach().abs().max().item())
+                    for block in self.blocks
+                ),
+                default=0.0,
+            ),
+            "parameter_accounting": self.parameter_accounting(),
+            "initialization_contract": self.initialization_contract(),
         }
 
     def manual_parameter_contract(self, expert_bias_learning_rate: float) -> Dict[str, object]:
@@ -438,6 +742,10 @@ class JiangMoETransformer(nn.Module):
             "update": "b_i <- b_i - eta_bias * (Load_i - kappa)",
             "learning_rate": expert_bias_learning_rate,
             "learning_rate_formula": "eta_bias (Theta(1), independent of expert count at fixed kappa)",
+            "reference_constant_status": (
+                "explicitly declared reference hyperparameter; the paper proves "
+                "the no-scaling rule but does not report a universal numeric value"
+            ),
             "initialization": "zero",
             "parameter_shapes": [[self.shape.num_experts] for _ in self.blocks],
             "theory_contract_id": JIANG_MOE_ADAM_THEORY.contract_id,

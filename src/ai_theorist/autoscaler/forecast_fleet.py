@@ -118,7 +118,9 @@ def build_forecast_fleet_tasks(
                 seed=seed,
                 optimizer_mode=optimizer_mode,
                 estimated_flops=float(
-                    6 * int(scale["parameters"]) * int(scale["presented_tokens"])
+                    6
+                    * int(scale.get("active_parameters", scale["parameters"]))
+                    * int(scale["presented_tokens"])
                 ),
             )
         )
