@@ -540,6 +540,8 @@ def test_jiang_moe_rho32_active_1b_10tpp_ladder_is_exact(
     config["ladder"]["require_gate_eligible_plan"] = False
     config["ladder"]["maximum_repetition_ratio"] = 1_000_000_000.0
     plan = compile_real_text_scaling_plan(config)
+    assert plan["learning_rates"][-2:] == [0.03125, 0.0625]
+    assert plan["tuning_trials"] == 10
 
     assert [
         (row["depth"], row["width"], row["hidden_width"])

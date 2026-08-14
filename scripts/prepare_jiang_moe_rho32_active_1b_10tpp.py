@@ -200,8 +200,12 @@ def main() -> None:
         <= 1.0,
         "endpoint_has_token_margin": int(endpoint["presented_tokens"])
         <= EXPECTED_TRAINING_TOKENS,
-        "one_seed_eight_eta_reference_screen": len(tune_tasks) == 8
-        and {task.seed for task in tune_tasks} == {11},
+        "one_seed_declared_eta_reference_screen": (
+            len(tune_tasks) == len(single_plan["learning_rates"])
+            and {task.eta for task in tune_tasks}
+            == {float(value) for value in single_plan["learning_rates"]}
+            and {task.seed for task in tune_tasks} == {11}
+        ),
         "eight_nonreference_ddp_rungs": len(ladder_tasks) == 8
         and {task.scale_name for task in ladder_tasks}
         == {f"S{index}" for index in range(2, 10)},
