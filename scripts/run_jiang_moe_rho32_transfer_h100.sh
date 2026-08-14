@@ -94,19 +94,24 @@ if [[ ! -f "$root/runtime-qualification.json" ]]; then
     "$root/config.json" --output "$root/runtime-qualification.json" \
     > "$root/runtime-qualification.stdout.json"
 fi
-"$python" - "$root/runtime-qualification.json" <<'PY'
+"$python" - "$root/runtime-qualification.json" "$root/plan.json" <<'PY'
 import json, sys
 p = json.load(open(sys.argv[1]))
+plan = json.load(open(sys.argv[2]))
 assert p["status"] == "passed"
 campaign = p["campaigns"][0]
 assert campaign["architecture"] == "jiang_moe_completep_adam_table2"
 assert all(len(row["optimizer_groups"]) == 8 for row in campaign["scales"])
 endpoint = campaign["scales"][-1]
+expected = plan["scales"][-1]
 assert endpoint["endpoint_canary_loss"] > 0
 assert endpoint["routing_diagnostics"]["maximum_absolute_expert_bias"] > 0
 assert endpoint["initialization_contract"]["router_gamma"] == 1.0
-assert endpoint["scale"] == "scale-05"
-assert endpoint["parameters"] == 387_664_960
+assert endpoint["scale"] == expected["name"]
+assert endpoint["parameters"] == expected["parameters"] == 387_664_960
+assert (expected["depth"], expected["width"], expected["hidden_width"]) == (
+    16, 1024, 2048
+)
 PY
 
 stage=running-reference-tuning-and-fixed-eta-ladder
