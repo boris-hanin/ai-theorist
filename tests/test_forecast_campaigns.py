@@ -400,6 +400,41 @@ def test_jiang_moe_rho32_transfer_pilot_is_exact_and_fully_factorial(
     assert all(row["presented_tokens"] == 6_553_600 for row in plan["scales"])
 
 
+def test_jiang_moe_rho32_adaptive_lower_bracket_remains_fully_factorial(
+    tmp_path: Path, monkeypatch
+) -> None:
+    manifest_path = _stream(tmp_path, monkeypatch, vocab_size=50_257)
+    config = json.loads(
+        Path(
+            "configs/autoscaler/jiang_moe_slimpajama_rho32_transfer_pilot_lrbracket_v2.json"
+        ).read_text(encoding="utf-8")
+    )
+    config["dataset"]["token_stream_manifest_path"] = str(manifest_path)
+    config["dataset"]["tokenizer"] = "forecast_test"
+    plan = compile_real_text_scaling_plan(config)
+    assert plan["learning_rates"] == [
+        2.0**-10,
+        2.0**-9,
+        2.0**-8,
+        2.0**-7,
+        2.0**-6,
+        2.0**-5,
+        2.0**-4,
+    ]
+    assert len(build_forecast_fleet_tasks(plan, phase="tune")) == 21
+    assert [
+        (row["depth"], row["width"], row["hidden_width"])
+        for row in plan["scales"]
+    ] == [
+        (2, 128, 2048),
+        (4, 256, 2048),
+        (6, 384, 2048),
+        (8, 512, 2048),
+        (12, 768, 2048),
+        (16, 1024, 2048),
+    ]
+
+
 def test_jiang_moe_real_text_trial_audits_every_lr_epsilon_and_init_group(
     tmp_path: Path, monkeypatch
 ) -> None:

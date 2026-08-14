@@ -9,6 +9,8 @@ fi
 repo="${AI_THEORIST_REPO:-/home/ubuntu/ai-theorist}"
 python="${AI_THEORIST_PYTHON:-$repo/.venv-forecast-py310/bin/python}"
 required_commit="${AI_THEORIST_MOE_RHO32_COMMIT:?set the pinned rho32 MoE transfer commit}"
+template="${AI_THEORIST_MOE_RHO32_TEMPLATE:-$repo/configs/autoscaler/jiang_moe_slimpajama_rho32_transfer_pilot.json}"
+adaptive_parent="${AI_THEORIST_MOE_RHO32_ADAPTIVE_PARENT:-}"
 root="$1"
 manifest="$2"
 cli="$repo/scripts/ai_theorist_autoscale_python.sh"
@@ -20,7 +22,10 @@ flock -n 9 || { echo "another rho32 MoE controller holds $root/controller.lock" 
 echo "$$" > "$root/controller.pid"
 trap 'code=$?; if (( code != 0 )); then echo "failed:$stage" > "$root/stage"; fi' EXIT
 
-[[ -x "$python" && -x "$cli" && -f "$manifest" ]]
+[[ -x "$python" && -x "$cli" && -f "$manifest" && -f "$template" ]]
+if [[ -n "$adaptive_parent" ]]; then
+  [[ -d "$adaptive_parent" ]]
+fi
 [[ "$(git -C "$repo" rev-parse HEAD)" == "$required_commit" ]]
 git -C "$repo" diff --quiet
 git -C "$repo" diff --cached --quiet
@@ -68,8 +73,15 @@ stage=preregistering-constant-rho-transfer
 echo "$stage" > "$root/stage"
 if [[ ! -f "$root/preregistration.json" ]]; then
   cd "$repo"
-  "$python" scripts/prepare_jiang_moe_rho32_transfer_pilot.py "$manifest" \
-    --output-root "$root" > "$root/preregistration.stdout.json"
+  prepare=(
+    "$python" scripts/prepare_jiang_moe_rho32_transfer_pilot.py "$manifest"
+    --output-root "$root"
+    --template "$template"
+  )
+  if [[ -n "$adaptive_parent" ]]; then
+    prepare+=(--adaptive-parent "$adaptive_parent")
+  fi
+  "${prepare[@]}" > "$root/preregistration.stdout.json"
 fi
 "$python" - "$root/preregistration.json" "$root/plan.json" \
   "$root/dataset-verification.json" <<'PY'
