@@ -112,6 +112,8 @@ def _compile_horizon(
     config["optimizer"]["learning_rates"] = sorted(
         source_learning_rates | {selected_eta}
     )
+    if config.get("run_profile") == "extension":
+        config["extension_contract"]["selected_learning_rate"] = selected_eta
     if float(source_record["optimizer"]["weight_decay"]) != 0.0:
         raise ValueError("dense horizon extension requires the frozen zero decay")
 

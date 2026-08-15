@@ -4,7 +4,7 @@ set -euo pipefail
 repo="${AI_THEORIST_REPO:-/home/ubuntu/ai-theorist}"
 python="${AI_THEORIST_PYTHON:-$repo/.venv-forecast/bin/python}"
 required_commit="${AI_THEORIST_DENSE_LR_HORIZON_COMMIT:?pin the horizon-LR commit}"
-root="${AI_THEORIST_DENSE_LR_HORIZON_ROOT:-$repo/runs/forecast-production/jiang-dense-horizon-lr-tminus-third-v1}"
+root="${AI_THEORIST_DENSE_LR_HORIZON_ROOT:-$repo/runs/forecast-production/jiang-dense-horizon-lr-tminus-third-v2}"
 corpus="${AI_THEORIST_FINEWEB_22B_ROOT:-$repo/runs/forecast-corpora/mistral-fineweb-22bt-continuation-v2}"
 manifest="$corpus/token-streams/manifest.json"
 source_300="$repo/runs/forecast-production/jiang-rho32-300m-horizon-pair-v1"
