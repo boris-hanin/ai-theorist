@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "status": "authorized",
+  "authorized_by": "user",
+  "authorization_quote": "just skip this validation and move on to scaling up",
+  "scope": "jiang_overlap_reproducibility_only",
+  "reason": "Proceed despite the preregistered maximum per-seed duplicate-cell delta gate; preserve the failed observation and do not waive any fingerprint, optimizer-selection, interior-learning-rate, finite-tau, dataset, or result gate.",
+  "observed_maximum_seed_loss_delta": 0.01614190638065338,
+  "preregistered_maximum_seed_loss_delta": 0.005,
+  "selection_sha256": {
+    "original_jiang": "e97d8884bfe074831a34fe530b898881cc1ba8227fa550153655ac24761f58cc",
+    "expanded_jiang": "724aafda43174032a935dbc08b09281ecbf479e9dbbdc37d9d99aa288805e12e"
+  },
+  "not_waived": [
+    "dataset and tokenizer identity",
+    "plan and selection fingerprints",
+    "learning-rate interior gate",
+    "finite-tau interior gate when finite decay is selected",
+    "exact zero-decay representation",
+    "target completeness and finite-loss gates"
+  ]
+}

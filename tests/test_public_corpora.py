@@ -1,0 +1,594 @@
+from hashlib import sha256
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import parse_qs, urlparse
+
+import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+
+from ai_theorist.autoscaler import public_corpora
+from ai_theorist.autoscaler.public_corpora import (
+    PublicCorpusSpec,
+    materialize_public_corpus,
+    public_corpus_catalog,
+    retokenize_public_corpus,
+)
+from ai_theorist.autoscaler.tokenization import (
+    PINNED_TOKENIZERS_PACKAGE_VERSION,
+    PinnedTokenizerDefinition,
+    TokenizerAssetDefinition,
+    TokenizerCanaryDefinition,
+)
+
+
+def test_public_corpus_contract_is_allow_listed_and_bounded() -> None:
+    sources = {row["id"] for row in public_corpus_catalog()}
+    assert sources == {
+        "fineweb_edu",
+        "openwebtext",
+        "slimpajama",
+        "slimpajama_6b",
+    }
+    assert PublicCorpusSpec.from_dict({"source": "fineweb_edu"}).source == "fineweb_edu"
+    with pytest.raises(ValueError, match="source must be"):
+        PublicCorpusSpec.from_dict({"source": "arbitrary/url"})
+    with pytest.raises(ValueError, match="train_bytes"):
+        PublicCorpusSpec.from_dict({"train_bytes": 1})
+    with pytest.raises(ValueError, match="Unknown public corpus"):
+        PublicCorpusSpec.from_dict({"url": "https://example.com"})
+    large = PublicCorpusSpec.from_dict(
+        {
+            "train_bytes": 2_000_000_000,
+            "validation_bytes": 100_000_000,
+            "maximum_documents_per_split": 2_000_000,
+            "acquisition_backend": "parquet",
+        }
+    )
+    assert large.train_bytes == 2_000_000_000
+    assert large.acquisition_backend == "parquet"
+    slimpajama = PublicCorpusSpec.from_dict(
+        {
+            "source": "slimpajama",
+            "tokenizer": "gpt2_openai",
+            "acquisition_backend": "zstd_shards",
+        }
+    )
+    assert slimpajama.source == "slimpajama"
+    preserved = PublicCorpusSpec.from_dict(
+        {
+            "source": "slimpajama_6b",
+            "tokenizer": "gpt2_openai",
+            "acquisition_backend": "parquet",
+            "source_revision": "b5f90f419b7489cdba26fdbc8c022fcb5562f968",
+            "parquet_revision": "c4f51dc260275e8e01aa0fbf46c64832dbee5369",
+        }
+    )
+    assert preserved.source == "slimpajama_6b"
+    assert preserved.parquet_revision == (
+        "c4f51dc260275e8e01aa0fbf46c64832dbee5369"
+    )
+    with pytest.raises(ValueError, match="full lowercase SHA-1"):
+        PublicCorpusSpec.from_dict({"source_revision": "main"})
+    with pytest.raises(ValueError, match="requires acquisition_backend=parquet"):
+        PublicCorpusSpec.from_dict({"parquet_revision": "a" * 40})
+    with pytest.raises(ValueError, match="direct-shard corpus"):
+        PublicCorpusSpec.from_dict(
+            {"source": "fineweb_edu", "acquisition_backend": "zstd_shards"}
+        )
+    segmented = PublicCorpusSpec.from_dict(
+        {
+            "source": "fineweb_edu",
+            "tokenizer": "mistral_7b_v03",
+            "acquisition_backend": "parquet",
+            "train_bytes": 32_212_254_720,
+            "train_primary_bytes": 12_884_901_888,
+            "train_secondary_offset": 5_200_000,
+        }
+    )
+    assert segmented.train_primary_bytes == 12_884_901_888
+    assert segmented.train_secondary_offset == 5_200_000
+    with pytest.raises(ValueError, match="must be set together"):
+        PublicCorpusSpec.from_dict(
+            {
+                "acquisition_backend": "parquet",
+                "train_primary_bytes": 65_536,
+            }
+        )
+    with pytest.raises(ValueError, match="requires the resumable parquet"):
+        PublicCorpusSpec.from_dict(
+            {
+                "train_bytes": 131_072,
+                "train_primary_bytes": 65_536,
+                "train_secondary_offset": 5_200_000,
+            }
+        )
+
+
+def test_json_request_retries_rate_limits(monkeypatch) -> None:
+    attempts = []
+    sleeps = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    def fake_urlopen(request, timeout):
+        attempts.append((request.full_url, timeout))
+        if len(attempts) == 1:
+            raise HTTPError(
+                request.full_url,
+                429,
+                "Too Many Requests",
+                {"Retry-After": "0"},
+                None,
+            )
+        return FakeResponse()
+
+    monkeypatch.setattr(public_corpora, "urlopen", fake_urlopen)
+    monkeypatch.setattr(public_corpora, "sleep", sleeps.append)
+    assert public_corpora._json_request("https://example.test/data") == {"ok": True}
+    assert len(attempts) == 2
+    assert sleeps == [1.0]
+
+
+def test_split_materialization_resumes_from_fsynced_checkpoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    requested_offsets = []
+    fail_second_request = True
+
+    def fake_request(url: str, timeout: float = 60.0):
+        nonlocal fail_second_request
+        query = parse_qs(urlparse(url).query)
+        offset = int(query["offset"][0])
+        length = int(query["length"][0])
+        requested_offsets.append(offset)
+        if offset == 100 and fail_second_request:
+            fail_second_request = False
+            raise RuntimeError("simulated interrupted download")
+        return {
+            "rows": [
+                {
+                    "row_idx": row_index,
+                    "row": {"text": "x" * 10, "id": f"doc-{row_index}"},
+                    "truncated_cells": [],
+                }
+                for row_index in range(offset, offset + length)
+            ]
+        }
+
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    output_path = tmp_path / "train.jsonl"
+    arguments = dict(
+        catalog=public_corpora.PUBLIC_CORPUS_CATALOG["fineweb_edu"],
+        start_offset=0,
+        target_bytes=1_500,
+        maximum_documents=200,
+        output_path=output_path,
+        split_name="training corpus",
+        progress=None,
+        completed_bytes=0,
+        total_bytes=1_500,
+        source_revision="a" * 40,
+    )
+    with pytest.raises(RuntimeError, match="interrupted"):
+        public_corpora._materialize_split(**arguments)
+    assert requested_offsets == [0, 100]
+
+    metadata, _ = public_corpora._materialize_split(**arguments)
+    assert requested_offsets == [0, 100, 100]
+    assert metadata["documents"] == 150
+    assert len(output_path.read_text(encoding="utf-8").splitlines()) == 150
+
+
+def test_parquet_materializer_streams_batches_with_global_row_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    parquet_path = tmp_path / "fixture.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "text": [f"document-{index}-" + "x" * 20 for index in range(50)],
+                "id": [f"id-{index}" for index in range(50)],
+            }
+        ),
+        parquet_path,
+    )
+    inventory = {
+        "split": "train",
+        "parquet_revision": "e" * 40,
+        "files": [
+            {
+                "url": "https://example.test/fixture.parquet",
+                "filename": "fixture.parquet",
+                "bytes": parquet_path.stat().st_size,
+            }
+        ],
+        "fingerprint": "f" * 64,
+    }
+
+    def local_file(_entry, _directory):
+        return {
+            "path": str(parquet_path),
+            "url": "https://example.test/fixture.parquet",
+            "bytes": parquet_path.stat().st_size,
+            "sha256": sha256(parquet_path.read_bytes()).hexdigest(),
+        }
+
+    monkeypatch.setattr(public_corpora, "_download_parquet_file", local_file)
+    output = tmp_path / "slice.jsonl"
+    metadata, _ = public_corpora._materialize_split_parquet(
+        catalog=public_corpora.PUBLIC_CORPUS_CATALOG["fineweb_edu"],
+        inventory=inventory,
+        parquet_cache=tmp_path / "cache",
+        start_offset=10,
+        target_bytes=100,
+        maximum_documents=20,
+        output_path=output,
+        split_name="training corpus",
+        progress=None,
+        completed_bytes=0,
+        total_bytes=100,
+        source_revision="a" * 40,
+        source_batch_rows=128,
+    )
+    rows = [__import__("json").loads(line) for line in output.read_text().splitlines()]
+    assert rows[0]["source_row"] == 10
+    assert rows[0]["source_id"] == "id-10"
+    assert metadata["first_source_row"] == 10
+    assert metadata["source_split"] == "train"
+    assert metadata["parquet_revision"] == "e" * 40
+    assert metadata["source_inventory_fingerprint"] == "f" * 64
+    assert metadata["source_parquet_files"][0]["sha256"]
+
+
+def test_parquet_inventory_pins_conversion_revision_and_selects_split(
+    monkeypatch,
+) -> None:
+    catalog = public_corpora.PUBLIC_CORPUS_CATALOG["slimpajama_6b"]
+
+    def fake_request(url: str, timeout: float = 60.0):
+        assert "datasets-server.huggingface.co/parquet" in url
+        return {
+            "parquet_files": [
+                {
+                    "config": "default",
+                    "split": "train",
+                    "url": (
+                        "https://huggingface.co/datasets/DKYoon/SlimPajama-6B/"
+                        "resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet"
+                    ),
+                    "filename": "0000.parquet",
+                    "size": 123,
+                },
+                {
+                    "config": "default",
+                    "split": "validation",
+                    "url": (
+                        "https://huggingface.co/datasets/DKYoon/SlimPajama-6B/"
+                        "resolve/refs%2Fconvert%2Fparquet/default/validation/"
+                        "0000.parquet"
+                    ),
+                    "filename": "0000.parquet",
+                    "size": 45,
+                },
+            ]
+        }
+
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    revision = "c" * 40
+    inventory = public_corpora._parquet_inventory(
+        catalog,
+        source_split="validation",
+        parquet_revision=revision,
+    )
+    assert inventory["split"] == "validation"
+    assert inventory["parquet_revision"] == revision
+    assert len(inventory["files"]) == 1
+    assert f"/resolve/{revision}/default/validation/" in inventory["files"][0][
+        "url"
+    ]
+    assert "refs%2Fconvert%2Fparquet" not in inventory["files"][0]["url"]
+    assert len(inventory["fingerprint"]) == 64
+
+
+def test_slimpajama_zstd_materializer_freezes_shards_and_split_provenance(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = tmp_path / "fixture.jsonl.zst"
+    rows = [
+        {"text": f"SlimPajama document {index} " + "x" * 80, "meta": {}}
+        for index in range(8)
+    ]
+    with pa.output_stream(str(source), compression="zstd") as stream:
+        stream.write(
+            "".join(__import__("json").dumps(row) + "\n" for row in rows).encode()
+        )
+
+    def local_source_file(**kwargs):
+        destination = kwargs["output_path"]
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+        return {
+            "path": str(destination.resolve()),
+            "repository_path": kwargs["repository_path"],
+            "bytes": destination.stat().st_size,
+            "sha256": sha256(destination.read_bytes()).hexdigest(),
+        }
+
+    monkeypatch.setattr(
+        public_corpora, "_download_hugging_face_source_file", local_source_file
+    )
+    catalog = {
+        **public_corpora.PUBLIC_CORPUS_CATALOG["slimpajama"],
+        "direct_shards": {
+            "train": {
+                "chunk": 1,
+                "count": 2,
+                "path_template": "train/chunk1/example_train_{index}.jsonl.zst",
+            }
+        },
+    }
+    output = tmp_path / "train.jsonl"
+    metadata, _ = public_corpora._materialize_split_zstd_shards(
+        catalog=catalog,
+        source_split="train",
+        target_bytes=300,
+        maximum_documents=20,
+        output_path=output,
+        shard_cache=tmp_path / "cache",
+        split_name="training corpus",
+        progress=None,
+        completed_bytes=0,
+        total_bytes=300,
+        source_revision="a" * 40,
+    )
+    materialized = [
+        __import__("json").loads(line) for line in output.read_text().splitlines()
+    ]
+    assert metadata["source_split"] == "train"
+    assert metadata["source_direct_files"][0]["repository_path"].startswith(
+        "train/chunk1/"
+    )
+    assert ("cache/" + "a" * 40 + "/train/") in metadata[
+        "source_direct_files"
+    ][0]["path"]
+    assert len(metadata["source_inventory_fingerprint"]) == 64
+    assert materialized[0]["source_id"] == "train/chunk1/0:0"
+    assert metadata["file_sha256"] == sha256(output.read_bytes()).hexdigest()
+
+
+def test_segmented_training_concatenation_preserves_disjoint_provenance(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    first.write_text('{"text":"first"}\n', encoding="utf-8")
+    second.write_text('{"text":"second"}\n', encoding="utf-8")
+    segments = [
+        {
+            "path": str(first),
+            "documents": 1,
+            "text_bytes": 5,
+            "file_bytes": first.stat().st_size,
+            "file_sha256": sha256(first.read_bytes()).hexdigest(),
+            "first_source_row": 0,
+            "last_source_row": 9,
+            "source_inventory_fingerprint": "f" * 64,
+            "source_parquet_files": [],
+        },
+        {
+            "path": str(second),
+            "documents": 1,
+            "text_bytes": 6,
+            "file_bytes": second.stat().st_size,
+            "file_sha256": sha256(second.read_bytes()).hexdigest(),
+            "first_source_row": 20,
+            "last_source_row": 29,
+            "source_inventory_fingerprint": "f" * 64,
+            "source_parquet_files": [],
+        },
+    ]
+    output = tmp_path / "train.jsonl"
+    metadata = public_corpora._concatenate_training_segments(segments, output)
+    assert output.read_bytes() == first.read_bytes() + second.read_bytes()
+    assert metadata["documents"] == 2
+    assert metadata["source_segments"][0]["last_source_row"] == 9
+    validation = {"first_source_row": 10, "last_source_row": 19}
+    assert public_corpora._source_ranges_are_disjoint(metadata, validation)
+    with pytest.raises(ValueError, match="source rows overlap"):
+        public_corpora._concatenate_training_segments(
+            [segments[0], {**segments[1], "first_source_row": 5}],
+            tmp_path / "invalid.jsonl",
+        )
+
+
+def test_materializer_freezes_disjoint_rows_and_reuses_verified_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls = []
+
+    def fake_request(url: str, timeout: float = 60.0):
+        calls.append(url)
+        if "api/datasets" in url:
+            return {"sha": "a" * 40}
+        query = parse_qs(urlparse(url).query)
+        offset = int(query["offset"][0])
+        length = int(query["length"][0])
+        rows = []
+        for row_index in range(offset, offset + length):
+            rows.append(
+                {
+                    "row_idx": row_index,
+                    "row": {
+                        "text": f"Document {row_index} " + ("scaling data " * 100),
+                        "id": f"doc-{row_index}",
+                    },
+                    "truncated_cells": [],
+                }
+            )
+        return {"rows": rows, "num_rows_total": 9_672_101, "partial": False}
+
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    spec = PublicCorpusSpec(
+        source="fineweb_edu",
+        train_bytes=65_536,
+        validation_bytes=16_384,
+        maximum_documents_per_split=100,
+    )
+    events = []
+    result = materialize_public_corpus(spec, tmp_path, events.append)
+    assert result["status"] == "complete"
+    assert result["source"]["revision"] == "a" * 40
+    assert result["source"]["license"] == "ODC-By 1.0"
+    assert result["training_tokens"] > 65_536
+    assert result["validation_tokens"] > 16_384
+    assert result["splits"]["train"]["last_source_row"] < result["splits"]["validation"]["first_source_row"]
+    assert len(result["corpus_fingerprint"]) == 64
+    assert events[-1]["phase"] == "complete"
+
+    call_count = len(calls)
+    cached = materialize_public_corpus(spec, tmp_path)
+    assert cached == result
+    assert len(calls) == call_count
+
+
+def test_public_materializer_builds_verified_pinned_token_stream(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def token_hash(token_ids) -> str:
+        digest = sha256()
+        for token_id in token_ids:
+            digest.update(int(token_id).to_bytes(4, "little"))
+        return digest.hexdigest()
+
+    seed_tokenizer = Tokenizer(
+        WordLevel(
+            {
+                "[UNK]": 0,
+                "Document": 1,
+                "<|endoftext|>": 2,
+                "<|extra_id_0|>": 3,
+            },
+            unk_token="[UNK]",
+        )
+    )
+    seed_tokenizer.pre_tokenizer = Whitespace()
+    seed_path = tmp_path / "seed-tokenizer.json"
+    seed_tokenizer.save(str(seed_path))
+    asset_hash = sha256(seed_path.read_bytes()).hexdigest()
+    definition = PinnedTokenizerDefinition(
+        id="test_public_pinned",
+        name="Test public tokenizer",
+        implementation="huggingface_tokenizers_json_v1",
+        repository="example/test-tokenizer",
+        revision="b" * 40,
+        tokenizer_file="tokenizer.json",
+        package="tokenizers",
+        package_version=PINNED_TOKENIZERS_PACKAGE_VERSION,
+        vocab_size=4,
+        special_tokens={
+            "bos": None,
+            "eos": "<|endoftext|>",
+            "pad": None,
+            "unknown": "[UNK]",
+            "extra_id_0": "<|extra_id_0|>",
+        },
+        special_token_ids={
+            "bos": None,
+            "eos": 2,
+            "pad": None,
+            "unknown": 0,
+            "extra_id_0": 3,
+        },
+        document_separator_token_id=2,
+        assets=(TokenizerAssetDefinition("tokenizer.json", asset_hash),),
+        canaries=(TokenizerCanaryDefinition("Document", 1, token_hash([1])),),
+    )
+    monkeypatch.setitem(
+        public_corpora.PINNED_TOKENIZER_REGISTRY, definition.id, definition
+    )
+    original_resolver = public_corpora.resolve_pinned_tokenizer
+
+    def local_resolver(tokenizer_id, output_directory, progress=None):
+        assets = output_directory / "assets"
+        assets.mkdir(parents=True, exist_ok=True)
+        (assets / "tokenizer.json").write_bytes(seed_path.read_bytes())
+        return original_resolver(tokenizer_id, output_directory, progress)
+
+    def fake_request(url: str, timeout: float = 60.0):
+        if "api/datasets" in url:
+            return {"sha": "c" * 40}
+        query = parse_qs(urlparse(url).query)
+        offset = int(query["offset"][0])
+        length = int(query["length"][0])
+        return {
+            "rows": [
+                {
+                    "row_idx": row_index,
+                    "row": {
+                        "text": "Document " + ("scaling data " * 100),
+                        "id": f"doc-{row_index}",
+                    },
+                    "truncated_cells": [],
+                }
+                for row_index in range(offset, offset + length)
+            ]
+        }
+
+    monkeypatch.setattr(public_corpora, "resolve_pinned_tokenizer", local_resolver)
+    monkeypatch.setattr(public_corpora, "_json_request", fake_request)
+    spec = PublicCorpusSpec(
+        source="fineweb_edu",
+        tokenizer=definition.id,
+        train_bytes=65_536,
+        validation_bytes=16_384,
+        maximum_documents_per_split=100,
+        token_shard_tokens=1024,
+    )
+    result = materialize_public_corpus(spec, tmp_path / "corpora")
+    assert result["tokenizer"] == definition.id
+    assert result["tokenizer_vocab_size"] == 4
+    assert result["token_stream_manifest_path"]
+    assert len(result["tokenizer_fingerprint"]) == 64
+    assert len(result["dataset_identity_fingerprint"]) == 64
+    assert result["training_tokens"] > 0
+
+    cached = materialize_public_corpus(spec, tmp_path / "corpora")
+    assert cached == result
+
+    source_manifest = (
+        tmp_path / "corpora" / spec.fingerprint / "manifest.json"
+    )
+    retokenized = retokenize_public_corpus(
+        source_manifest,
+        tokenizer_id=definition.id,
+        output_root=tmp_path / "retokenized",
+        token_shard_tokens=1024,
+    )
+    assert retokenized["kind"] == "retokenized_public_corpus"
+    assert retokenized["source_manifest_fingerprint"] == result[
+        "manifest_fingerprint"
+    ]
+    assert retokenized["dataset_identity_fingerprint"] == result[
+        "dataset_identity_fingerprint"
+    ]
+    assert retokenized["token_stream_format"] == "sharded_uint32_le_v1"
+    assert retokenized["packing_contract"] == "document_eos_concatenation_v1"
+    assert Path(retokenized["token_stream_manifest_path"]).is_file()
+    assert retokenize_public_corpus(
+        source_manifest,
+        tokenizer_id=definition.id,
+        output_root=tmp_path / "retokenized",
+        token_shard_tokens=1024,
+    ) == retokenized

@@ -1,0 +1,49 @@
+{
+  "architecture": {
+    "block_type": "normalized_transformer",
+    "activation": "silu",
+    "vocab_size": 260,
+    "context_length": 64,
+    "head_dimension": 64,
+    "mlp_multiplier": 4,
+    "reference_width": 128,
+    "reference_depth": 4
+  },
+  "dataset": {
+    "task_type": "tokenized_text",
+    "train_path": "__FINEWEB_TRAIN_PATH__",
+    "validation_path": "__FINEWEB_VALIDATION_PATH__",
+    "tokenizer": "byte_v1",
+    "n_train": 16384,
+    "n_validation": 1024,
+    "seed": 1729,
+    "maximum_bytes": 1073741824
+  },
+  "scale": {"name": "fixed-anchor", "width": 128, "repeats": 4},
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-16,
+    "weight_decay": 0.0,
+    "learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01, 0.03, 0.1]
+  },
+  "presented_tokens": [65536, 131072, 262144, 524288, 1048576],
+  "batch_examples": 8,
+  "schedules": [
+    "cosine_to_10_percent",
+    "linear_warmup_decay_to_zero",
+    "wsd"
+  ],
+  "horizon_rules": ["none", "nugpt_one_third", "fitted_power"],
+  "validation_interval": 2048,
+  "seeds": [11, 29, 47],
+  "minimum_seeds": 3,
+  "minimum_fit_horizon_span": 8.0,
+  "bootstrap_samples": 400,
+  "maximum_grid_expansion_rounds": 2,
+  "grid_expansion_factor": 3.0,
+  "maximum_relative_oracle_regret": 0.02,
+  "minimum_recovered_improvement": 0.9,
+  "flat_control_relative_tolerance": 0.002
+}

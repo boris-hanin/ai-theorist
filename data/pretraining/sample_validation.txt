@@ -1,0 +1,7 @@
+A validation stream must remain independent of optimizer decisions. It is read using the same tokenizer and context length as the training stream, but its losses are never backpropagated.
+
+The autoscaler compares batch rules at matched token budgets. It reports target crossings, final validation loss, optimizer timescales in token units, and whether the measured transition is actually bracketed by the sweep.
+
+A distributed runtime changes placement and communication, not the declared scientific question. The global batch equals the local microbatch multiplied by the number of data-parallel replicas and accumulation steps.
+
+Forecasts are released only after held-out calibration. When evidence is weak, a refusal with a concrete next experiment is more useful than a precise-looking extrapolation.

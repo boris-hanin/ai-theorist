@@ -1,0 +1,262 @@
+# Autoscaler MVP validation report
+
+Date: 2026-08-09
+
+## 2026-08-10 overnight product stress test
+
+The web product was exercised through eleven distinct workflows using the actual
+browser interface and local job service.  The evidence page records the exact
+job IDs, not reconstructed examples:
+
+| Workflow | Job | Observation |
+| --- | --- | --- |
+| Dense MLP + Adam | `ada53251904f` | 26 trials; 3.0% held-out error; `R^2=0.984`; smoke verdict withheld from extrapolation |
+| Dense MLP + SGD | `8fe3d0ddc101` | 24 trials; holdout gate failed; refusal displayed |
+| Sparse MoE + Adam, constant `LM/D` | `a6151c86e759` | 24 trials; 1.6% held-out error; transfer passed |
+| normalized Transformer, width | `d3c3dfd23d5e` | 50 trials; 0.8% held-out error; sphere invariants passed; span gate refused forecast |
+| normalized Transformer, depth | `8ed5ecb7beb5` | 50 trials; non-identifiable law; refusal displayed |
+| normalized Transformer, joint width/depth | `d8270ce31988` | 50 trials; 1.0% held-out error; sphere invariants passed |
+| real-text GPT batch census | `43ebfc92e5e6` | 24 AdamW trials; critical-batch estimators disagreed; recommendation withheld |
+| real-text GPT batch census | `a522064cf12d` | 24 SGD trials; direct and gradient-noise estimates differed by 2.3x to 2.6x; recommendation withheld |
+| real-text GPT batch census | `09a133642297` | 24 Adam trials; direct and gradient-noise estimates differed by 2.3x to 2.6x; recommendation withheld |
+| synthetic normalized-Transformer batch census | `137f7fb48b4f` | 216 SGD/Adam trials; 1 of 6 scale/optimizer assays qualified |
+| constant tokens/parameter holdout | `49e2c7f6f731` | T/P spread 1.008x; source optimum on boundary; no rule recommended |
+
+Study and batch histories now persist across service restarts.  Selecting a
+ledger row restores the complete immutable plan and its result, including
+constant-T/P per-rule regret, qualification status, and refusal reasons.
+
+The six-scale joint normalized-Transformer A100 campaign also completed during
+the audit (96 trials; width 128 to 512 and depth 4 to 16).  Normalized eta and
+unit-sphere invariants transfer, but validation loss saturates and then rises:
+`R^2=-0.0019`, the fitted exponent pins at 0.001, the largest-scale point misses
+its bootstrap interval despite only 2.22% point error, and the deliberately
+simple global-rate control is better.  The product therefore refuses the law.
+
+The real-text path was also run on an A100-SXM4-80GB with AdamW, Adam, and SGD,
+BF16, and an explicit FlashAttention request.  Six 72-trial assays covered
+three standard Transformer sizes (120,832 to 834,816 parameters) and batches
+of 256 to 2,048 tokens/update.  Runtime evidence confirms CUDA, BF16, Torch
+SDPA, and the requested Flash path.  The Adam and AdamW direct-checkpoint
+estimator returned about 724 tokens while SGD returned about 362;
+gradient-noise estimates ranged from 30 to 54 tokens.  Adam/AdamW disagreement
+was 13.4x to 23.9x and SGD disagreement was 6.7x to 12.0x, correctly blocking
+every consensus.
+Loss targets 4.8, 3.0, 2.8, and 2.5 additionally exposed checkpoint-quantization and
+crossing-coverage pathologies.  A flat steps-to-target curve at the 3.0 target
+was initially accepted because numerical roundoff made its fitted inverse-batch
+coefficient barely positive.  The estimator now requires at least 5% relative
+dynamic range, and a regression test fixes this failure mode.
+
+This is hardware and product validation, not a useful pretraining scaling-law
+claim.  The checked-in corpus is a deterministic 4,012-token fixture, and each
+provided host exposes one A100.  Therefore explicit Flash BF16 is physically
+validated, while multi-GPU FSDP remains implementation- and CPU-test-validated
+only until a single host with at least two GPUs is available.
+
+## Decision
+
+The reduced-scope product, corrected normalized-learning-rate contract, joint
+`L/M/D` studies, and sparse-MoE Adam path are implemented.  The sparse-MoE path
+passes its two-worker A100 campaign, including fixed-eta transfer, routing
+health, a wrong-global-rate control, and held-out validation-loss prediction.
+The earlier standard-MLP A100 results remain historical because their original
+verdict used proximity to a width-wise local LR optimum; they have not been
+silently promoted under the corrected fixed-eta contract.
+
+This is not a claim that every optimizer/architecture/horizon combination has
+a usable scaling law.  A forecast is a measured privilege: the product emits a
+number only after transfer, a negative control, scaling-law diagnostics, and a
+completely held-out largest model all pass.  Several A100 experiments below
+were correctly refused and were used to repair or narrow the method instead of
+relaxing its gates.
+
+## Validated product boundary
+
+- Graph: `Embed -> repeat(pre-norm residual {MLP, top-k MoE, or normalized
+  Transformer}) -> Unembed`.
+- Blocks: GELU or ReLU residual MLP; fixed-sparsity top-k MoE; normalized
+  causal self-attention interleaved with MLPs.
+- Optimizers: actual PyTorch SGD and Adam for scaling studies; AdamW is also
+  available in the standard real-text GPT census.
+- Scaling axes: MLP width/depth; independent MoE `L`, `M`, and `D`.
+- Constant within a study: dataset, examples, batch size, and update horizon.
+- Tuned value: one normalized learning-rate coordinate `eta`.
+- Transfer: the current residual MLP converts to `lr_raw = eta` for Adam and
+  `lr_raw = eta / sqrt(D)` for SGD.  Chizat mean-field SGD uses
+  `lr_raw = L M eta / alpha^2`.  MoE Adam uses the Table-1 group rates
+  `eta`, `eta/D`, and `eta/M` according to parameter role.
+- Verdict: fixed-`eta` non-inferiority/trajectory convergence.  The local
+  optimum and largest stable probe are separate diagnostics and cannot fail
+  transfer merely because a larger model has more stability headroom.
+- Target: final validation loss at the declared horizon.
+- Shape policy: the default MoE ladder grows all three axes with `LM/D=4`.
+- Deferred: arbitrary graphs, production Muon support, multi-node training,
+  general data scaling, and general horizon scaling.
+
+## Automated and interactive validation
+
+| Layer | Evidence | Result |
+| --- | --- | --- |
+| Python unit/e2e | 124 passed and 1 socket-restricted test skipped locally; includes MLP/MoE/normalized-Transformer schema, exact parameter counts, normalized/group-rate conversion, fixed-`eta` gates, routing refusal, batch estimators, real-text pretraining, optimizer parity, replay, checkpoints, scaling, and persistence | Pass |
+| New Chizat LR contract | CPU smoke plus two-worker A100 campaigns through 1280 steps and M=2048; fixed-eta transfer passed and omitted-M control was rejected | Pass for Chizat subclaim |
+| Joint `L/M/D` | Pure-axis and joint two-worker A100 campaigns; exact duplicates, wrong-rule controls, and a dedicated `LM/D=8` ladder | Pass; constant `LM/D` preferred |
+| Sparse-MoE A100 | Six `LM/D=4` scales, six seeds, 84 trials, two independent A100 workers, held-out scale, wrong-global-rate control, and routing gate | Pass |
+| Real local API | 2/2 socket tests: health, strict compilation, disallowed-origin rejection, asynchronous run, polling, persisted result | Pass |
+| Packaging | Wheel build, clean wheel install, installed CLI help, sample-spec generation, and plan compilation | Pass |
+| Web static checks | ESLint, TypeScript, production Vinext build | Pass |
+| Rendered web tests | Product shell and fixed-horizon contract | Pass |
+| Desktop browser | MLP/MoE selection, fixed-node inspection, invalid-plan blocking, optimizer restriction, `LM/D` warning, immutable running plan, live result/refusal | Pass |
+| Mobile browser | Narrow viewport with the MoE `D/L/M` editor visible and no horizontal overflow | Pass |
+| Browser diagnostics | No warning- or error-level console entries | Pass |
+
+The browser run deliberately used a tiny local study.  It refused a 14.2%
+held-out miss and a negative control that could not be distinguished.  That is
+the intended product behavior, not a UI success mask.
+
+## Chizat fixed-eta method validation
+
+Round 012 directly validates the corrected distinction on two A100s.  For
+`M=64..2048`, `L=8`, `D=32`, `P=64`, and fixed normalized
+`eta=79.43282347242814`, the learning-progress slope versus width was
+`+2.30e-6` at 640 steps and `+1.08e-7` at 1280 steps.  The omitted-M mutation
+gave `-0.387` and `-0.369` and was rejected.  All 108 duplicated full-grid
+trials matched exactly across workers; the 640-step adjacent absolute-loss gap
+settled from `5.67e-6` at the small-width end to `1.04e-9` at the large-width
+end.  See `rounds/012-chizat-width-transfer/`.
+
+This validates the result schema and verdict mechanism for the Chizat
+parameterization.  It does not replace rerunning the separate standard-MLP
+Adam/SGD product campaigns under schema v2.
+
+## Joint `L`, `M`, and `D` transfer
+
+Round 014 tests each pure axis and two simultaneous joint ladders with the
+coherent Chizat group rates
+
+```text
+lr_U = L M eta / D
+lr_W = L M D eta
+```
+
+Pure `L`, pure `M`, and coupled pure `D` pass at 80 steps.  A general joint
+ladder also passes at 80 and 320 steps.  The user-proposed invariant path with
+`LM/D=8` is the cleanest: its log-progress slope is `+0.00473`, versus
+`-0.0503` on the changing-ratio joint ladder.  Removing `L`, removing `M`, and
+using the incoherent square-root-`D` surrogate are rejected.  Every merged
+campaign contains 20 or 30 exact duplicate trials across the two workers.
+
+This is why the product's MoE defaults keep `LM/D` constant.  It is a preferred
+shape path, not a substitute for the optimizer's separate group-rate rules.
+
+## Hardware reproducibility
+
+Both independent A100-SXM4-80GB workers reported PyTorch 2.6.0 with CUDA 12.4.
+The same deterministic CUDA canary produced final loss
+`0.5159386396408081` on each worker and on repeat execution.  The CPU value was
+`0.5158814191818237`, a relative CPU/GPU drift of approximately 0.011%.  Peak
+allocated GPU memory for the canary was 18,381,824 bytes.
+
+## Sparse-MoE Adam calibration
+
+The release-evidence campaign uses six scales
+`(D,L,M) = (8,2,16), (18,3,24), (32,4,32), (50,5,40), (72,6,48),
+(98,7,56)`.  Every scale has `LM/D=4`.  It holds 1,024 training examples,
+256 validation examples, batch size 64, and 320 updates fixed while tuning one
+normalized eta over six common seeds.
+
+The final run selected `eta=0.1`, an interior and non-flat optimum.  Fixed eta
+passes at the held-out S6 scale.  The deliberately wrong single global raw
+rate, matched to the reference router/up rate, is rejected by a paired loss
+increase.  The fit-only law has `R^2` above 0.98, and the completely held-out
+largest scale is predicted within 6% of its observed final validation loss.
+The full numerical values and the final adjacent-scale forecast are recorded
+in `rounds/015-autoscaler-moe/results.md` and its canonical result artifact.
+
+Routing is part of the verdict.  The accepted controller rate is 0.1.  Rates
+0.01 and 0.03 allowed isolated collapse; 0.3 and 1.0 produced oscillation and
+failed the routing gate.  The final gate requires, at every scale, mean
+worst-expert deviation across seeds at most 0.25 and an individual-run hard
+limit of 0.50.  These failed settings remain in the round record rather than
+being discarded after the successful choice.
+
+## Historical Adam calibration
+
+The six-level Adam study used widths 96/144/216/324/486/729, repeats
+2/3/4/6/8/12, 16,384 fixed training examples, 4,096 validation examples, 600
+fixed updates, batch size 256, four common seeds, and 400 bootstrap fits.
+
+- Selected reference LR: `0.001`, interior to the tested range.
+- Largest-scale local probe: `0.001`; this is now an edge diagnostic, not the
+  transfer gate.
+- Wrong square-root-growth control: rejected.
+- Fit-only scaling-law `R^2`: 0.987844.
+- Held-out S6 prediction: 0.0059029.
+- Held-out S6 observation: 0.0056535.
+- Relative point error: 4.41%; accepted.
+- Outcome: one adjacent-scale forecast issued.
+- Limitation: the asymptotic floor was not identifiable, so the system did not
+  issue an asymptotic scaling claim.
+- Next-step prediction: 0.0056554 with bootstrap interval
+  [0.0044735, 0.0061820] at 3.366 times the largest observed compute.
+
+## Historical SGD calibration and falsification trail
+
+The initial SGD ladder reused Adam's depth growth and constant LR.  It became
+optimization-limited at larger levels; tripling the common horizon did not fix
+that raw-LR rule.  A shallower ladder improved its fit, but the largest-scale
+local probe significantly preferred a lower LR.  This showed that constant raw
+LR was inferior in that experiment and motivated the inverse-square-root raw
+conversion.  Under the corrected protocol, transfer itself must be judged at
+fixed normalized `eta`; local-argmin movement is reported separately.
+
+With that transfer rule at 600 steps on the shallower ladder:
+
+- Predicted largest-scale LR: 0.0054433.
+- Local largest-scale optimum: 0.0054433; accepted exactly.
+- Constant-LR negative control: rejected with paired loss increase 0.0096260
+  (SEM 0.0024917).
+- Held-out point error: 3.08%.
+- Outcome: forecast refused because `R^2 = 0.791628` and the observation missed
+  the bootstrap interval.
+
+A compact-ladder control also failed: its smallest model was already at the
+fixed-horizon loss floor and loss did not decrease with compute.  The system
+again refused the forecast.  These runs establish that optimizer transfer can
+be valid while a capacity scaling law is not; the implementation keeps those
+claims separate.
+
+Two final 1,800-step campaigns tested whether a longer shared horizon repaired
+the scaling signal.  It did not.  The compact ladder still had 19.0% held-out
+error.  On the original ladder, the 600-step inverse-width rule no longer
+transferred: its S6 LR was 0.01633, while the local probe preferred 0.03258 and
+constant LR was better.  The held-out error was 61.3%.  This is important
+negative evidence: the transfer parameterization is itself horizon-specific,
+so the product must recalibrate it rather than extrapolate a 600-step rule into
+a different training regime.
+
+## Operational safety and provenance
+
+- Runtime results are strict JSON with an immutable input manifest and study
+  fingerprint.
+- Invalid or out-of-scope specs fail before work starts.
+- Plans are locked while running, and the API records failures for inspection.
+- Local write endpoints reject untrusted browser origins.
+- The SSH private key and worker addresses are not stored in the repository or
+  result manifests.
+- Raw scratch campaign directories remain runtime evidence.  Rounds 014 and
+  015 deliberately promote merged or canonical JSON artifacts alongside the
+  checked-in configurations and acceptance decisions.
+
+## Release conclusion
+
+The Autoscaler is now a useful fixed-budget research workbench, not a general
+pretraining scaling service.  Its A100 evidence validates the sparse-MoE
+`LM/D` path, normalized-Transformer invariants, real-text BF16/Flash execution,
+three optimizer implementations, held-out calibration, and refusal behavior.
+The eleven replayable browser workflows make successful transfer, failed loss
+laws, critical-batch disagreement, and constant-T/P boundary failures equally
+inspectable.  It still does not certify arbitrary expert counts, sparsity
+fractions, tasks, horizons, optimizers, datasets, general DAGs, multi-node
+training, or full MoE DMFT.  No horizon, threshold, tokenizer, or corpus result
+may be silently pooled into another campaign's law.

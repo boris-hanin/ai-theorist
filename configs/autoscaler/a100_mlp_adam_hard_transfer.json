@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "name": "a100-mlp-adam-hard-paired-transfer",
+  "study": {
+    "schema_version": 2,
+    "name": "a100-mlp-adam-hard-paired-transfer-base",
+    "run_profile": "a100",
+    "architecture": {
+      "block_type": "pre_norm_mlp",
+      "activation": "gelu",
+      "input_dim": 48,
+      "output_dim": 1,
+      "residual_multiplier": 1.0
+    },
+    "optimizer": {
+      "name": "adam",
+      "momentum": 0.0,
+      "beta1": 0.9,
+      "beta2": 0.95,
+      "epsilon": 1e-16
+    },
+    "dataset": {
+      "task_type": "nonlinear_regression",
+      "difficulty": "stress",
+      "n_train": 65536,
+      "n_validation": 16384,
+      "noise_std": 0.01,
+      "seed": 1729,
+      "teacher_width": 192,
+      "teacher_depth": 6,
+      "markov_order": 3,
+      "markov_states": 16
+    },
+    "horizon": {
+      "steps": 600,
+      "batch_size": 256,
+      "microbatch_size": 64
+    },
+    "data_scaling": {
+      "mode": "fixed",
+      "growth_factor": 1.0,
+      "horizon_policy": "fixed_updates"
+    },
+    "scales": [
+      {"name": "S1", "width": 64, "repeats": 2},
+      {"name": "S2", "width": 96, "repeats": 3},
+      {"name": "S3", "width": 144, "repeats": 4},
+      {"name": "S4", "width": 216, "repeats": 6},
+      {"name": "S5", "width": 324, "repeats": 8},
+      {"name": "S6", "width": 486, "repeats": 12}
+    ],
+    "tuning": {
+      "normalized_learning_rates": [0.0015, 0.003, 0.005511351921262151],
+      "max_expansion_rounds": 0,
+      "expansion_factor": 3.0
+    },
+    "validation": {
+      "transfer_probe_decades": 0.3,
+      "run_negative_control": true,
+      "bootstrap_samples": 400,
+      "routing_load_tolerance": 0.25
+    },
+    "seeds": [11, 29],
+    "holdout_count": 1
+  },
+  "extra_scales": [
+    {"name": "W216L8", "width": 216, "repeats": 8},
+    {"name": "W324L6", "width": 324, "repeats": 6}
+  ],
+  "lr_phase": {
+    "scales": ["S3", "S4", "S5", "S6", "W216L8", "W324L6"],
+    "fit_scales": ["S3", "S4", "S5", "S6", "W216L8", "W324L6"],
+    "reference_scale": "S3",
+    "target_scale": "S6",
+    "n_train_by_scale": {
+      "S3": 65536,
+      "S4": 147456,
+      "S5": 294912,
+      "S6": 663552,
+      "W216L8": 196608,
+      "W324L6": 221184
+    },
+    "learning_rates": [
+      0.00125,
+      0.0015,
+      0.0018,
+      0.0022,
+      0.0026,
+      0.003,
+      0.0035,
+      0.004,
+      0.005511351921262151
+    ],
+    "proposed_eta": 0.003,
+    "lower_probe_eta": 0.0015,
+    "negative_control_eta": 0.005511351921262151,
+    "minimum_effect_fraction": 0.01,
+    "bootstrap_samples": 2000,
+    "seeds": [11, 29, 47, 71, 97, 131, 173, 211, 257, 307, 367, 431]
+  },
+  "lr_extension_phase": {
+    "scales": ["S3", "S4", "S5", "S6", "W216L8", "W324L6"],
+    "learning_rates": [0.0005, 0.00075, 0.001],
+    "seeds": [11, 29, 47, 71, 97, 131, 173, 211, 257, 307, 367, 431]
+  },
+  "batch_phase": {
+    "scales": ["S3", "S4", "S5", "S6"],
+    "batch_sizes": [64, 128, 256, 512, 1024],
+    "token_budget": 153600,
+    "lr_multipliers": [0.5, 1.0, 2.0],
+    "seeds": [11, 29, 47, 71, 97, 131]
+  },
+  "batch_extension_phase": {
+    "scales": ["S3", "S4", "S5", "S6"],
+    "token_budget": 153600,
+    "lr_multipliers_by_batch": {
+      "64": [0.125, 0.25],
+      "128": [0.25],
+      "512": [4.0],
+      "1024": [4.0, 8.0]
+    },
+    "seeds": [11, 29, 47, 71, 97, 131]
+  },
+  "horizon_phase": {
+    "scales": ["S3", "S4", "S5", "S6"],
+    "batch_size": 256,
+    "token_budgets": [76800, 153600, 307200, 614400],
+    "lr_multipliers": [0.75, 1.0, 1.3333333333333333],
+    "seeds": [11, 29, 47, 71, 97, 131]
+  }
+}

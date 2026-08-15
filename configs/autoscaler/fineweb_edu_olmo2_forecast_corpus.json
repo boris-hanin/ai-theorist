@@ -1,0 +1,10 @@
+{
+  "source": "fineweb_edu",
+  "tokenizer": "olmo2_1124",
+  "acquisition_backend": "parquet",
+  "train_bytes": 12884901888,
+  "validation_bytes": 536870912,
+  "maximum_documents_per_split": 100000000,
+  "source_batch_rows": 8192,
+  "token_shard_tokens": 16777216
+}

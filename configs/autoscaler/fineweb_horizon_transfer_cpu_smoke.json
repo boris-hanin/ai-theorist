@@ -1,0 +1,43 @@
+{
+  "architecture": {
+    "block_type": "normalized_transformer",
+    "activation": "silu",
+    "vocab_size": 260,
+    "context_length": 8,
+    "head_dimension": 4,
+    "mlp_multiplier": 2,
+    "reference_width": 16,
+    "reference_depth": 2
+  },
+  "dataset": {
+    "task_type": "tokenized_text",
+    "train_path": "data/pretraining/sample_train.txt",
+    "validation_path": "data/pretraining/sample_validation.txt",
+    "tokenizer": "byte_v1",
+    "n_train": 64,
+    "n_validation": 32,
+    "seed": 1729,
+    "maximum_bytes": 536870912
+  },
+  "scale": {"name": "fixed-anchor", "width": 16, "repeats": 2},
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-16,
+    "weight_decay": 0.0,
+    "learning_rates": [0.001, 0.01, 0.1]
+  },
+  "presented_tokens": [256, 512, 1024, 2048],
+  "batch_examples": 2,
+  "schedules": ["cosine_to_10_percent"],
+  "horizon_rules": ["none", "nugpt_one_third", "fitted_power"],
+  "validation_interval": 128,
+  "seeds": [11],
+  "minimum_seeds": 1,
+  "minimum_fit_horizon_span": 4.0,
+  "bootstrap_samples": 0,
+  "maximum_grid_expansion_rounds": 0,
+  "maximum_relative_oracle_regret": 0.02,
+  "minimum_recovered_improvement": 0.9
+}

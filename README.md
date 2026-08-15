@@ -17,11 +17,26 @@ during the project; it is not retroactively claimed for early rounds.
 - `skills/dmft-{resnet-depth,attention,moe,graph}/`: architecture-specific
   derivations, simulators, sweeps, and stated coverage limits.
 - `derivations/`: long-form derivations and corrections.
-- `rounds/`: eleven validation rounds with results and, where retained, raw
-  data and preregistrations.
-- `registry/failure-modes.md`: the canonical F1–F22 registry (F7, F9, and F13
+- `rounds/`: fifteen numbered validation rounds, including explicitly pending
+  or exploratory work, with results and, where retained, raw data and
+  preregistrations.
+- `registry/failure-modes.md`: the canonical failure registry (F7, F9, and F13
   are intentionally marked lost and are never reused).
 - `PROGRAM.md`: certification policy and current skill status.
+- `src/ai_theorist/autoscaler/`: the first product slice: strict residual-MLP,
+  sparse-MoE, and νGPT normalized-Transformer schemas; real SGD and Adam
+  training; one-dimensional normalized-eta tuning; transfer checks;
+  fixed-horizon scaling fits; and refusal-aware held-out calibration.
+- `apps/web/`: the drag-and-drop Autoscaler workbench.  Its canvas intentionally
+  compiles only typed `Embed -> repeated {MLP, top-k MoE, or νGPT} block ->
+  Unembed` graphs.
+- `src/ai_theorist/autoscaler/batch_*.py`: the separately qualified batch
+  subsystem: canonical token/batch records, an inspectable transfer-rule
+  registry, three critical-batch estimators, noisy-quadratic calibration,
+  matched SGD/Adam Transformer censuses, and honest constant-TPP holdouts.
+- `src/ai_theorist/autoscaler/pretraining.py`: a standard GPT-style pre-norm
+  baseline over content-hashed real token streams, with fp32/bf16, PyTorch
+  SDPA or explicit FlashAttention, Adam/AdamW/SGD, and single-node FSDP.
 
 ## Current status
 
@@ -33,6 +48,12 @@ during the project; it is not retroactively claimed for early rounds.
   weight was falsified; the tested causal sum uses strict past.
 - Attention, residual, and MoE scaling claims have executable measurements,
   with each round's failed or under-powered bars retained in its `results.md`.
+- Round 014 validates simultaneous Chizat transfer in `L`, `M`, and `D`; the
+  theory-motivated `LM/D = constant` path is the flattest tested joint path.
+- Round 015 validates the sparse-MoE product path on two A100s, including
+  groupwise Adam transfer, routing-load guards, a wrong-global-rate control,
+  and held-out validation-loss calibration.  This is product evidence, not a
+  full MoE DMFT certification.
 - The Round 010 `C^-1/6` rate is supported by a large A100 artifact.  Its v2
   source had not been committed;
   `skills/dmft-moe/scripts/overnight_suite_v2.py` reconstructs the exact
@@ -54,6 +75,47 @@ python -m pip install -e '.[test]'
 pytest
 python skills/dmft-derivation/scripts/validate.py --quick
 ```
+
+The Autoscaler has a separate end-to-end path:
+
+```bash
+ai-theorist-autoscale sample-spec /tmp/autoscaler.json --optimizer adam --quick
+ai-theorist-autoscale sample-spec /tmp/moe.json --optimizer adam --architecture pre_norm_moe --quick
+ai-theorist-autoscale sample-spec /tmp/nugpt.json --optimizer adam --architecture normalized_transformer --quick
+ai-theorist-autoscale plan /tmp/autoscaler.json
+ai-theorist-autoscale run /tmp/autoscaler.json --output runs/autoscaler/manual --summary
+ai-theorist-autoscale-api
+```
+
+With the API running on port 8787, start `apps/web` with Node 22 and pnpm.  The
+UI compiles a study, launches it asynchronously, monitors trial progress, and
+shows a next-scale forecast only after every calibration gate passes.  See
+`docs/autoscaler-validation.md` for the exact acceptance contract and A100
+campaign configurations, and `docs/autoscaler-validation-report.md` for the
+measured evidence, retained negative results, and current A100 revalidation
+status after the fixed-eta transfer correction.
+The in-product validation atlas also records the exact IDs and outcomes of eleven
+browser-launched dense, MoE, normalized-Transformer, real-text, batch, and
+constant-T/P workflows; the ledger survives service restarts and restores the
+immutable controls behind each result.
+The normalized-Transformer contract is documented separately in
+`docs/normalized-transformer-contract.md`; its A100 manifest is
+`configs/autoscaler/a100_nugpt_adam.json`.
+Batch scaling and its A100 manifests are documented in
+`docs/BATCH_SCALING.md`. The real-text model, dataset, web-job, precision,
+single-node DDP/FSDP, accumulation, and recovery contracts are in
+`docs/PRETRAINING_RUNTIME.md`.
+Immutable byte, Mistral-v0.3, and OLMo-2 tokenizer definitions, verified assets, sharded token
+streams, and combined dataset identity are specified in
+`docs/TOKENIZER_CONTRACT.md`.
+Frozen real-text learning-rate schedule and token-horizon transfer is specified
+in `docs/HORIZON_TRANSFER.md`, with a CPU smoke manifest and a resumable
+FineWeb-Edu A100 campaign.
+The decision boundary between those transfer assays and larger real-text
+scaling-law forecasts is summarized in `docs/REAL_TEXT_SCALING_ROADMAP.md`.
+The implemented 100M constant-T/P campaign, hidden-scale validation,
+architecture-specific optimizer contracts, and explicit 1B forecast refusal
+gates are specified in `docs/FORECAST_GRADE_SCALING.md`.
 
 The deep-linear and nonlinear suites are more expensive:
 

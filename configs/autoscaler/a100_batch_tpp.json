@@ -1,0 +1,47 @@
+{
+  "architecture": {
+    "block_type": "normalized_transformer",
+    "activation": "silu",
+    "vocab_size": 256,
+    "context_length": 32,
+    "head_dimension": 32,
+    "mlp_multiplier": 4,
+    "reference_width": 128,
+    "reference_depth": 2
+  },
+  "dataset": {
+    "task_type": "synthetic_markov",
+    "n_train": 16384,
+    "n_validation": 2048,
+    "noise_std": 0.03,
+    "seed": 1729,
+    "markov_order": 3,
+    "markov_states": 16
+  },
+  "scales": [
+    {"name": "S1", "width": 128, "repeats": 2},
+    {"name": "S2", "width": 192, "repeats": 3},
+    {"name": "S3", "width": 256, "repeats": 4},
+    {"name": "S4-heldout", "width": 320, "repeats": 5}
+  ],
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.99,
+    "epsilon": 1e-8,
+    "learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01]
+  },
+  "tokens_per_parameter": 0.5,
+  "base_batch_examples": 8,
+  "batch_growth_exponent": 0.5,
+  "validation_interval": 32,
+  "cache_directory": "runs/autoscaler/a100-batch-tpp/trials",
+  "seeds": [11, 29, 47],
+  "transfer_rules": [
+    "none",
+    "adam_sde_sqrt",
+    "complete_dp_joint",
+    "exact_token_half_life",
+    "horizon_power_fit"
+  ]
+}

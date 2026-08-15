@@ -1,0 +1,67 @@
+{
+  "schema_version": 2,
+  "name": "a100-cross-host-qualification-anchor",
+  "run_profile": "smoke",
+  "architecture": {
+    "block_type": "normalized_transformer",
+    "activation": "silu",
+    "input_dim": 16,
+    "output_dim": 1,
+    "residual_multiplier": 1.0,
+    "vocab_size": 32,
+    "context_length": 16,
+    "head_dimension": 8,
+    "mlp_multiplier": 4,
+    "reference_width": 32,
+    "reference_depth": 3
+  },
+  "optimizer": {
+    "name": "adam",
+    "momentum": 0.0,
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-16
+  },
+  "dataset": {
+    "task_type": "synthetic_markov",
+    "difficulty": "easy",
+    "n_train": 256,
+    "n_validation": 128,
+    "noise_std": 0.03,
+    "seed": 1729,
+    "teacher_width": 32,
+    "teacher_depth": 2,
+    "markov_order": 2,
+    "markov_states": 4
+  },
+  "horizon": {
+    "steps": 30,
+    "batch_size": 16,
+    "microbatch_size": 8
+  },
+  "data_scaling": {
+    "mode": "fixed",
+    "growth_factor": 1.0,
+    "horizon_policy": "fixed_updates"
+  },
+  "scales": [
+    {"name": "S1", "width": 16, "repeats": 1},
+    {"name": "S2", "width": 24, "repeats": 2},
+    {"name": "S3", "width": 32, "repeats": 3},
+    {"name": "S4", "width": 40, "repeats": 4},
+    {"name": "S5", "width": 48, "repeats": 5}
+  ],
+  "tuning": {
+    "normalized_learning_rates": [0.0003, 0.001, 0.003, 0.01, 0.03],
+    "max_expansion_rounds": 0,
+    "expansion_factor": 3.0
+  },
+  "validation": {
+    "transfer_probe_decades": 0.3,
+    "run_negative_control": false,
+    "bootstrap_samples": 40,
+    "routing_load_tolerance": 0.25
+  },
+  "seeds": [11, 29],
+  "holdout_count": 1
+}

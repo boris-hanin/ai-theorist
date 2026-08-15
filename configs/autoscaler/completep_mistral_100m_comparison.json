@@ -1,0 +1,70 @@
+{
+  "run_profile": "comparison",
+  "architecture": {
+    "block_type": "completep_transformer",
+    "vocab_size": 32768,
+    "context_length": 512,
+    "head_dimension": 64,
+    "mlp_multiplier": 4,
+    "reference_depth": 2,
+    "reference_width": 256,
+    "initialization_std": 0.02,
+    "activation": "relu_squared",
+    "position_encoding": "learned_absolute"
+  },
+  "dataset": {
+    "task_type": "tokenized_text",
+    "token_stream_manifest_path": "__TOKEN_STREAM_MANIFEST__",
+    "tokenizer": "mistral_7b_v03",
+    "maximum_bytes": 2199023255552
+  },
+  "ladder": {
+    "target_parameters": [18500000, 100000000],
+    "depths": [2, 9],
+    "tokens_per_parameter": 20.0,
+    "heldout_scale_count": 1,
+    "reference_scale_index": 0,
+    "maximum_parameter_error_fraction": 0.01,
+    "minimum_parameter_span": 1.0,
+    "maximum_repetition_ratio": 1.0,
+    "target_forecasts": [],
+    "require_gate_eligible_plan": true
+  },
+  "optimizer": {
+    "name": "adamw",
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-16,
+    "weight_decay_tau_ema": 0.1407,
+    "fused": true,
+    "learning_rates": [0.0003, 0.0006, 0.001, 0.002, 0.0039, 0.006, 0.01, 0.02]
+  },
+  "schedule": "linear_warmup_decay_to_zero",
+  "batch_examples": 16,
+  "validation_examples": 256,
+  "validation_microbatch_examples": 4,
+  "validation_interval_steps": 2000,
+  "seeds": [11, 29, 47],
+  "runtime": {
+    "precision": "bf16",
+    "attention_backend": "flash",
+    "distributed": "none",
+    "num_processes": 1,
+    "gradient_accumulation_steps": 1,
+    "activation_checkpointing": true,
+    "checkpoint_interval_steps": 0,
+    "checkpoint_interval_seconds": 900,
+    "resume": true
+  },
+  "comparison_contract": {
+    "baseline_plan_fingerprint": "1fa9eae3ac1204b50eecf2a48a0024712edea53d181a46b3685f3937c99d3edd",
+    "baseline_aggregate_sha256": "a3d7c26cf79369040a76ec885e6ba7f75f9a4bc2fe4209f3057da6fe17496ba8",
+    "baseline_dataset_fingerprint": "1b854ee220230e0421acd8312d313a72d396de2234474ec20f63ba1ce4f1d703",
+    "baseline_tokenizer_fingerprint": "d52f662783555cbf11f6a0cd8af35016652cda033389db471813c7d30f6958c5",
+    "baseline_architecture": "jiang_chizat_transformer",
+    "baseline_parameters": 99709568,
+    "baseline_mean_validation_loss": 3.706965504835049,
+    "baseline_seed_losses": [3.7956766299903393, 3.65652684122324, 3.6686930432915688]
+  },
+  "run_negative_control": false
+}

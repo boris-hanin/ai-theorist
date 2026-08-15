@@ -1,0 +1,128 @@
+{
+  "status": "passed",
+  "scientific_status": "short_horizon_three_seed_fixed_eta_transfer_pilot",
+  "repo_commit": "5e9e2105bf81dc6c2a48a5a620ac751db35a5ad3",
+  "runtime": {
+    "host_class": "8x H100 80GB",
+    "precision": "bf16",
+    "attention_backend": "flash"
+  },
+  "dataset": {
+    "name": "SlimPajama-6B",
+    "tokenizer": "gpt2_openai",
+    "dataset_fingerprint": "f88477278cb14c6841d78eb97c1b10fd399a79be54752264dc885affcac76017",
+    "tokenizer_fingerprint": "7772b5ac4b4f1027d4b91247e7deec7007b09ae8f378202b572ddc6edb7495f6"
+  },
+  "contract": {
+    "rho": 32.0,
+    "alpha_star": 0.0078125,
+    "num_experts": 4,
+    "active_experts": 1,
+    "presented_tokens_per_trial": 6553600,
+    "optimizer_steps": 200,
+    "seeds": [11, 29, 47],
+    "selected_reference_eta": 0.00390625,
+    "reference_eta_is_interior": true,
+    "local_nonreference_retuning": false
+  },
+  "scales": [
+    {
+      "name": "S1",
+      "L": 2,
+      "D": 128,
+      "M": 2048,
+      "active_non_embedding_parameters": 1187336,
+      "active_parameters": 7653000,
+      "total_parameters": 10811784,
+      "mean_validation_loss": 6.210751977231767,
+      "sem_validation_loss": 0.010409962420641104,
+      "mean_fractional_progress": 0.42667842497768244,
+      "sem_fractional_progress": 0.001071862210103062
+    },
+    {
+      "name": "S2",
+      "L": 4,
+      "D": 256,
+      "M": 2048,
+      "active_non_embedding_parameters": 5264912,
+      "active_parameters": 18196240,
+      "total_parameters": 30806800,
+      "mean_validation_loss": 6.1919407678975,
+      "sem_validation_loss": 0.010255033154860952,
+      "mean_fractional_progress": 0.42663141273014205,
+      "sem_fractional_progress": 0.0010067477322116376
+    },
+    {
+      "name": "S3",
+      "L": 6,
+      "D": 384,
+      "M": 2048,
+      "active_non_embedding_parameters": 13019160,
+      "active_parameters": 32416152,
+      "total_parameters": 60771480,
+      "mean_validation_loss": 6.198124123944176,
+      "sem_validation_loss": 0.015882611671107258,
+      "mean_fractional_progress": 0.42554312988130594,
+      "sem_fractional_progress": 0.0015223689510584003
+    },
+    {
+      "name": "S4",
+      "L": 8,
+      "D": 512,
+      "M": 2048,
+      "active_non_embedding_parameters": 25236512,
+      "active_parameters": 51099168,
+      "total_parameters": 101492256,
+      "mean_validation_loss": 6.188239610857433,
+      "sem_validation_loss": 0.007457928578262549,
+      "mean_fractional_progress": 0.4261557266415728,
+      "sem_fractional_progress": 0.0006888556215262639
+    },
+    {
+      "name": "S5",
+      "L": 12,
+      "D": 768,
+      "M": 2048,
+      "active_non_embedding_parameters": 66206256,
+      "active_parameters": 105000240,
+      "total_parameters": 218347824,
+      "mean_validation_loss": 6.194034208854039,
+      "sem_validation_loss": 0.017899342297975497,
+      "mean_fractional_progress": 0.4254576012652982,
+      "sem_fractional_progress": 0.0016957174236433713
+    },
+    {
+      "name": "S6",
+      "L": 16,
+      "D": 1024,
+      "M": 2048,
+      "active_non_embedding_parameters": 134465600,
+      "active_parameters": 186190912,
+      "total_parameters": 387664960,
+      "mean_validation_loss": 6.181532730658849,
+      "sem_validation_loss": 0.005701544685699271,
+      "mean_fractional_progress": 0.4263176881691722,
+      "sem_fractional_progress": 0.0004434940961853067
+    }
+  ],
+  "primary_metric": {
+    "active_non_embedding_parameter_span": 113.24982987124116,
+    "log_progress_vs_log_parameter_slope": -0.00038155706958976806,
+    "maximum_allowed_absolute_slope": 0.3
+  },
+  "negative_control": {
+    "endpoint_correct_mean_loss": 6.181532730658849,
+    "endpoint_wrong_global_mean_loss": 6.737472001049253,
+    "relative_degradation": 0.08993550541811168,
+    "minimum_required_degradation": 0.005,
+    "passed": true
+  },
+  "all_preregistered_gates_passed": true,
+  "claim_restriction": "Fixed-normalized-eta transfer over 6.55M tokens; not a token-horizon transfer or scaling-law certification.",
+  "raw_evidence_sha256": {
+    "preregistration.json": "44c0a83e3971a40bf3048316e5278b7634e32720b8f7d42d69b5752b74471746",
+    "reference-selection.json": "8634b3f6183a7c3d12d97dd59ec8894ebade44656421baf4307a4d0a025bf023",
+    "runtime-qualification.json": "3e4d888ce2c66e24bc097dc8d738271b197481783b30455d65892eb4e7b98c44",
+    "transfer-result.json": "d4c846919611453a24b5b8312d428699c8cddc4fdc0083786a963dac247174be"
+  }
+}

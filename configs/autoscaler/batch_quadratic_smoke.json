@@ -1,0 +1,24 @@
+{
+  "dimension": 32,
+  "condition_number": 20.0,
+  "noise_scale": 0.5,
+  "maximum_steps": 240,
+  "target_loss": 0.03,
+  "batch_tokens": [4, 8, 16, 32, 64, 128, 256],
+  "seeds": [11, 29, 47],
+  "continuation_tokens": 1024,
+  "optimizers": [
+    {
+      "name": "sgd",
+      "momentum": 0.0,
+      "learning_rates": [0.03, 0.1, 0.3]
+    },
+    {
+      "name": "adam",
+      "beta1": 0.9,
+      "beta2": 0.99,
+      "epsilon": 1e-8,
+      "learning_rates": [0.001, 0.003, 0.01]
+    }
+  ]
+}

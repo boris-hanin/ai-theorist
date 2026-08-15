@@ -1,0 +1,129 @@
+{
+  "schema_version": 2,
+  "observed_at": "2026-08-10",
+  "web_workflows": [
+    {"job_id": "ada53251904f", "workflow": "dense MLP / Adam", "trials": 26, "heldout_relative_error": 0.03019, "scaling_r_squared": 0.98436, "outcome": "forecast withheld"},
+    {"job_id": "8fe3d0ddc101", "workflow": "dense MLP / SGD", "trials": 24, "heldout_relative_error": 0.02639, "scaling_r_squared": 0.97561, "outcome": "held-out calibration refused"},
+    {"job_id": "a6151c86e759", "workflow": "sparse MoE / Adam / constant LM over D", "trials": 24, "heldout_relative_error": 0.01625, "scaling_r_squared": 0.83607, "outcome": "forecast withheld"},
+    {"job_id": "d3c3dfd23d5e", "workflow": "normalized Transformer / Adam / width", "trials": 50, "heldout_relative_error": 0.00769, "scaling_r_squared": 0.99653, "outcome": "parameter span too narrow"},
+    {"job_id": "8ed5ecb7beb5", "workflow": "normalized Transformer / Adam / depth", "trials": 50, "heldout_relative_error": 0.05633, "scaling_r_squared": -0.0312, "outcome": "scaling law non-identifiable"},
+    {"job_id": "d8270ce31988", "workflow": "normalized Transformer / Adam / width and depth", "trials": 50, "heldout_relative_error": 0.00971, "scaling_r_squared": 0.8596, "outcome": "fit quality below forecast threshold"},
+    {"job_id": "43ebfc92e5e6", "workflow": "real-text GPT batch census / AdamW", "trials": 24, "qualified_assays": 0, "assay_count": 2, "outcome": "estimator disagreement"},
+    {"job_id": "a522064cf12d", "workflow": "real-text GPT batch census / SGD", "trials": 24, "qualified_assays": 0, "assay_count": 2, "outcome": "estimator disagreement"},
+    {"job_id": "09a133642297", "workflow": "real-text GPT batch census / Adam", "trials": 24, "qualified_assays": 0, "assay_count": 2, "outcome": "estimator disagreement"},
+    {"job_id": "137f7fb48b4f", "workflow": "normalized Transformer batch census / SGD and Adam", "trials": 216, "qualified_assays": 1, "assay_count": 6, "outcome": "selective qualification"},
+    {"job_id": "49e2c7f6f731", "workflow": "constant tokens per parameter holdout", "scales": 4, "rules": 5, "realized_tpp_spread_ratio": 1.00833, "best_heldout_regret": -0.01921, "outcome": "source optimum on boundary; no recommendation"}
+  ],
+  "a100_transfer_campaigns": [
+    {"fingerprint_prefix": "05494395132d4814", "workflow": "sparse MoE / Adam / constant LM over D", "trials": 42, "transfer_accepted": true, "negative_control_rejected": true, "scaling_r_squared": 0.9424914405, "scaling_exponent": 0.0686944351, "heldout_relative_error": 0.0030342822, "forecastable": true},
+    {"fingerprint_prefix": "cc29e690be68d646", "workflow": "dense MLP / Adam", "trials": 39, "transfer_accepted": true, "negative_control_rejected": false, "scaling_r_squared": 0.9907623862, "scaling_exponent": 0.18071058, "heldout_relative_error": 0.0174685363, "forecastable": false},
+    {"fingerprint_prefix": "0520d28c58e724b6", "workflow": "dense MLP / SGD", "trials": 39, "transfer_accepted": true, "negative_control_rejected": false, "scaling_r_squared": -2.1750690106, "scaling_exponent": 0.001, "heldout_relative_error": 0.003366097, "forecastable": false},
+    {"fingerprint": "1b081704bcdb975864b58f8147d9c392508021174556ca0bc5edba73a2135145", "workflow": "normalized Transformer / Adam / width", "trials": 96, "transfer_accepted": true, "negative_control_rejected": false, "scaling_r_squared": -0.1796876971, "scaling_exponent": 0.001, "heldout_relative_error": 0.0069767682, "forecastable": false},
+    {"fingerprint": "1d3487474b0c89ff136bb66fab09de051fcfc188801e01277c47665a2df0d70f", "workflow": "normalized Transformer / Adam / depth", "trials": 96, "transfer_accepted": true, "negative_control_rejected": false, "scaling_r_squared": 0.7435039402, "scaling_exponent": 1.65725262, "heldout_relative_error": 0.0135850543, "forecastable": false},
+    {"fingerprint": "674fe6c0938e8284e8eb45109b22c952c542257254243a696dc326d7a6f4c839", "workflow": "normalized Transformer / Adam / width and depth", "trials": 96, "transfer_accepted": true, "negative_control_rejected": false, "scaling_r_squared": -0.0018668372, "scaling_exponent": 0.001, "heldout_relative_error": 0.0221627839, "forecastable": false}
+  ],
+  "a100_real_text_runtime": {
+    "completed_trials": 432,
+    "runtime": {"device": "cuda", "precision": "bf16", "attention_backend": "flash", "uses_torch_sdpa": true},
+    "optimizers": ["adamw", "adam", "sgd"],
+    "corpus_fingerprint": "0e6fad5d74666d17e8e48970bcf28ea2b97baeae783fecb43ef91acd4c2d4148",
+    "parameter_range": [120832, 834816],
+    "batch_token_range": [256, 2048],
+    "adam_and_adamw_direct_checkpoint_critical_batch_tokens": 724.077343935,
+    "sgd_direct_checkpoint_critical_batch_tokens": 362.038671968,
+    "gradient_noise_critical_batch_token_range": [30.270540457, 53.849638359],
+    "consensus_qualified": false,
+    "refusal": "independent qualified estimators disagree beyond the allowed 2x ratio"
+  },
+  "a100_fineweb_transfer": {
+    "source": {
+      "dataset": "HuggingFaceFW/fineweb-edu",
+      "config": "sample-10BT",
+      "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9",
+      "corpus_fingerprint": "666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1",
+      "training_tokens": 67156577,
+      "validation_tokens": 8395537,
+      "training_source_rows": [0, 14291],
+      "validation_source_rows": [5000000, 5001948],
+      "tokenizer": "byte_v1"
+    },
+    "protocol": {"shapes": 4, "normalized_eta_grid_points": 7, "seeds": [11, 29, 47], "steps": 300, "batch_size": 16, "context_length": 64},
+    "dense_jiang_attention_chizat_ffn": {
+      "full_training_trials": 216,
+      "feature_velocity_probes": 12,
+      "reference_eta": 0.03,
+      "best_eta_by_shape": {"S1": 0.03, "S2": 0.03, "S3": 0.03, "S4": 0.03},
+      "fixed_reference_eta_to_oracle_loss_ratio_by_shape": {"S1": 1.0, "S2": 1.0, "S3": 1.0, "S4": 1.0},
+      "fixed_reference_eta_progress_slope": 0.023379327,
+      "fixed_reference_eta_validation_loss_by_shape": {"S1": 2.493587251, "S2": 2.409812567, "S3": 2.401609711, "S4": 2.39520367},
+      "selected_group_multipliers": {"embeddings": 1.0, "norms": 1.0, "attention_qkv": 0.0625, "attention_output": 0.5, "ffn_up": 1.0, "ffn_down": 0.0625, "other_biases": 1.0},
+      "transfer_certified": true,
+      "feature_velocity_accepted": true,
+      "negative_controls_rejected": 0,
+      "negative_controls_tested": 4,
+      "mechanism_discrimination_certified": false
+    },
+    "jiang_sparse_moe": {
+      "full_training_trials": 213,
+      "reference_eta": 0.03,
+      "best_eta_by_shape": {"S1": 0.03, "S2": 0.03, "S3": 0.03, "S4": 0.03},
+      "fixed_reference_eta_to_oracle_loss_ratio_by_shape": {"S1": 1.0, "S2": 1.0, "S3": 1.0, "S4": 1.0},
+      "fixed_reference_eta_progress_slope": 0.021843471,
+      "fixed_reference_eta_validation_loss_by_shape": {"S1": 2.49901783, "S2": 2.472347061, "S3": 2.424128319, "S4": 2.441286037},
+      "selected_group_multipliers": {"embeddings": 2.0, "norms": 1.0, "attention_qkv": 0.0625, "attention_output": 0.5, "router": 0.0625, "expert_up": 1.0, "expert_down": 0.0625, "other_biases": 1.0},
+      "largest_shape_maximum_routing_load_deviation": 0.3333333333,
+      "transfer_certified": true,
+      "negative_controls_rejected": 0,
+      "negative_controls_tested": 3,
+      "mechanism_discrimination_certified": false
+    }
+  },
+  "a100_fineweb_horizon_transfer": {
+    "corpus_fingerprint": "666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1",
+    "architecture": "normalized Transformer",
+    "parameters": 1121028,
+    "completed_trials": 351,
+    "fit_horizons": [65536, 131072, 262144, 524288],
+    "heldout_horizon": 1048576,
+    "batch_tokens": 512,
+    "seeds": [11, 29, 47],
+    "one_third_rule": {
+      "cosine_to_0.1": {"predicted_peak_learning_rate": 0.0030776936, "mean_loss": 1.744118174, "oracle_mean_loss": 1.737169544, "relative_oracle_regret": 0.0039999723, "transfer_certified": true, "mechanism_discrimination_certified": true},
+      "linear_warmup_0.1_decay_to_0": {"predicted_peak_learning_rate": 0.0035927046, "mean_loss": 1.73326695, "oracle_mean_loss": 1.737765114, "relative_oracle_regret": 0.0, "transfer_certified": true, "mechanism_discrimination_certified": true},
+      "wsd_warmup_0.02_stable_0.78_to_0": {"predicted_peak_learning_rate": 0.001863163, "mean_loss": 1.736368338, "oracle_mean_loss": 1.753099084, "relative_oracle_regret": 0.0020150535, "transfer_certified": true, "mechanism_discrimination_certified": true}
+    },
+    "flat_control_mean_loss": {"cosine_to_0.1": 1.902348042, "linear_warmup_0.1_decay_to_0": 1.82387948, "wsd_warmup_0.02_stable_0.78_to_0": 1.8335193},
+    "fitted_exponents": {"cosine_to_0.1": 0.4603227684, "linear_warmup_0.1_decay_to_0": 0.4944761439, "wsd_warmup_0.02_stable_0.78_to_0": 0.4315870321},
+    "outcome": "T^-1/3 certified on all three schedules; flat controls separated",
+    "reporting_note": "The completed sensitivity run also contained exponent 0.32. It is grouped with the one-third theory family and is no longer a default candidate."
+  },
+  "a100_fineweb_jiang_chizat_horizon": {
+    "corpus_fingerprint": "666710b377c444e7c0354dc3496d4375adcb482a5d65d086db86a8cfa61315e1",
+    "architecture": "Jiang causal MHSA interleaved with Chizat mean-field FFN",
+    "parameters": 306688,
+    "completed_trials": 114,
+    "fit_horizons": [65536, 131072, 262144, 524288],
+    "heldout_horizon": 1048576,
+    "batch_tokens": 1024,
+    "schedule": "linear_warmup_0.5_constant",
+    "seeds": [11, 29, 47],
+    "completep_group_multipliers": {"embeddings": 1.0, "norms": 1.0, "attention_qkv": 0.0625, "attention_output": 0.5, "ffn_up": 1.0, "ffn_down": 0.0625, "other_biases": 1.0},
+    "heldout_oracle": {"peak_learning_rate": 0.03, "mean_loss": 2.070720227, "optimum_is_interior": true},
+    "flat_rule": {"predicted_peak_learning_rate": 0.0163370652, "mean_loss": 2.071736543, "relative_oracle_regret": 0.0004908033, "transfer_certified": false},
+    "one_third_rule": {"predicted_peak_learning_rate": 0.0064833686, "mean_loss": 2.131327682, "relative_oracle_regret": 0.0292687804, "transfer_certified": false},
+    "fitted_rule": {"exponent": -0.6515321017, "r_squared": 0.3532976414, "predicted_peak_learning_rate": 0.0561115387, "mean_loss": 2.078726223, "relative_oracle_regret": 0.0038662857, "transfer_certified": false},
+    "mechanism_identifiable": false,
+    "refusal": "no schedule/horizon rule passed the preregistered held-out gates",
+    "outcome": "flat peak LR is oracle-level; T^-1/3 does not transfer under the source-faithful Jiang schedule"
+  },
+  "limitations": [
+    "The batch-scaling runtime assay still uses a deterministic integration fixture; the Jiang-family transfer assay now uses a frozen FineWeb-Edu sample-10BT slice.",
+    "The FineWeb-Edu transfer assay is byte-tokenized, context 64, and 300 steps, so it validates local HP transfer rather than frontier-scale pretraining behavior.",
+    "The FineWeb-Edu model-scale negative controls were not separated, so those results certify transfer but not unique mechanism identification.",
+    "The real-text horizon assays span 8x in presented tokens and stop at 1,048,576 tokens with context 64; they are pilot-scale schedule tests, not frontier-duration evidence.",
+    "The one-third horizon rule transfers for the normalized Transformer schedules tested here but fails for the source-faithful Jiang half-warmup/constant schedule; the app does not claim a universal duration exponent.",
+    "The supplied hosts each exposed one A100; multi-GPU FSDP was not physically exercised.",
+    "CUDA selections execute on the host running the compute API; the browser is not a remote-cluster scheduler.",
+    "Smoke-profile results validate plumbing and refusals, not long-range scaling-law quality."
+  ]
+}

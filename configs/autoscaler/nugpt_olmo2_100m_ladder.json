@@ -1,0 +1,63 @@
+{
+  "run_profile": "forecast",
+  "architecture": {
+    "block_type": "normalized_transformer",
+    "activation": "silu",
+    "vocab_size": 100278,
+    "context_length": 512,
+    "head_dimension": 32,
+    "mlp_multiplier": 4,
+    "reference_width": 128,
+    "reference_depth": 4
+  },
+  "dataset": {
+    "task_type": "tokenized_text",
+    "token_stream_manifest_path": "__TOKEN_STREAM_MANIFEST__",
+    "tokenizer": "olmo2_1124",
+    "maximum_bytes": 2199023255552
+  },
+  "ladder": {
+    "target_parameters": [7000000, 12000000, 20000000, 35000000, 60000000, 100000000],
+    "depths": [2, 2, 4, 4, 6, 8],
+    "tokens_per_parameter": 20.0,
+    "heldout_scale_count": 1,
+    "reference_scale_index": 0,
+    "maximum_parameter_error_fraction": 0.15,
+    "minimum_parameter_span": 30.0,
+    "maximum_repetition_ratio": 1.0,
+    "target_forecasts": [200000000, 1000000000],
+    "maximum_extrapolation_factor": 10.0,
+    "maximum_family_spread": 0.08,
+    "maximum_backtest_relative_error": 0.1
+  },
+  "optimizer": {
+    "name": "adam",
+    "beta1": 0.9,
+    "beta2": 0.95,
+    "epsilon": 1e-16,
+    "weight_decay": 0.0,
+    "fused": true,
+    "learning_rates": [0.0001, 0.0003, 0.001, 0.003, 0.01],
+    "output_learning_rate_multiplier": 0.5
+  },
+  "schedule": "cosine_to_10_percent",
+  "batch_examples": 16,
+  "validation_examples": 256,
+  "validation_microbatch_examples": 4,
+  "validation_interval_steps": 2000,
+  "seeds": [11, 29, 47],
+  "runtime": {
+    "precision": "bf16",
+    "attention_backend": "flash",
+    "distributed": "none",
+    "num_processes": 1,
+    "gradient_accumulation_steps": 1,
+    "activation_checkpointing": true,
+    "checkpoint_interval_steps": 0,
+    "checkpoint_interval_seconds": 900,
+    "resume": true
+  },
+  "bootstrap_samples": 400,
+  "run_negative_control": true,
+  "negative_control_minimum_degradation": 0.0
+}

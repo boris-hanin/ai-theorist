@@ -1,0 +1,12 @@
+{
+  "source": "fineweb_edu",
+  "tokenizer": "mistral_7b_v03",
+  "acquisition_backend": "parquet",
+  "train_bytes": 51539607552,
+  "train_primary_bytes": 12884901888,
+  "train_secondary_offset": 5200000,
+  "validation_bytes": 536870912,
+  "maximum_documents_per_split": 100000000,
+  "source_batch_rows": 8192,
+  "token_shard_tokens": 16777216
+}
