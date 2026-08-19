@@ -201,6 +201,13 @@ bites: swap in a verifier with a known injected false-positive rate and
 confirm the predicted degradation point moves as derived (this doubles as the
 mutation test for the whole Stage III harness).
 
+> **Correction (2026-08, pre-measurement; see `WINDTUNNEL-SMOKE.md` §5):**
+> the degradation-past-N* claim above holds for heavy-tailed *scalar*
+> verifier scores. A *binary* accept/reject verifier with iid errors gives a
+> monotone curve saturating at the verifier's precision — the
+> plateau-at-precision, not non-monotonicity, is the testable signature
+> there. Round 012's design uses the corrected closed form.
+
 ### II.3 CoT length and agentic horizon
 
 The two sequential axes, in increasing order of ambition:
@@ -249,6 +256,10 @@ it should be attempted only after the per-stage bars hold.
 
 ## III. Repository additions
 
+> **Sequencing note (2026-08):** round 012's proposal (`WINDTUNNEL-SMOKE.md`)
+> defers this two-skill split — v0 is one skill, `skills/windtunnel-e2e/`,
+> to be split when the certification rounds need it.
+
 Layout, mirroring the existing structure exactly:
 
 - `skills/rl-post-training/` — SKILL.md + `scripts/`: bandit/GRPO exact
@@ -282,6 +293,10 @@ Infrastructure that does not yet exist in this repo and is the real cost:
    launching" rule needs a pre-launch CI check, not prose.
 
 ## IV. Sequencing
+
+> **Sequencing note (2026-08):** round 012 keeps its number but its scope
+> expands to the full end-to-end smoke round of `WINDTUNNEL-SMOKE.md`, which
+> subsumes item 1 below as its Stage-3 leg; items 2–4 keep their numbers.
 
 Recommended order, by (information gained)/(cost):
 
